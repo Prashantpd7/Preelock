@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutDashboard,
   Timer,
@@ -22,9 +22,6 @@ const navigation = [
 ] as const;
 export function AppLayout() {
   useApplication();
-  const location = useLocation();
-  const pageName =
-    navigation.find(([path]) => path === location.pathname)?.[1] ?? 'Overview';
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
   return (
@@ -49,19 +46,6 @@ export function AppLayout() {
         </div>
       </aside>
       <div className="main-shell">
-        <div className="topbar">
-          <span>
-            Personal workspace <span className="slash">/</span>{' '}
-            <b>{pageName}</b>
-          </span>
-          <span className="small muted">
-            {new Date().toLocaleDateString(undefined, {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            })}
-          </span>
-        </div>
         <main>
           {!desktop && (
             <div className="notice">

@@ -263,24 +263,6 @@ nav a.active {
   display: flex;
   flex-direction: column;
 }
-.topbar {
-  height: 74px;
-  padding: 0 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-}
-.topbar b {
-  color: var(--text);
-  font-weight: 400;
-}
-.slash {
-  margin: 0 13px;
-  opacity: 0.45;
-}
 main {
   padding: 39px 40px;
   flex: 1;
@@ -659,9 +641,6 @@ td {
   }
   main {
     padding: 28px 25px;
-  }
-  .topbar {
-    padding: 0 25px;
   }
   .dashboard-grid {
     grid-template-columns: 1fr;
