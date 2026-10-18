@@ -7,6 +7,10 @@ export const emptySnapshot: Snapshot = {
   preferences: { theme: 'dark', default_minutes: 25 },
 };
 export const api = {
+  openSetup: (
+    target: 'extensions' | 'extension_folder' | 'camera_settings',
+    browserId = '',
+  ) => invoke<void>('open_setup', { target, browserId }),
   focusSetup: () => invoke<FocusSetup>('focus_setup'),
   requestCamera: () => invoke<void>('request_camera'),
   resetPairing: () => invoke<void>('reset_browser_pairing'),

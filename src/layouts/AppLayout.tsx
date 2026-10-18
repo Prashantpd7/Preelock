@@ -6,8 +6,6 @@ import {
   Activity,
   ChartNoAxesColumn,
   Settings,
-  ArrowUpRight,
-  ShieldCheck,
   X,
 } from 'lucide-react';
 import { useAppStore } from '../state/store';
@@ -27,22 +25,6 @@ export function AppLayout() {
   const location = useLocation();
   const pageName =
     navigation.find(([path]) => path === location.pathname)?.[1] ?? 'Overview';
-  const monitoring = useAppStore((s) =>
-    s.data.sessions.some(
-      (session) =>
-        session.status === 'running' && session.focus?.activity_consent,
-    ),
-  );
-  const camera = useAppStore((s) =>
-    s.data.sessions.some(
-      (session) =>
-        session.status === 'running' &&
-        session.focus?.camera &&
-        ['person_detected', 'person_not_detected', 'extended_absence'].includes(
-          session.report?.camera_status ?? '',
-        ),
-    ),
-  );
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
   return (
@@ -61,22 +43,6 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="sidebar-note">
-          <ShieldCheck size={20} />
-          <h3>Your focus. Your space.</h3>
-          <p>
-            Stored on this device.
-            <br />
-            {camera
-              ? 'Camera monitoring active'
-              : monitoring
-                ? 'Activity monitoring active'
-                : 'No monitoring active.'}
-          </p>
-          <NavLink to="/settings">
-            Privacy & capabilities <ArrowUpRight size={14} />
-          </NavLink>
-        </div>
         <div className="sidebar-footer">
           <span className="status-dot" />
           Local workspace<span className="version">v{appConfig.version}</span>

@@ -17,23 +17,23 @@ export function Analytics() {
       <PageHeading
         eyebrow="PROGRESS YOU CAN SEE"
         title="Analytics"
-        description="Small efforts add up. These numbers come from your saved sessions."
+        description="Your focus progress."
       />
       <div className="stats-grid">
         <Stat
-          label="Accepted productive time"
+          label="Focus time"
           value={formatDuration(productive.accepted)}
-          detail="Activity estimates and labeled self-report; excludes legacy timers"
+          detail="Based on your focus checks"
         />
         <Stat
-          label="Elapsed study time"
+          label="Total session time"
           value={formatDuration(productive.elapsed)}
-          detail="Includes unknown intervals and monitoring gaps"
+          detail="Includes time the timer was paused"
         />
         <Stat
           label="Distracted time"
           value={formatDuration(productive.distracted)}
-          detail={`${productive.percentage}% accepted focus · ${formatDuration(productive.unknown)} unknown / gaps`}
+          detail={`${productive.percentage}% focus · ${formatDuration(productive.unknown)} unverified`}
         />
       </div>
       <div className="stats-grid">

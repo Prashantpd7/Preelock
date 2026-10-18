@@ -108,7 +108,7 @@ async function sync() {
       'applied_id',
       'blocks',
     ]);
-    await fetch('http://127.0.0.1:47832/sync', {
+    const acknowledgement = await fetch('http://127.0.0.1:47832/sync', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -123,10 +123,20 @@ async function sync() {
       }),
       signal: AbortSignal.timeout(4000),
     });
+    if (!acknowledgement.ok)
+      throw new Error(`Bridge rejected pairing (${acknowledgement.status})`);
   } catch (error) {
     // Fail open rather than strand network access after a crash or broken installation.
     await removeRules();
-    await chrome.storage.session.set({ error: String(error).slice(0, 200) });
+    const detail = String(error);
+    const message = detail.includes('(403)')
+      ? 'Connection code rejected. Copy it again from VYSTRIQ Settings.'
+      : detail.includes('(409)')
+        ? 'Another browser profile is connected. Reset the connection in VYSTRIQ Settings.'
+        : /fetch|timeout|abort|network/i.test(detail)
+          ? 'Cannot reach VYSTRIQ. Open the desktop app, then reconnect.'
+          : detail.slice(0, 200);
+    await chrome.storage.session.set({ error: message });
   }
 }
 chrome.alarms.onAlarm.addListener(() => {

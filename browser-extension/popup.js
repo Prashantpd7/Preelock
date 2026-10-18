@@ -5,11 +5,20 @@ async function show() {
     'error',
     'last_sync',
   ]);
-  status.textContent =
-    data.error ||
-    (data.policy
-      ? `${data.policy.mode} filtering active; short lease renewed by Desktop.`
-      : 'No active browser restrictions.');
+  const { token, disabled } = await chrome.storage.local.get([
+    'token',
+    'disabled',
+  ]);
+  status.textContent = !token
+    ? 'Paste the connection code from VYSTRIQ Settings.'
+    : disabled
+      ? 'Disconnected. Paste your code and click Connect.'
+      : data.error ||
+        (data.policy
+          ? 'Website blocking is on.'
+          : data.last_sync && Date.now() - data.last_sync < 45000
+            ? 'Connected. Start a session in VYSTRIQ.'
+            : 'Open VYSTRIQ, then click Reconnect.');
 }
 async function sync() {
   status.textContent = 'Connecting…';
@@ -19,7 +28,10 @@ async function sync() {
 document.getElementById('pair').addEventListener('submit', async (event) => {
   event.preventDefault();
   const token = document.getElementById('token').value.trim();
-  if (!/^[a-f0-9]{64}$/i.test(token)) return;
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    status.textContent = 'Copy the full connection code from VYSTRIQ Settings.';
+    return;
+  }
   const { client = crypto.randomUUID() } =
     await chrome.storage.local.get('client');
   await chrome.storage.local.set({ token, client, disabled: false });

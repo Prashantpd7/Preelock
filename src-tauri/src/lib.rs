@@ -8,6 +8,7 @@ pub mod focus;
 pub mod models;
 pub mod platform;
 mod sessions;
+mod setup;
 use engine::Engine;
 use models::{Action, Snapshot};
 use std::sync::Mutex;
@@ -43,9 +44,22 @@ fn capabilities() -> Vec<capabilities::Capability> {
 #[tauri::command]
 async fn focus_setup(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move||{
+        let applications=platform::applications()?;
+        let browsers:Vec<_>=applications.iter().filter(|a|focus::supported_browser(&a.id)).cloned().collect();
+        let extension_directory=setup::extension_dir(&app)?;
         let state=app.state::<Mutex<Engine>>();let engine=state.lock().map_err(|_|"Session engine unavailable.")?;
-        Ok(serde_json::json!({"platform":platform::name(),"native_available":platform::supported(),"applications":platform::applications()?,"camera_permission":platform::camera_permission(),"browser":engine.browser_status(),"pairing_token":engine.pairing_token(),"extension_directory":app.path().resource_dir().map_err(|e|e.to_string())?.join("browser-extension")}))
+        Ok(serde_json::json!({"platform":platform::name(),"native_available":platform::supported(),"applications":applications,"browsers":browsers,"camera_permission":platform::camera_permission(),"browser":engine.browser_status(),"pairing_token":engine.pairing_token(),"extension_directory":extension_directory}))
     }).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+async fn open_setup(
+    app: tauri::AppHandle,
+    target: String,
+    browser_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || setup::open(&app, &target, &browser_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn request_camera() -> Result<(), String> {
@@ -94,7 +108,7 @@ pub fn run() {
         std::thread::spawn(move||loop{std::thread::sleep(std::time::Duration::from_secs(1));let state=handle.state::<Mutex<Engine>>();if let Ok(mut engine)=state.lock(){if engine.tick().is_err(){log::error!("Focus worker failed; restrictions released where possible. Check the workspace error.");}};});
         Ok(())
     }).on_window_event(|window,event|{if let tauri::WindowEvent::CloseRequested {api,..}=event{api.prevent_close();let _=window.hide();}})
-    .invoke_handler(tauri::generate_handler![snapshot,execute,capabilities,focus_setup,request_camera,reset_browser_pairing]).build(tauri::generate_context!());
+    .invoke_handler(tauri::generate_handler![snapshot,execute,capabilities,focus_setup,request_camera,reset_browser_pairing,open_setup]).build(tauri::generate_context!());
     match result {
         Ok(app) => app.run(|app, event| match event {
             tauri::RunEvent::ExitRequested {

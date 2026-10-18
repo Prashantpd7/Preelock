@@ -1,111 +1,71 @@
 import { useState } from 'react';
 import { useFocusSetup } from '../hooks/useFocusSetup';
-import { useAppStore } from '../state/store';
 import { api, desktop } from '../services/api';
+import { BrowserSetup } from './BrowserSetup';
 export function PermissionsPanel() {
   const { setup, error, loading, refresh } = useFocusSetup();
-  const [notice, setNotice] = useState('');
-  const [reveal, setReveal] = useState(false);
-  const browser = useAppStore((s) => s.data.browser) ?? setup?.browser;
-  async function requestCamera() {
-    try {
-      await api.requestCamera();
-      setNotice(
-        'Respond to the macOS permission prompt, then retry checks. Camera capture starts only in a consented session.',
-      );
-    } catch (e) {
-      setNotice(String(e));
-    }
-  }
+  const [notice, setNotice] = useState(''),
+    [guide, setGuide] = useState(false);
+  const camera = setup?.camera_permission;
+  const cameraLabel =
+    camera === 'granted'
+      ? 'Allowed'
+      : camera === 'denied'
+        ? 'Blocked'
+        : camera === 'restricted'
+          ? 'Restricted'
+          : camera === 'unsupported'
+            ? 'Not supported'
+            : 'Not set up';
   return (
-    <section className="panel form-panel">
+    <section className="panel form-panel compact-settings">
       <div className="section-heading">
-        <h2>Permissions & focus setup</h2>
+        <h2>Connections</h2>
         <button
           className="secondary"
           disabled={!desktop || loading}
           onClick={() => void refresh()}
         >
-          Retry checks
+          Check again
         </button>
       </div>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      {notice && (
+      {(error || notice) && (
         <p role="status" className="notice">
-          {notice}
+          {error || notice}
         </p>
       )}
-      <div className="capability-row">
-        <h3>
-          Application redirection ·{' '}
-          {setup?.native_available ? 'Available' : 'Unavailable'}
-        </h3>
-        <p className="muted small">
-          macOS hides selected user apps; Windows minimizes their foreground
-          windows. This is reversible redirection, not OS application control.
-          Finder/Explorer, Settings and system recovery tools remain accessible.
-          Only running applications can be selected; open an app then retry
-          checks.
-        </p>
+      <div className="setting-row">
+        <div>
+          <h3>Browser extension</h3>
+          <p className="small muted">
+            {setup?.browser.connected
+              ? 'Connected'
+              : 'Connect once to block websites.'}
+          </p>
+        </div>
+        <button className="secondary" onClick={() => setGuide(!guide)}>
+          {guide ? 'Hide setup' : 'Set up'}
+        </button>
       </div>
-      <div className="capability-row">
-        <h3>Activity consent · per session</h3>
-        <p className="muted small">
-          Opt in during setup to sample the foreground app identifier and idle
-          time, plus only the foreground browser hostname when paired. No window
-          titles, messages, keystrokes or screen images are collected.
-          Accessibility and screen capture are not required by these adapters
-          and are not requested.
-        </p>
-      </div>
-      <div className="capability-row">
-        <h3>
-          Browser filter ·{' '}
-          {browser?.connected ? 'Extension connected' : 'Not connected'}
-          {browser?.cleanup_pending && ' · cleanup awaiting acknowledgement'}
-        </h3>
-        <p className="muted small">
-          Install the included browser-extension folder via Load unpacked in
-          Chrome/Edge Extensions (Developer mode). Pair exactly one browser
-          profile using the token below. Reload the extension after upgrading to
-          v0.3; accept the tabs permission for hostname sampling. Select that
-          same browser during session setup. Incognito, other profiles, other
-          browsers, cached pages and other apps are outside this filter.
-        </p>
-        <p className="muted small">
-          Extension folder:{' '}
-          <code>
-            {setup?.extension_directory ??
-              'browser-extension (repository root)'}
-          </code>
-        </p>
-        <p className="muted small">
-          No DNS, VPN, proxy or firewall settings are changed. Browser filtering
-          still matches URLs with encrypted DNS, VPNs or proxies, but proxy
-          websites, extensions and alternate clients can bypass it.
-        </p>
-        {browser?.error && <p role="status">{browser.error}</p>}
-        <div className="row controls">
+      {guide && <BrowserSetup setup={setup} refresh={refresh} />}
+      <div className="setting-row">
+        <div>
+          <h3>
+            Camera <span className="badge">{cameraLabel}</span>
+          </h3>
+          <p className="small muted">
+            Optional. Checks if you are at your desk.
+          </p>
+        </div>
+        {camera !== 'granted' && (
           <button
             className="secondary"
-            disabled={!setup?.pairing_token}
-            onClick={() => setReveal(!reveal)}
-          >
-            {reveal ? 'Hide token' : 'Show pairing token'}
-          </button>
-          <button
-            className="secondary"
-            disabled={!desktop}
+            disabled={!desktop || setup?.platform !== 'macos'}
             onClick={async () => {
               try {
-                await api.resetPairing();
-                setReveal(false);
+                await api.requestCamera();
                 setNotice(
-                  'Pairing reset. Reconnect the extension with the new token.',
+                  'Choose Allow in the macOS prompt, then click Check again.',
                 );
                 await refresh();
               } catch (e) {
@@ -113,68 +73,63 @@ export function PermissionsPanel() {
               }
             }}
           >
-            Reset pairing
+            Allow camera
           </button>
-        </div>
-        {reveal && (
-          <input
-            className="pairing-token"
-            aria-label="Browser pairing token"
-            readOnly
-            value={setup?.pairing_token ?? ''}
-            onFocus={(e) => e.target.select()}
-          />
         )}
       </div>
-      <div className="capability-row">
-        <h3>
-          Camera presence · {setup?.camera_permission ?? 'Check required'}
-        </h3>
-        <p className="muted small">
-          On macOS, Apple Vision estimates whether an upper body is visible,
-          locally at about one frame per second. Extended absence begins after
-          30 seconds without a detection. No raw frames are saved. This is
-          probabilistic presence, not attention or learning verification.
-          Phone-use detection and Windows camera analysis are unavailable.
-        </p>
-        <button
-          className="secondary"
-          disabled={
-            !desktop ||
-            setup?.platform !== 'macos' ||
-            setup?.camera_permission === 'granted'
-          }
-          onClick={() => void requestCamera()}
-        >
-          Request camera permission
-        </button>
-        <p className="muted small">
-          If denied, use macOS System Settings → Privacy & Security → Camera,
-          then retry checks. Granting permission alone does not start the
-          camera.
-        </p>
+      {camera !== 'granted' && setup?.platform === 'macos' && (
+        <details>
+          <summary>No camera prompt?</summary>
+          <ol className="setup-steps">
+            <li>Open System Settings → Privacy & Security → Camera.</li>
+            <li>Turn on VYSTRIQ.</li>
+            <li>Return here and click Check again.</li>
+          </ol>
+          <button
+            className="secondary"
+            onClick={async () => {
+              try {
+                await api.openSetup('camera_settings');
+              } catch (e) {
+                setNotice(String(e));
+              }
+            }}
+          >
+            Open camera settings
+          </button>
+        </details>
+      )}
+      <div className="setting-row">
+        <div>
+          <h3>App activity</h3>
+          <p className="small muted">
+            {setup?.native_available
+              ? 'Ready. You choose when to enable it.'
+              : 'Unavailable on this device.'}
+          </p>
+        </div>
+        <span className="badge">Per session</span>
       </div>
-      <div className="capability-row">
-        <h3>Deep Focus · unavailable</h3>
-        <p className="muted small">
-          Requires a separately provisioned restricted account and managed
-          application/network policies with administrator recovery. VYSTRIQ does
-          not install AppLocker/App Control, Apple MDM payloads or privileged
-          Network Extensions. No administrator access is requested.
-        </p>
-      </div>
-      <div className="capability-row">
-        <h3>Emergency recovery</h3>
-        <p className="muted small">
-          Use Emergency exit in the session, type END FOCUS, then confirm. If
-          Desktop is unavailable, use the extension popup’s emergency recovery
-          or disable/remove the extension. Closing the window keeps the
-          controller running. Reopen via the VY menu bar/system tray. Quit and
-          release restrictions stops app redirection and camera capture. Browser
-          rules expire on the next extension wake/check; browser alarms can be
-          delayed. Restarting the browser clears session rules.
-        </p>
-      </div>
+      <details>
+        <summary>Privacy & recovery</summary>
+        <ul className="short-help">
+          <li>
+            Data stays on this device. No video, typing or page content is
+            saved.
+          </li>
+          <li>No Accessibility or Screen Recording permission is needed.</li>
+          <li>
+            Emergency exit stops a session. The VY menu can quit and release
+            blocks.
+          </li>
+          <li>Website blocking covers the connected browser profile only.</li>
+          <li>App blocking hides windows. It cannot lock the device.</li>
+          <li>
+            Camera results are estimates. Phone detection and learning
+            verification are unavailable.
+          </li>
+        </ul>
+      </details>
     </section>
   );
 }

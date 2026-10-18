@@ -1,3 +1,13 @@
+# v0.3.1 usability and connection fixes
+
+- Replaced technical session controls with short questions and radio choices; removed the sidebar privacy card; reduced Settings to General and Connections. Advanced details remain expandable.
+- Fixed Comet detection using the native browser list, added stable exported extension files and fixed-action setup buttons, and stopped unpaired browser sessions in the wizard. Strict desktop-only sessions no longer require an extension.
+- Fixed ignored HTTP acknowledgement failures in the extension; failed connections clear rules and show a short recovery instruction.
+- 21 source frontend/extension tests and 27 Rust tests pass, including consent validation, Comet selection, app-only Strict rules, failed browser acknowledgements, hostname-only reporting, timer recovery and emergency cleanup. TypeScript, ESLint, format checks, Clippy, the native read-only probe and ARM64 bundle build pass.
+- Launched v0.3.1 in the real Tauri app. Checked the rendered setup screen, empty sidebar area, short Settings page and native Comet detection. Exported extension files match the bundle exactly.
+- Test discovery now excludes generated app bundles; earlier frontend totals included duplicate bundled tests.
+- Live Comet installation/blocking remains pending user setup: computer control of Comet was denied by the tool. Camera permission and real presence accuracy also need the user. Instructions are shown in Settings. No privileged OS policy or Windows runtime test is claimed.
+
 # Productive-time implementation — v0.3
 
 Current implementation adds Rust attention accounting, conservative recovery, app/domain/camera signal integration, explicit fallback, corrections, SQLite interval journaling and close-to-background lifecycle. Legacy elapsed records remain clearly labeled. Final checks: 28 Vitest tests; 26 Rust tests; strict TypeScript, ESLint, Prettier, Rustfmt and Clippy pass. Production frontend and ARM64 Tauri v0.3.0 bundle built. Read-only native app enumeration, foreground/idle and camera authorization probe passed. No camera permission was granted.

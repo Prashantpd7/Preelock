@@ -32,5 +32,11 @@ export function useFocusSetup() {
       active = false;
     };
   }, []);
+  useEffect(() => {
+    if (!desktop) return;
+    const onFocus = () => void refresh();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refresh]);
   return { setup, error, loading, refresh };
 }

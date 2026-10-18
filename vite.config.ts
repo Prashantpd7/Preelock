@@ -7,6 +7,7 @@ export default defineConfig({
   server: { port: 1420, strictPort: true },
   clearScreen: false,
   test: {
+    include: ['src/**/*.test.{ts,tsx}', 'browser-extension/**/*.test.js'],
     environment: 'jsdom',
     setupFiles: './src/tests/setup.ts',
     css: false,

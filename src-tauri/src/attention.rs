@@ -81,40 +81,34 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
     let p = &config.attention;
     if p.verification == "manual_checkpoints" {
         return if signal.manual_confirmed {
-            (
-                State::Focused,
-                "User-confirmed work; self-report, not sensor verification".into(),
-            )
+            (State::Focused, "Work confirmed by you.".into())
         } else {
             (
                 State::Unknown,
-                "Confirm you are working to accept the next 60 seconds".into(),
+                "Click ‘I’m working’ to count the next minute.".into(),
             )
         };
     }
     if !config.activity_consent || !signal.activity_available {
         return (
             State::Unknown,
-            "Foreground activity unavailable or consent not granted".into(),
+            "App activity is unavailable. Check your session permission.".into(),
         );
     }
     if !signal.approved_app {
         return (
             State::Distracted,
-            "Foreground app is outside your productive application list".into(),
+            "Switch back to one of your work apps.".into(),
         );
     }
     if let Some(relevant) = signal.browser_relevant {
         if !relevant {
-            return (
-                State::Distracted,
-                "Active browser domain is outside your productive website list".into(),
-            );
+            return (State::Distracted, "Open one of your work websites.".into());
         }
     } else if signal.browser_required {
         return (
             State::Unknown,
-            "Waiting for fresh foreground browser-domain metadata".into(),
+            "Waiting for your browser. Check the extension connection.".into(),
         );
     }
     if p.verification == "camera_and_activity" {
@@ -123,23 +117,17 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
             "extended_absence" if signal.idle_ms >= u64::from(p.grace_seconds) * 1000 => {
                 return (
                     State::Absent,
-                    "Sustained lack of person detection plus idle activity; this is an estimate"
-                        .into(),
+                    "You seem to be away. Time will resume when you return.".into(),
                 )
             }
             "person_not_detected" | "extended_absence" => {
                 return (
                     State::Unknown,
-                    "Camera presence is uncertain or conflicts with device activity".into(),
+                    "Camera view is unclear. Timer paused.".into(),
                 )
             }
             _ if p.camera_fallback == "activity_only" => {}
-            _ => {
-                return (
-                    State::Unknown,
-                    "Camera unavailable; configured policy does not accept fallback time".into(),
-                )
-            }
+            _ => return (State::Unknown, "Camera unavailable. Timer paused.".into()),
         }
     }
     let idle_limit = match p.task.as_str() {
@@ -147,14 +135,17 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
         _ => 5 * 60_000,
     };
     if signal.idle_ms > idle_limit && signal.camera_status != "person_detected" {
-        return(State::Unknown,"Extended inactivity without presence evidence; reading/thinking is not classified as distraction".into());
+        return (
+            State::Unknown,
+            "No recent activity. Waiting for a fresh focus check.".into(),
+        );
     }
     (
         State::Focused,
         if p.verification == "camera_and_activity" && signal.camera_status != "person_detected" {
-            "Approved activity under your explicitly selected camera fallback"
+            "Camera off. Counting your work app activity."
         } else {
-            "Approved activity observed; attention and comprehension are not proven"
+            "Working in a chosen app. Focus is estimated."
         }
         .into(),
     )
@@ -214,7 +205,7 @@ pub fn observe(s: &mut Session, signal: &Signals, delta: u64, now: i64) {
             s,
             delta,
             State::Recovering,
-            "Monitoring gap/sleep: no productive time awarded".into(),
+            "Monitoring stopped or the Mac slept. This time was not counted.".into(),
             now,
         );
         return;
@@ -245,7 +236,7 @@ pub fn observe(s: &mut Session, signal: &Signals, delta: u64, now: i64) {
         if settled {
             reason
         } else {
-            "Waiting for stable signals during grace period; no time awarded yet".into()
+            "Checking focus… Timer paused briefly.".into()
         },
         now,
     );

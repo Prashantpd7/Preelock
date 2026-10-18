@@ -68,3 +68,9 @@ Choose task context and an acceptance policy. Activity-only requires explicit sa
 The productive countdown pauses without releasing restrictions during DISTRACTED, ABSENT, UNKNOWN and RECOVERING. Manual checkpoints and interval corrections are labeled self-report. Original state totals retain corrections, so categories overlap corrected accepted time. Elapsed study time excludes explicit Standard pauses/preparation, includes monitoring gaps, and is attributed to session start day in daily reports. Normal window closure keeps monitoring running; use the VY menu bar/system tray to reopen or quit and release.
 
 Presence uses a real Apple Vision upper-body model (confidence threshold 0.6, about 1 Hz) with 30-second absence detection plus configured grace and idle evidence. Face/head direction, phone detection, playback, file-change integrations and comprehension questions are not implemented. No typing-rate score is used. Input simulation, cached pages, other profiles and malicious extension reports are not prevented.
+
+## v0.3.1 quick connection
+
+Open Settings → Browser extension → Set up. Comet is now detected alongside supported Chromium browsers. Open Extensions, enable Developer mode, then Load unpacked from the folder shown by VYSTRIQ. Use Copy folder path and ⌘⇧G in the Mac folder picker. Open the extension popup, paste Copy connection code, click Connect, then Test blocking. Keep the desktop app open. The extension is exported outside the app bundle so its folder stays stable across rebuilds. Reload it after updates.
+
+Strict sessions using only desktop apps can run without a browser connection. Website sessions must connect before continuing. Camera is optional: Allow camera → approve macOS prompt → Check again. If no prompt appears, use Open camera settings and enable VYSTRIQ.

@@ -38,7 +38,7 @@ impl FocusConfig {
     pub fn network_required(&self) -> bool {
         !self.general_internet
             || !self.domains.is_empty()
-            || self.mode != Mode::Standard
+            || (self.mode != Mode::Standard && !self.browser_app.is_empty())
             || !self.attention.work_domains.is_empty()
     }
     pub fn apps_required(&self) -> bool {
@@ -90,6 +90,7 @@ pub fn supported_browser(id: &str) -> bool {
         "com.brave.browser",
         "com.vivaldi.vivaldi",
         "org.chromium.chromium",
+        "ai.perplexity.comet",
     ]
     .contains(&id.as_str())
         || [
@@ -98,6 +99,7 @@ pub fn supported_browser(id: &str) -> bool {
             "brave.exe",
             "vivaldi.exe",
             "chromium.exe",
+            "comet.exe",
         ]
         .iter()
         .any(|name| id.ends_with(&format!("\\{name}")))
@@ -216,14 +218,21 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     if config.apps.iter().any(|id| protected(id)) && config.mode == Mode::Standard {
         return Err("System recovery applications cannot be blocked.".into());
     }
+    if config.mode == Mode::Strict && config.apps.is_empty() && config.browser_app.is_empty() {
+        return Err("Choose a work app or browser for Strict mode.".into());
+    }
     if config.apps_required() && !config.activity_consent {
         return Err("Application restrictions require visible activity-monitoring consent.".into());
     }
-    if config.mode == Mode::Strict && config.general_internet && config.domains.is_empty() {
+    if config.mode == Mode::Strict
+        && !config.browser_app.is_empty()
+        && config.general_internet
+        && config.domains.is_empty()
+    {
         return Err("Strict mode needs an approved domain list, or browser offline mode.".into());
     }
     if config.network_required() && !supported_browser(&config.browser_app) {
-        return Err("Select a supported Chromium browser and pair its extension.".into());
+        return Err("Choose your browser and connect it in Settings → Connections.".into());
     }
     if config.mode == Mode::Standard && config.apps.iter().any(|a| a == &config.browser_app) {
         return Err("The paired browser cannot also be in the app blocklist.".into());
@@ -272,6 +281,27 @@ impl FocusReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comet_pairing_and_app_only_strict_policy() {
+        assert!(supported_browser("ai.perplexity.comet"));
+        let app_only = FocusConfig {
+            mode: Mode::Strict,
+            apps: vec!["com.microsoft.VSCode".into()],
+            activity_consent: true,
+            ..Default::default()
+        };
+        assert!(!app_only.network_required());
+        assert!(validate(app_only.clone()).is_ok());
+        assert!(app_only.blocked("ai.perplexity.comet"));
+        let browser = FocusConfig {
+            browser_app: "ai.perplexity.comet".into(),
+            domains: vec!["docs.rs".into()],
+            ..app_only
+        };
+        assert!(browser.network_required());
+        assert!(validate(browser.clone()).is_ok());
+        assert!(!browser.blocked("ai.perplexity.comet"));
+    }
     #[test]
     fn normalizes_domains_and_rejects_injection() {
         assert_eq!(

@@ -87,9 +87,11 @@ it('creates a session with its selected pause policy', async () => {
   window.location.hash = '#/sessions';
   render(<App />);
   await screen.findByRole('heading', { name: 'Focus Sessions' });
-  await user.type(screen.getByLabelText('Your intention'), 'Write outline');
+  await user.type(screen.getByLabelText('Task name'), 'Write outline');
+  await user.click(screen.getByRole('radio', { name: /Manual check-ins/ }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByText('More options'));
   await user.click(screen.getByLabelText('Allow pausing'));
   vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
   await user.click(screen.getByRole('button', { name: 'Create session' }));
@@ -106,7 +108,10 @@ it('creates a session with its selected pause policy', async () => {
       browser_app: '',
       activity_consent: false,
       camera: false,
-      attention: defaultFocus.attention,
+      attention: {
+        ...defaultFocus.attention,
+        verification: 'manual_checkpoints',
+      },
     },
   });
 });
@@ -158,16 +163,50 @@ it('shows backend attention pauses and sends explicit manual checkpoints', async
   vi.mocked(api.execute).mockResolvedValue(state);
   useAppStore.setState({ data: state });
   render(<App />);
-  expect(await screen.findByText('UNKNOWN')).toBeInTheDocument();
+  expect(await screen.findByText('Checking focus')).toBeInTheDocument();
   expect(screen.getByText('Confirm current work')).toBeInTheDocument();
   expect(screen.getByLabelText('Time remaining')).toHaveTextContent('00:45');
   await userEvent.click(
     screen.getByRole('button', {
-      name: 'I am working · accept next 60 seconds',
+      name: "I'm working · count 1 minute",
     }),
   );
   expect(api.execute).toHaveBeenCalledWith({
     type: 'confirm_work',
     id: 'attention',
   });
+});
+
+it('shows Comet and stops unpaired website setup before session creation', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'ai.perplexity.comet', name: 'Comet' }],
+    browsers: [{ id: 'ai.perplexity.comet', name: 'Comet' }],
+  });
+  const user = userEvent.setup();
+  window.location.hash = '#/sessions';
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.type(screen.getByLabelText('Task name'), 'Read docs');
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('checkbox', { name: 'Comet' }));
+  expect(screen.getByLabelText('Which browser?')).toHaveValue(
+    'ai.perplexity.comet',
+  );
+  await user.type(screen.getByLabelText('Websites for this task'), 'docs.rs');
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Connect the browser extension',
+  );
+  expect(
+    screen.getByRole('button', { name: 'Open Extensions' }),
+  ).toBeInTheDocument();
+  expect(api.execute).not.toHaveBeenCalled();
+});
+it('keeps the removed sidebar section empty', async () => {
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Make room for deep work.' });
+  expect(screen.queryByText('Your focus. Your space.')).not.toBeInTheDocument();
+  expect(screen.queryByText('Privacy & capabilities')).not.toBeInTheDocument();
 });

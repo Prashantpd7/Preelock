@@ -97,6 +97,7 @@ export interface BrowserStatus {
   cleanup_pending: boolean;
 }
 export interface FocusSetup {
+  browsers?: { id: string; name: string }[];
   extension_directory?: string;
   platform: string;
   native_available: boolean;

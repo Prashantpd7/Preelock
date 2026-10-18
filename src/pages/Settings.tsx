@@ -1,21 +1,20 @@
 import { useState } from 'react';
 import { PermissionsPanel } from '../components/PermissionsPanel';
-import { ShieldCheck } from 'lucide-react';
 import { PageHeading } from '../components/ui';
 import { useAppStore } from '../state/store';
 import { desktop } from '../services/api';
 import type { Preferences } from '../types';
 export function Settings() {
-  const { data, capabilities, execute, busy } = useAppStore();
+  const { data, execute, busy } = useAppStore();
   const [theme, setTheme] = useState(data.preferences.theme);
   const [minutes, setMinutes] = useState(data.preferences.default_minutes);
   const [saved, setSaved] = useState(false);
   return (
     <>
       <PageHeading
-        eyebrow="MAKE IT YOURS"
+        eyebrow=""
         title="Settings"
-        description="A workspace that respects your preferences and your privacy."
+        description="Make VYSTRIQ work for you."
       />
       <form
         className="panel form-panel"
@@ -30,7 +29,7 @@ export function Settings() {
           );
         }}
       >
-        <h2>Workspace preferences</h2>
+        <h2>General</h2>
         <div className="form-grid">
           <label className="grow">
             Appearance
@@ -47,7 +46,7 @@ export function Settings() {
             </select>
           </label>
           <label>
-            Default session minutes
+            Default focus time (minutes)
             <input
               type="number"
               required
@@ -62,49 +61,15 @@ export function Settings() {
           </label>
         </div>
         <div className="row">
-          <button disabled={busy || !desktop}>Save preferences</button>
+          <button disabled={busy || !desktop}>Save</button>
           {saved && (
             <span role="status" className="muted">
-              Preferences saved.
+              Saved.
             </span>
           )}
         </div>
       </form>
       <PermissionsPanel />
-      <section className="panel privacy-panel">
-        <ShieldCheck size={24} />
-        <h2>Local by design</h2>
-        <p className="muted">
-          Tasks, sessions, consented activity summaries and preferences stay in
-          SQLite on this device. No account or cloud connection is required.
-          Camera and activity sampling require per-session consent.
-        </p>
-        <p className="muted">
-          Standard sessions can end directly. Strict sessions require the
-          deliberate emergency exit. System recovery always remains accessible.
-        </p>
-      </section>
-      <div className="section-heading">
-        <h2>Platform capabilities</h2>
-        <span className="badge">Capability checks</span>
-      </div>
-      <section className="panel">
-        {capabilities.length ? (
-          capabilities.map((c) => (
-            <div className="capability-row" key={c.id}>
-              <h3>
-                {c.name} ·{' '}
-                {c.available ? 'Available with setup' : 'Unavailable'}
-              </h3>
-              <p className="muted small">{c.reason}</p>
-            </div>
-          ))
-        ) : (
-          <p className="muted">
-            Open the desktop app to check native capabilities and browser setup.
-          </p>
-        )}
-      </section>
     </>
   );
 }

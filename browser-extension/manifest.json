@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VYSTRIQ Focus Bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "minimum_chrome_version": "120",
   "description": "Voluntary, session-scoped browser filtering paired with VYSTRIQ Desktop.",
   "permissions": [

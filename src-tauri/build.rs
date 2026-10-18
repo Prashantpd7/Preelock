@@ -23,6 +23,7 @@ fn main() {
             "execute",
             "capabilities",
             "focus_setup",
+            "open_setup",
             "request_camera",
             "reset_browser_pairing",
         ]),

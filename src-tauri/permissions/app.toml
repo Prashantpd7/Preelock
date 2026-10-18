@@ -27,3 +27,8 @@ commands.allow = ["request_camera"]
 identifier = "browser-pairing-reset"
 description = "Reset local browser pairing only when no session is active."
 commands.allow = ["reset_browser_pairing"]
+
+[[permission]]
+identifier = "open-setup"
+description = "Open the extension folder, selected supported browser extensions, or camera settings."
+commands.allow = ["open_setup"]

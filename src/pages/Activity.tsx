@@ -11,7 +11,7 @@ export function Activity() {
       <PageHeading
         eyebrow="YOUR WORK, OVER TIME"
         title="Activity"
-        description="Local session summaries, consented activity and recovery events."
+        description="Your past sessions."
       />
       <div className="session-list">
         {sessions.length ? (

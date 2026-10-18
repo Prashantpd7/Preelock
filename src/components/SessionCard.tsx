@@ -13,6 +13,22 @@ export function SessionCard({ session }: { session: Session }) {
   const committed = session.focus && session.focus.mode !== 'standard';
   const report = session.report;
   const attention = session.attention;
+  const stateNames: Record<string, string> = {
+    IDLE: 'Ready',
+    PREPARING: 'Connecting',
+    FOCUSED: 'Focusing',
+    DISTRACTED: 'Off task',
+    ABSENT: 'Away',
+    UNKNOWN: 'Checking focus',
+    RECOVERING: 'Checking connection',
+    COMPLETED: 'Completed',
+    EMERGENCY_EXIT: 'Stopped',
+  };
+  const policyNames: Record<string, string> = {
+    activity_only: 'Apps only',
+    camera_and_activity: 'Apps + camera',
+    manual_checkpoints: 'Manual check-ins',
+  };
   const [intervalId, setIntervalId] = useState('');
   const [note, setNote] = useState('');
   const reviewable =
@@ -62,25 +78,21 @@ export function SessionCard({ session }: { session: Session }) {
         >
           <p>
             <strong>
-              {session.status === 'paused' ? 'PAUSED BY YOU' : attention.state}
+              {session.status === 'paused'
+                ? 'Paused'
+                : stateNames[attention.state] || attention.state}
             </strong>{' '}
-            · {session.focus.attention.verification.replaceAll('_', ' ')}
+            · {policyNames[session.focus.attention.verification]}
           </p>
           <p role="status">{attention.reason || 'Waiting to start'}</p>
           <div className="report-metrics">
-            <span>Accepted {countdown(session.focused_ms)}</span>
-            <span>Elapsed {countdown(attention.elapsed_ms)}</span>
+            <span>Focus {countdown(session.focused_ms)}</span>
+            <span>Total {countdown(attention.elapsed_ms)}</span>
             <span>Distracted {countdown(attention.distracted_ms)}</span>
             <span>Absent {countdown(attention.absent_ms)}</span>
-            <span>Unknown / gaps {countdown(attention.unknown_ms)}</span>
-            <span>User corrections {countdown(attention.corrected_ms)}</span>
+            <span>Unverified {countdown(attention.unknown_ms)}</span>
+            <span>Corrected {countdown(attention.corrected_ms)}</span>
           </div>
-          <p className="muted small">
-            Restrictions stay active during attention pauses. Accepted time is
-            an estimate under your selected policy, not proof of learning.
-            Elapsed includes monitoring gaps; explicit session pauses are
-            excluded. Original classification totals retain corrected intervals.
-          </p>
           {session.status === 'running' &&
             session.focus.attention.verification === 'manual_checkpoints' && (
               <button
@@ -89,11 +101,11 @@ export function SessionCard({ session }: { session: Session }) {
                   void execute({ type: 'confirm_work', id: session.id })
                 }
               >
-                I am working · accept next 60 seconds
+                I'm working · count 1 minute
               </button>
             )}
           <details className="event-history">
-            <summary>Attention timeline & corrections</summary>
+            <summary>Review focus time</summary>
             <ul>
               {attention.intervals
                 .slice(-30)
@@ -128,9 +140,8 @@ export function SessionCard({ session }: { session: Session }) {
                 }}
               >
                 <p className="muted small">
-                  Correct a recent interval you know was productive. Corrections
-                  are labeled self-report and cannot credit sleep/restart gaps.
-                  Review window: latest 300 intervals.
+                  Fix time that was wrongly paused. Your correction is saved.
+                  Sleep and restart gaps cannot be added.
                 </p>
                 <label>
                   Interval
@@ -170,19 +181,17 @@ export function SessionCard({ session }: { session: Session }) {
         </section>
       )}
       {!session.focus?.attention?.enabled && (
-        <p className="muted small">
-          Legacy elapsed-time session; not verified productive time.
-        </p>
+        <p className="muted small">Older timer session · no focus checks.</p>
       )}
       {session.status === 'preparing' && (
         <p role="status" className="notice">
-          Waiting for the paired extension to install rules. Use Sync now in its
-          popup. The timer starts only after acknowledgement; setup times out
-          after 45 seconds.
+          Connecting to your browser… Open its VYSTRIQ extension and click
+          Reconnect.
         </p>
       )}
       {report && (
-        <div className="session-report">
+        <details className="session-report">
+          <summary>Activity details</summary>
           <p className="small">
             {report.enforcement ||
               'Restrictions activate when the session starts.'}
@@ -214,7 +223,12 @@ export function SessionCard({ session }: { session: Session }) {
               · estimates may be wrong.
             </p>
           )}
-        </div>
+        </details>
+      )}
+      {live && session.focus?.camera && (
+        <p className="small" role="status">
+          Camera: {report?.camera_status?.replaceAll('_', ' ') || 'starting'}
+        </p>
       )}
       <div className="row controls">
         {session.status === 'ready' && (
@@ -301,9 +315,8 @@ export function SessionCard({ session }: { session: Session }) {
           }}
         >
           <p>
-            Emergency exit releases restrictions and records an interruption in
-            your history. Browser cleanup requires the extension to sync; its
-            popup also has independent recovery.
+            Stop this session and release its blocks. If websites stay blocked,
+            use Emergency unblock in the browser extension.
           </p>
           <label>
             Type END FOCUS
@@ -320,9 +333,7 @@ export function SessionCard({ session }: { session: Session }) {
       )}
       {report?.events.length ? (
         <details className="event-history">
-          <summary>
-            Distraction & recovery history ({report.events.length})
-          </summary>
+          <summary>Session log ({report.events.length})</summary>
           <ul>
             {report.events
               .slice()
