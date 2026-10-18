@@ -39,3 +39,29 @@ export function week(sessions: Session[], now = new Date()) {
     };
   });
 }
+
+// Productive metrics deliberately exclude legacy wall-clock sessions.
+export function productiveStatistics(sessions: Session[]) {
+  const measured = sessions.filter((s) => s.focus?.attention?.enabled);
+  const accepted = measured.reduce((n, s) => n + s.focused_ms, 0);
+  const elapsed = measured.reduce(
+    (n, s) => n + (s.attention?.elapsed_ms ?? 0),
+    0,
+  );
+  return {
+    accepted,
+    elapsed,
+    distracted: measured.reduce(
+      (n, s) => n + (s.attention?.distracted_ms ?? 0),
+      0,
+    ),
+    unknown: measured.reduce((n, s) => n + (s.attention?.unknown_ms ?? 0), 0),
+    corrected: measured.reduce(
+      (n, s) => n + (s.attention?.corrected_ms ?? 0),
+      0,
+    ),
+    percentage: elapsed
+      ? Math.min(100, Math.round((accepted / elapsed) * 100))
+      : 0,
+  };
+}

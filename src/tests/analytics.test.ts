@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { countdown, statistics, week } from '../services/analytics';
-import type { Session } from '../types';
+import {
+  countdown,
+  productiveStatistics,
+  statistics,
+  week,
+} from '../services/analytics';
+import { defaultFocus, type Session } from '../types';
 const now = new Date(2026, 9, 18, 12).getTime();
 const session: Session = {
   id: 's',
@@ -42,5 +47,31 @@ describe('actual session analytics', () => {
   it('rounds the countdown up and clamps expired sessions', () => {
     expect(countdown(59_001)).toBe('01:00');
     expect(countdown(-1)).toBe('00:00');
+  });
+});
+
+it('excludes legacy time from productive metrics and keeps corrections transparent', () => {
+  const current: Session = {
+    ...session,
+    focus: defaultFocus,
+    focused_ms: 30000,
+    attention: {
+      state: 'UNKNOWN',
+      reason: 'Waiting',
+      elapsed_ms: 60000,
+      distracted_ms: 20000,
+      absent_ms: 0,
+      unknown_ms: 20000,
+      corrected_ms: 10000,
+      intervals: [],
+    },
+  };
+  expect(productiveStatistics([session, current])).toEqual({
+    accepted: 30000,
+    elapsed: 60000,
+    distracted: 20000,
+    unknown: 20000,
+    corrected: 10000,
+    percentage: 50,
   });
 });

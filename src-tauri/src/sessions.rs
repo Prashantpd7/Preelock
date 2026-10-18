@@ -15,7 +15,7 @@ fn minutes(value: u32) -> Result<u32, String> {
     Ok(value)
 }
 pub fn advance(s: &mut Session, elapsed: u64, now: i64) {
-    if s.status != Status::Running {
+    if s.status != Status::Running || s.focus.attention.enabled {
         return;
     }
     let used = elapsed.min(s.remaining_ms);
@@ -30,9 +30,10 @@ pub fn advance(s: &mut Session, elapsed: u64, now: i64) {
         s.deadline_ms = Some(now + s.remaining_ms as i64);
     }
 }
+#[cfg(test)]
 pub fn restore(data: &mut Snapshot, now: i64) {
     for s in &mut data.sessions {
-        if s.status == Status::Running {
+        if s.status == Status::Running && !s.focus.attention.enabled {
             let deadline = s.deadline_ms.unwrap_or(now);
             let remaining = deadline.saturating_sub(now).max(0) as u64;
             let overdue = now.saturating_sub(deadline).max(0) as u64;
@@ -52,8 +53,11 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             title: name,
             minutes: duration,
             allow_pause,
+            focus,
         } => {
             let duration = minutes(duration)?;
+            let mut focus = crate::focus::validate(focus)?;
+            focus.attention.enabled = true;
             data.sessions.push(Session {
                 id: uuid::Uuid::new_v4().to_string(),
                 title: title(name)?,
@@ -65,7 +69,74 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 started_at: None,
                 ended_at: None,
                 deadline_ms: None,
+                focus,
+                report: Default::default(),
+                attention: Default::default(),
             });
+        }
+        Action::EmergencyExit { id, confirmation } => {
+            if confirmation != "END FOCUS" {
+                return Err("Type END FOCUS to confirm emergency recovery.".into());
+            }
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if !matches!(
+                s.status,
+                Status::Running | Status::Paused | Status::Preparing
+            ) {
+                return Err("Session is not active.".into());
+            }
+            s.status = Status::Interrupted;
+            s.attention.state = crate::attention::State::EmergencyExit;
+            s.attention.reason = "Emergency recovery requested".into();
+            s.ended_at = Some(now);
+            s.deadline_ms = None;
+            s.report.event(
+                now,
+                "emergency_exit",
+                "Deliberate emergency exit; restrictions released.",
+            );
+        }
+        Action::ConfirmWork { id } => {
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if s.status != Status::Running || s.focus.attention.verification != "manual_checkpoints"
+            {
+                return Err("Manual confirmation is not enabled for this running session.".into());
+            }
+            s.report.event(
+                now,
+                "work_confirmation",
+                "User confirmed current work for a maximum of 60 seconds.",
+            );
+        }
+        Action::CorrectInterval {
+            id,
+            interval_id,
+            note,
+        } => {
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            crate::attention::correct(s, &interval_id, &note, now)?;
+        }
+        Action::DisableCamera { id } => {
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            s.focus.camera = false;
+            s.report
+                .event(now, "camera_disabled", "Camera consent withdrawn.");
         }
         Action::CreateTask { title: name } => data.tasks.push(Task {
             id: uuid::Uuid::new_v4().to_string(),
@@ -107,10 +178,13 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 _ => unreachable!(),
             };
             if target == Status::Running
-                && data
-                    .sessions
-                    .iter()
-                    .any(|s| s.id != id && matches!(s.status, Status::Running | Status::Paused))
+                && data.sessions.iter().any(|s| {
+                    s.id != id
+                        && matches!(
+                            s.status,
+                            Status::Running | Status::Paused | Status::Preparing
+                        )
+                })
             {
                 return Err("End the current session before starting another.".into());
             }
@@ -122,11 +196,20 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             if expected.is_some_and(|expected| s.status != expected) {
                 return Err("This session does not allow that action.".into());
             }
+            if s.focus.mode != crate::focus::Mode::Standard
+                && s.status != Status::Ready
+                && matches!(target, Status::Paused | Status::Ended)
+            {
+                return Err("Committed sessions require the deliberate emergency exit.".into());
+            }
             let valid = match target {
                 Status::Running => matches!(s.status, Status::Ready | Status::Paused),
                 Status::Paused => s.status == Status::Running && s.allow_pause,
                 Status::Ended => {
-                    matches!(s.status, Status::Running | Status::Paused | Status::Ready)
+                    matches!(
+                        s.status,
+                        Status::Running | Status::Paused | Status::Ready | Status::Preparing
+                    )
                 }
                 _ => false,
             };
@@ -161,12 +244,14 @@ mod tests {
                 title: "Study".into(),
                 minutes: 1,
                 allow_pause,
+                focus: Default::default(),
             },
             1000,
         )
         .unwrap();
         let id = d.sessions[0].id.clone();
         apply(&mut d, Action::StartSession { id }, 1000).unwrap();
+        d.sessions[0].focus.attention.enabled = false;
         d
     }
     #[test]
@@ -214,6 +299,7 @@ mod tests {
                 title: "Second".into(),
                 minutes: 2,
                 allow_pause: true,
+                focus: Default::default(),
             },
             1,
         )
@@ -227,5 +313,48 @@ mod tests {
         advance(&mut d.sessions[0], 10_000, -100_000);
         assert_eq!(d.sessions[0].remaining_ms, 50_000);
         assert_eq!(d.sessions[0].focused_ms, 10_000);
+    }
+    #[test]
+    fn strict_commitment_requires_deliberate_emergency_exit() {
+        let mut d = data(true);
+        d.sessions[0].focus.mode = crate::focus::Mode::Strict;
+        let id = d.sessions[0].id.clone();
+        assert!(apply(&mut d, Action::PauseSession { id: id.clone() }, 2000).is_err());
+        assert!(apply(&mut d, Action::EndSession { id: id.clone() }, 2000).is_err());
+        assert!(apply(
+            &mut d,
+            Action::EmergencyExit {
+                id: id.clone(),
+                confirmation: "yes".into()
+            },
+            2000
+        )
+        .is_err());
+        apply(
+            &mut d,
+            Action::EmergencyExit {
+                id,
+                confirmation: "END FOCUS".into(),
+            },
+            2000,
+        )
+        .unwrap();
+        assert_eq!(d.sessions[0].status, Status::Interrupted);
+        assert!(d.sessions[0].deadline_ms.is_none());
+        assert_eq!(
+            d.sessions[0].report.events.last().unwrap().kind,
+            "emergency_exit"
+        );
+    }
+    #[test]
+    fn legacy_records_get_safe_defaults() {
+        let d = data(true);
+        let mut json = serde_json::to_value(&d.sessions[0]).unwrap();
+        json.as_object_mut().unwrap().remove("focus");
+        json.as_object_mut().unwrap().remove("report");
+        let old: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(old.focus.mode, crate::focus::Mode::Standard);
+        assert!(!old.focus.activity_consent);
+        assert!(!old.focus.camera);
     }
 }

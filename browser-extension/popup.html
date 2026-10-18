@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VYSTRIQ Focus</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>VYSTRIQ Focus</h1>
+    <p>
+      Filtering applies only in this browser profile. Localhost and browser
+      recovery pages remain available.
+    </p>
+    <form id="pair">
+      <label
+        >Desktop pairing token<input
+          id="token"
+          type="password"
+          required
+          minlength="64"
+          maxlength="64"
+          autocomplete="off" /></label
+      ><button>Pair / reconnect</button>
+    </form>
+    <button id="retry">Sync now</button>
+    <button id="self-test">Test installed browser matcher</button>
+    <p id="status" role="status"></p>
+    <details>
+      <summary>Emergency browser recovery</summary>
+      <p>
+        Releases all VYSTRIQ rules in this profile. The desktop records loss of
+        enforcement. Re-pair before starting another session.
+      </p>
+      <input
+        id="confirm"
+        aria-label="Type END FOCUS"
+        placeholder="Type END FOCUS"
+      /><button id="release">Release browser restrictions</button>
+    </details>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

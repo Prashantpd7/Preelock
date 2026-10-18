@@ -1,9 +1,9 @@
 import { PageHeading, Empty } from '../components/ui';
+import { SessionCard } from '../components/SessionCard';
 import { useAppStore } from '../state/store';
-import { formatDuration } from '../services/analytics';
 export function Activity() {
   const sessions = useAppStore((s) => s.data.sessions)
-    .filter((s) => s.started_at !== null)
+    .filter((s) => s.started_at !== null || s.status === 'interrupted')
     .slice()
     .reverse();
   return (
@@ -11,36 +11,17 @@ export function Activity() {
       <PageHeading
         eyebrow="YOUR WORK, OVER TIME"
         title="Activity"
-        description="A record of your focus sessions. Device monitoring is not enabled."
+        description="Local session summaries, consented activity and recovery events."
       />
-      <div className="panel table-panel">
+      <div className="session-list">
         {sessions.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Session</th>
-                <th>Started</th>
-                <th>Focused</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <tr key={s.id}>
-                  <td>{s.title}</td>
-                  <td>{new Date(s.started_at!).toLocaleString()}</td>
-                  <td>{formatDuration(s.focused_ms)}</td>
-                  <td>
-                    <span className="badge">{s.status}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          sessions.map((s) => <SessionCard key={s.id} session={s} />)
         ) : (
-          <Empty>
-            No activity yet. Start a focus session to build your history.
-          </Empty>
+          <div className="panel">
+            <Empty>
+              No activity yet. Start a focus session to build your history.
+            </Empty>
+          </div>
         )}
       </div>
     </>

@@ -1,0 +1,41 @@
+body {
+  width: 330px;
+  background: #141715;
+  color: #e8ece8;
+  font: 13px system-ui;
+  padding: 18px;
+  line-height: 1.6;
+}
+h1 {
+  font-size: 20px;
+}
+label {
+  display: block;
+}
+input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 10px;
+  background: #222922;
+  color: #fff;
+  border: 1px solid #485146;
+  border-radius: 6px;
+}
+button {
+  background: #c3ed9b;
+  color: #172213;
+  border: 0;
+  border-radius: 6px;
+  padding: 10px;
+  margin: 8px 0;
+  cursor: pointer;
+}
+p {
+  color: #b4beb4;
+}
+details {
+  border-top: 1px solid #485146;
+  padding-top: 12px;
+}

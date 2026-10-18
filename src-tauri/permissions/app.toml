@@ -12,3 +12,18 @@ commands.allow = ["execute"]
 identifier = "read-capabilities"
 description = "Read native capability availability."
 commands.allow = ["capabilities"]
+
+[[permission]]
+identifier = "focus-setup"
+description = "Inspect running app choices, camera consent and local browser pairing."
+commands.allow = ["focus_setup"]
+
+[[permission]]
+identifier = "camera-consent"
+description = "Request camera permission after an explicit user action."
+commands.allow = ["request_camera"]
+
+[[permission]]
+identifier = "browser-pairing-reset"
+description = "Reset local browser pairing only when no session is active."
+commands.allow = ["reset_browser_pairing"]

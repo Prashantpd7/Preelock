@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Ready,
+    Preparing,
     Running,
     Paused,
     Completed,
     Ended,
+    Interrupted,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -22,6 +24,12 @@ pub struct Session {
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
     pub deadline_ms: Option<i64>,
+    #[serde(default)]
+    pub focus: crate::focus::FocusConfig,
+    #[serde(default)]
+    pub report: crate::focus::FocusReport,
+    #[serde(default)]
+    pub attention: crate::attention::Tracking,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,6 +59,8 @@ pub struct Snapshot {
     pub sessions: Vec<Session>,
     pub tasks: Vec<Task>,
     pub preferences: Preferences,
+    #[serde(skip_deserializing, default)]
+    pub browser: Option<crate::browser::BrowserStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +70,8 @@ pub enum Action {
         title: String,
         minutes: u32,
         allow_pause: bool,
+        #[serde(default)]
+        focus: crate::focus::FocusConfig,
     },
     StartSession {
         id: String,
@@ -71,6 +83,21 @@ pub enum Action {
         id: String,
     },
     EndSession {
+        id: String,
+    },
+    EmergencyExit {
+        id: String,
+        confirmation: String,
+    },
+    ConfirmWork {
+        id: String,
+    },
+    CorrectInterval {
+        id: String,
+        interval_id: String,
+        note: String,
+    },
+    DisableCamera {
         id: String,
     },
     CreateTask {

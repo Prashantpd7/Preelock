@@ -1,9 +1,15 @@
 import { PageHeading, Stat } from '../components/ui';
 import { useAppStore } from '../state/store';
-import { formatDuration, statistics, week } from '../services/analytics';
+import {
+  formatDuration,
+  productiveStatistics,
+  statistics,
+  week,
+} from '../services/analytics';
 export function Analytics() {
   const { sessions, tasks } = useAppStore((s) => s.data);
   const stats = statistics(sessions, tasks);
+  const productive = productiveStatistics(sessions);
   const days = week(sessions);
   const max = Math.max(...days.map((d) => d.ms), 60_000);
   return (
@@ -15,14 +21,31 @@ export function Analytics() {
       />
       <div className="stats-grid">
         <Stat
-          label="Total focus"
+          label="Accepted productive time"
+          value={formatDuration(productive.accepted)}
+          detail="Activity estimates and labeled self-report; excludes legacy timers"
+        />
+        <Stat
+          label="Elapsed study time"
+          value={formatDuration(productive.elapsed)}
+          detail="Includes unknown intervals and monitoring gaps"
+        />
+        <Stat
+          label="Distracted time"
+          value={formatDuration(productive.distracted)}
+          detail={`${productive.percentage}% accepted focus · ${formatDuration(productive.unknown)} unknown / gaps`}
+        />
+      </div>
+      <div className="stats-grid">
+        <Stat
+          label="All recorded focus"
           value={formatDuration(stats.total)}
-          detail="Includes time in sessions ended early"
+          detail="Includes legacy elapsed-time sessions"
         />
         <Stat
           label="Completed sessions"
           value={String(stats.completed)}
-          detail="Sessions that reached their deadline"
+          detail="Sessions that reached their target"
         />
         <Stat
           label="Tasks completed"

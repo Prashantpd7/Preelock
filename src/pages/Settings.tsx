@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PermissionsPanel } from '../components/PermissionsPanel';
 import { ShieldCheck } from 'lucide-react';
 import { PageHeading } from '../components/ui';
 import { useAppStore } from '../state/store';
@@ -69,36 +70,38 @@ export function Settings() {
           )}
         </div>
       </form>
+      <PermissionsPanel />
       <section className="panel privacy-panel">
         <ShieldCheck size={24} />
         <h2>Local by design</h2>
         <p className="muted">
-          Tasks, sessions and preferences stay in SQLite on this device. No
-          account, cloud connection, camera, screen capture or activity tracking
-          is active.
+          Tasks, sessions, consented activity summaries and preferences stay in
+          SQLite on this device. No account or cloud connection is required.
+          Camera and activity sampling require per-session consent.
         </p>
         <p className="muted">
-          Session timers are a focus aid. You can always end a session or quit
-          the app. They do not lock your device.
+          Standard sessions can end directly. Strict sessions require the
+          deliberate emergency exit. System recovery always remains accessible.
         </p>
       </section>
       <div className="section-heading">
-        <h2>Future capabilities</h2>
-        <span className="badge">Not implemented</span>
+        <h2>Platform capabilities</h2>
+        <span className="badge">Capability checks</span>
       </div>
       <section className="panel">
         {capabilities.length ? (
           capabilities.map((c) => (
             <div className="capability-row" key={c.id}>
-              <h3>{c.name}</h3>
+              <h3>
+                {c.name} ·{' '}
+                {c.available ? 'Available with setup' : 'Unavailable'}
+              </h3>
               <p className="muted small">{c.reason}</p>
             </div>
           ))
         ) : (
           <p className="muted">
-            App and website restrictions, device monitoring, camera analysis, AI
-            verification and reminders are planned. No permissions are requested
-            in Phase 1.
+            Open the desktop app to check native capabilities and browser setup.
           </p>
         )}
       </section>

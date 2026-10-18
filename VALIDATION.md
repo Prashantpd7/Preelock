@@ -1,4 +1,45 @@
-# Phase 1 validation — 18 October 2026
+# Productive-time implementation — v0.3
+
+Current implementation adds Rust attention accounting, conservative recovery, app/domain/camera signal integration, explicit fallback, corrections, SQLite interval journaling and close-to-background lifecycle. Legacy elapsed records remain clearly labeled. Final checks: 28 Vitest tests; 26 Rust tests; strict TypeScript, ESLint, Prettier, Rustfmt and Clippy pass. Production frontend and ARM64 Tauri v0.3.0 bundle built. Read-only native app enumeration, foreground/idle and camera authorization probe passed. No camera permission was granted.
+
+The actual rebuilt app was launched from `src-tauri/target/release/bundle/macos/VYSTRIQ.app`; its running process path, bundle version 0.3.0 and native accessibility tree (`tauri://localhost`) were verified. A real one-minute manual-policy session stayed at 01:00 while UNKNOWN, accepted time only after explicit confirmation, continued after window close/reopen, and ended through typed emergency recovery. The labeled validation session remains in local history. This establishes packaged frontend-to-Rust/SQLite behavior for manual policy, not camera or installed browser enforcement.
+
+Still manual: load/reload and pair the Chromium extension (including new tabs permission), run its popup matcher self-test, test allow/blocked sites, and grant opt-in camera permission to evaluate actual capture/presence accuracy. Foreground APIs were probed, but hiding the user's apps and camera accuracy were not exercised. Windows runtime, phone/head-direction detection, learning/playback/file-progress verification, system-wide network enforcement, managed Deep Focus and signing/notarization remain unverified or unavailable. No public application release was created.
+
+## Historical Phase 2 validation
+
+18 October 2026
+
+Validated on Apple Silicon macOS using Node 24.13.1 and Rust 1.99.1. The existing repository was clean on main tracking origin/main at the start. No commit, push, remote change, destructive OS-policy test or camera permission request was performed.
+
+| Check                                                      | Result                                                                                             |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Strict TypeScript, ESLint                                  | Passed                                                                                             |
+| Frontend + extension rule tests                            | 11 passed across 3 files                                                                           |
+| Rust domain + real loopback transport tests                | 19 passed                                                                                          |
+| Rustfmt and Clippy (warnings denied)                       | Passed                                                                                             |
+| Prettier                                                   | Passed                                                                                             |
+| Frontend production build                                  | Passed                                                                                             |
+| Native macOS read-only probe                               | Passed: running-app enumeration, foreground identity, idle-time API and camera authorization query |
+| Tauri macOS ARM64 app bundle                               | Built successfully; includes camera usage metadata and browser extension resources                 |
+| Windows adapter cross-target type checking                 | Passed against windows-sys 0.61.2 for x86_64-pc-windows-msvc in an isolated harness                |
+| Full Windows/Intel macOS build and real-device enforcement | Not run here; CI configured                                                                        |
+| Live app hiding/minimizing                                 | Not exercised against the user's applications                                                      |
+| Installed browser extension enforcement/matcher            | Not exercised in a live browser; extension contains an installed-matcher self-test                 |
+| Actual camera capture/presence accuracy                    | Not exercised; permission not requested                                                            |
+| Native visual smoke test                                   | Not repeated after the Phase 1 screen-capture service failure                                      |
+
+Rust tests cover configuration/domain validation, unsupported capabilities, legacy data, strict commitment and emergency exit, countdown completion, SQLite persistence/restart, browser preparation/acknowledgement/timeout/loss, cleanup, a simulated database write failure, real authenticated loopback requests, token rotation and short-lived network profiles. Frontend tests cover existing navigation/tasks, the new session wizard and pure browser rule compilation. Unit-test acknowledgement helpers are test-only; production requires a real extension acknowledgement.
+
+The native probe is read-only and does not establish that every application's window can be hidden or that a camera model performs reliably. The Windows harness checks Win32 API types, not linking the entire Tauri application or running it. Browser filtering still requires loading/pairing the extension; it is not active merely because the build passes. Run the explicit manual checks in docs/FOCUS_MODE.md before relying on restrictions.
+
+CI now includes the read-only Mac probe alongside the existing frontend, Rust and platform bundle jobs. No CI run is claimed. The final app is at `src-tauri/target/release/bundle/macos/VYSTRIQ.app`. Release signing/notarization and production distribution remain pending.
+
+Phase 3 priorities: live platform/browser/camera testing, managed-policy design with administrator recovery, bridge hardening, retention/backup and signed releases. Deep Focus, system-wide network controls, Windows camera analysis, phone detection and learning/task verification are unavailable.
+
+---
+
+## Historical Phase 1 validation — 18 October 2026
 
 Validated in the existing project root on Apple Silicon macOS using Node 24.13.1, npm 11.8.0 and Rust 1.99.1 (isolated temporary installation).
 

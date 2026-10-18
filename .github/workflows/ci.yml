@@ -47,6 +47,8 @@ jobs:
       - run: npm ci
       - run: npm run rust:check
       - run: npm run rust:test
+      - if: runner.os == 'macOS'
+        run: npm run native:probe
       - run: npm run desktop:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
         with:

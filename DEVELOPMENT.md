@@ -64,10 +64,18 @@ Install Rust normally using the prerequisite commands for a durable setup; tempo
 macOS: `~/Library/Application Support/com.vystriq.desktop/vystriq.sqlite`.
 Windows: `%APPDATA%\com.vystriq.desktop\vystriq.sqlite`.
 
-Quit VYSTRIQ before backing up the database and any `-wal`/`-shm` sidecars. If startup reports a corrupted or newer database, preserve those files, verify the matching application version and restore a known-good backup. Do not delete user data automatically. To deliberately start fresh, move the closed application's entire data directory to a backup location and relaunch. Ordinary restarts restore active and paused sessions automatically. No device restrictions exist in Phase 1; ending a session or quitting is always safe.
+Quit VYSTRIQ before backing up the database and any `-wal`/`-shm` sidecars. If startup reports a corrupted or newer database, preserve those files, verify the matching application version and restore a known-good backup. Do not delete user data automatically. To deliberately start fresh, move the closed application's entire data directory to a backup location and relaunch. Ordinary restarts restore session timing; browser-dependent sessions re-enter preparation and must receive fresh extension acknowledgement. Paused sessions remain paused. Phase 2 app redirection stops when VYSTRIQ quits. Browser recovery is independently available in the extension; see docs/FOCUS_MODE.md. Reopen hidden/minimized apps normally.
 
 ## Builds and CI
 
 CI validates frontend and native Rust, builds Windows x64 NSIS and macOS ARM64/Intel app bundles, and uploads build artifacts. Intel macOS is cross-compiled on the macOS runner; Rust tests run on the runner's host architecture. CI configuration is not proof of successful execution. Use native hardware for release smoke tests. Unsigned builds are development artifacts; signing, notarization, Windows publisher identity, update signing and release distribution are not configured. Gatekeeper may flag unsigned builds.
 
-The bundle identifier is `com.vystriq.desktop`; verify ownership before a public release. No GitHub remote was supplied in the empty local folder. Git was initialized on main; add your existing repository remote only after confirming its URL and history. Do not force-push over existing remote history.
+The bundle identifier is `com.vystriq.desktop`; verify ownership before a public release. Phase 2 began on a clean main branch tracking origin/main. The existing remote and history were preserved; no commits or pushes were made during Phase 2.
+
+## Phase 2 native checks
+
+`npm run native:probe` on macOS builds a read-only native API probe. It verifies application enumeration, foreground identity, idle sampling and the authorization query without requesting camera access or hiding anything. `npm test` also includes extension rule-compiler tests. Rust integration tests bind ephemeral loopback ports; sandboxed environments must permit localhost test servers.
+
+The macOS build compiles `native/macos.m` with Apple's Clang and links AppKit, AVFoundation, Vision, CoreGraphics, CoreMedia and CoreVideo. The bundle includes a camera usage description and camera entitlement; neither grants camera consent. Windows uses supported Win32 APIs and needs no administrator rights for same-user foreground minimization. Elevated/protected windows can refuse access, which interrupts the session visibly.
+
+The browser bridge binds only `127.0.0.1:47832`. A port conflict disables browser setup; the app reports it rather than killing another process. Do not expose this port beyond loopback. Pairing tokens reside in the private application data directory and should not be shared. Reset pairing from Settings when no session is active.

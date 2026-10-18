@@ -1,16 +1,23 @@
 import { Link } from 'react-router-dom';
 import { ArrowRight, Plus, Sparkles } from 'lucide-react';
 import { useAppStore } from '../state/store';
-import { formatDuration, statistics } from '../services/analytics';
+import {
+  formatDuration,
+  productiveStatistics,
+  statistics,
+} from '../services/analytics';
 import { Empty, PageHeading, Stat } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
 import { TaskList } from '../components/TaskList';
 export function Dashboard() {
   const { sessions, tasks } = useAppStore((s) => s.data);
   const stats = statistics(sessions, tasks);
-  const active = sessions.find((s) => ['running', 'paused'].includes(s.status));
+  const productive = productiveStatistics(sessions);
+  const active = sessions.find((s) =>
+    ['preparing', 'running', 'paused'].includes(s.status),
+  );
   const recent = sessions
-    .filter((s) => ['ended', 'completed'].includes(s.status))
+    .filter((s) => ['ended', 'completed', 'interrupted'].includes(s.status))
     .slice(-3)
     .reverse();
   return (
@@ -28,8 +35,30 @@ export function Dashboard() {
       />
       <div className="stats-grid">
         <Stat
-          label="Focus today"
-          value={formatDuration(stats.today)}
+          label="Accepted productive time"
+          value={formatDuration(productive.accepted)}
+          detail="Activity estimates and labeled self-report; excludes legacy timers"
+        />
+        <Stat
+          label="Elapsed study time"
+          value={formatDuration(productive.elapsed)}
+          detail="Includes unknown intervals and monitoring gaps"
+        />
+        <Stat
+          label="Distracted time"
+          value={formatDuration(productive.distracted)}
+          detail={`${productive.percentage}% accepted focus · ${formatDuration(productive.unknown)} unknown / gaps`}
+        />
+      </div>
+      <div className="stats-grid">
+        <Stat
+          label="Accepted today"
+          value={formatDuration(
+            statistics(
+              sessions.filter((s) => s.focus?.attention?.enabled),
+              tasks,
+            ).today,
+          )}
           detail="Time from sessions started today"
         />
         <Stat
@@ -67,7 +96,9 @@ export function Dashboard() {
               <Link className="button" to="/sessions">
                 Create a focus session <ArrowRight size={16} />
               </Link>
-              <small>No blocks or monitoring. Just space to focus.</small>
+              <small>
+                Choose your boundaries and monitoring policy before starting.
+              </small>
             </div>
           )}
         </section>

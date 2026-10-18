@@ -3,5 +3,12 @@
   "identifier": "main",
   "description": "Only the local main window can access the focus application commands.",
   "windows": ["main"],
-  "permissions": ["read-state", "change-state", "read-capabilities"]
+  "permissions": [
+    "read-state",
+    "change-state",
+    "read-capabilities",
+    "focus-setup",
+    "camera-consent",
+    "browser-pairing-reset"
+  ]
 }
