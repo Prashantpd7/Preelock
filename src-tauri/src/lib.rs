@@ -101,7 +101,7 @@ pub fn run() {
         let show=tauri::menu::MenuItem::with_id(app,"show","Open VYSTRIQ / Emergency exit",true,None::<&str>)?;
         let quit=tauri::menu::MenuItem::with_id(app,"quit","Quit and release restrictions",true,None::<&str>)?;
         let menu=tauri::menu::Menu::with_items(app,&[&show,&quit])?;
-        let mut tray=tauri::tray::TrayIconBuilder::with_id("focus-controller").title("VY").tooltip("VYSTRIQ focus controller").menu(&menu).on_menu_event(|app,event|match event.id.as_ref(){"show"=>show_window(app),"quit"=>self::quit(app),_=>{}});
+        let mut tray=tauri::tray::TrayIconBuilder::with_id("focus-controller").tooltip("VYSTRIQ focus controller").menu(&menu).on_menu_event(|app,event|match event.id.as_ref(){"show"=>show_window(app),"quit"=>self::quit(app),_=>{}});
         if let Some(icon)=app.default_window_icon(){tray=tray.icon(icon.clone());}
         tray.build(app)?;
         let handle=app.handle().clone();
