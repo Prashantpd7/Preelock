@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "read-state"
+description = "Read local application state."
+commands.allow = ["snapshot"]
+
+[[permission]]
+identifier = "change-state"
+description = "Mutate validated local tasks, preferences and focus sessions."
+commands.allow = ["execute"]
+
+[[permission]]
+identifier = "read-capabilities"
+description = "Read native capability availability."
+commands.allow = ["capabilities"]

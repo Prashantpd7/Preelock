@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Only the local main window can access the focus application commands.",
+  "windows": ["main"],
+  "permissions": ["read-state", "change-state", "read-capabilities"]
+}
