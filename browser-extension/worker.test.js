@@ -111,3 +111,25 @@ it('releases rules on connection failure and supports deliberate emergency relea
   expect(session.error).toContain('Open the desktop app');
   expect(rules).toEqual([]);
 });
+it('runs requested browser checks and acknowledges the result without leaving rules', async () => {
+  const matches = [true, false, false, true, false, true];
+  chrome.declarativeNetRequest.testMatchOutcome = vi.fn(async () => ({
+    matchedRules: matches.shift() ? [{}] : [],
+  }));
+  let first = true;
+  const request = vi.fn(async () => {
+    const test_id = first ? 'desktop-test' : '';
+    first = false;
+    return { ok: true, json: async () => ({ policy: null, test_id }) };
+  });
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(
+    request.mock.calls.some(
+      ([, opts]) =>
+        JSON.parse(opts.body).test_result === 'Passed · 6 browser checks',
+    ),
+  ).toBe(true);
+  expect(rules).toEqual([]);
+});

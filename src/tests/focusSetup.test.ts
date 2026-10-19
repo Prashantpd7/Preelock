@@ -28,6 +28,7 @@ it('permits app-only Strict sessions without forcing extension setup', () => {
 it('requires consent and camera permission for camera-based focus', () => {
   const focus = {
     ...structuredClone(defaultFocus),
+    activity_consent: false,
     attention: {
       ...defaultFocus.attention!,
       work_apps: ['com.microsoft.VSCode'],

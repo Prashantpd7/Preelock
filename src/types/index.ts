@@ -27,9 +27,28 @@ export interface Task {
   completed: boolean;
   created_at: number;
 }
+export interface SavedSetup {
+  id: string;
+  name: string;
+  minutes: number;
+  focus: FocusConfig;
+}
 export interface Preferences {
   theme: 'dark' | 'light' | 'system';
   default_minutes: number;
+  large_text?: boolean;
+  menu_timer?: boolean;
+  daily_goal?: number;
+  session_alert?: boolean;
+  sound?: boolean;
+  volume?: number;
+  reminder?: boolean;
+  reminder_time?: string;
+  reminder_days?: number[];
+  offer_break?: boolean;
+  break_minutes?: number;
+  break_alert?: boolean;
+  saved_setups?: SavedSetup[];
 }
 export interface Snapshot {
   sessions: Session[];
@@ -44,6 +63,7 @@ export interface Capability {
   reason: string;
 }
 export type Action =
+  | { type: 'update_preferences'; preferences: Preferences }
   | {
       type: 'create_session';
       title: string;
@@ -53,7 +73,11 @@ export type Action =
     }
   | {
       type:
-        'start_session' | 'pause_session' | 'resume_session' | 'end_session';
+        | 'start_session'
+        | 'pause_session'
+        | 'resume_session'
+        | 'end_session'
+        | 'delete_session';
       id: string;
     }
   | { type: 'emergency_exit'; id: string; confirmation: string }
@@ -112,7 +136,7 @@ export const defaultFocus: FocusConfig = {
   domains: [],
   general_internet: true,
   browser_app: '',
-  activity_consent: false,
+  activity_consent: true,
   camera: false,
   attention: {
     enabled: true,

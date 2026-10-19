@@ -1,86 +1,152 @@
+import { useState } from 'react';
 import { PageHeading, Stat } from '../components/ui';
 import { useAppStore } from '../state/store';
 import {
-  formatDuration,
-  productiveStatistics,
-  statistics,
-  week,
+  ANALYTICS_RANGES,
+  analyticsSummary,
+  formatShortDuration,
+  type AnalyticsRange,
 } from '../services/analytics';
+const RANGE_LABEL: Record<AnalyticsRange, string> = {
+  today: 'Today',
+  week: 'Last 7 days',
+  month: 'This month',
+  all: 'All time',
+};
 export function Analytics() {
-  const { sessions, tasks } = useAppStore((s) => s.data);
-  const stats = statistics(sessions, tasks);
-  const productive = productiveStatistics(sessions);
-  const days = week(sessions);
-  const max = Math.max(...days.map((d) => d.ms), 60_000);
+  const { sessions } = useAppStore((s) => s.data);
+  const [range, setRange] = useState<AnalyticsRange>('week');
+  const summary = analyticsSummary(sessions, range);
+  const max = Math.max(...summary.days.map((d) => d.ms), 60_000);
+  const compactChart = summary.days.length > 14;
   return (
     <>
       <PageHeading
-        eyebrow="PROGRESS YOU CAN SEE"
+        eyebrow=""
         title="Analytics"
         description="Your focus progress."
       />
-      <div className="stats-grid">
+      <div className="segmented" role="group" aria-label="Date range">
+        {ANALYTICS_RANGES.map((r) => (
+          <button
+            key={r.value}
+            type="button"
+            aria-pressed={range === r.value}
+            onClick={() => setRange(r.value)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <div className="stats-grid analytics-grid">
         <Stat
           label="Focus time"
-          value={formatDuration(productive.accepted)}
-          detail="Based on your focus checks"
+          value={formatShortDuration(summary.focusMs)}
+          detail={RANGE_LABEL[range]}
         />
         <Stat
-          label="Total session time"
-          value={formatDuration(productive.elapsed)}
-          detail="Includes time the timer was paused"
+          label="Sessions completed"
+          value={`${summary.completedCount}/${summary.finishedCount}`}
+          detail="Reached their target"
         />
         <Stat
-          label="Distracted time"
-          value={formatDuration(productive.distracted)}
-          detail={`${productive.percentage}% focus · ${formatDuration(productive.unknown)} unverified`}
+          label="Days focused"
+          value={`${summary.daysFocused}/${summary.dayCount}`}
+          detail="Days with focus time"
+        />
+        <Stat
+          label="Average session"
+          value={
+            summary.averageMs == null
+              ? '—'
+              : formatShortDuration(summary.averageMs)
+          }
+          detail="Per finished session"
+        />
+        <Stat
+          label="Best session"
+          value={
+            summary.best ? formatShortDuration(summary.best.focused_ms) : '—'
+          }
+          detail={summary.best ? summary.best.title : 'No finished sessions'}
+          detailTitle={summary.best?.title}
+          truncateDetail
+        />
+        <Stat
+          label="Longest streak"
+          value={`${summary.longestStreakDays} day${summary.longestStreakDays === 1 ? '' : 's'}`}
+          detail="Consecutive focus days"
         />
       </div>
-      <div className="stats-grid">
-        <Stat
-          label="All recorded focus"
-          value={formatDuration(stats.total)}
-          detail="Includes legacy elapsed-time sessions"
-        />
-        <Stat
-          label="Completed sessions"
-          value={String(stats.completed)}
-          detail="Sessions that reached their target"
-        />
-        <Stat
-          label="Tasks completed"
-          value={String(stats.tasksDone)}
-          detail="Manually marked complete by you"
-        />
-      </div>
-      <section className="panel chart-panel">
-        <h2>Last seven days</h2>
+      <details className="panel breakdown">
+        <summary>Time breakdown</summary>
+        <dl>
+          <div>
+            <dt>Total session time</dt>
+            <dd>{formatShortDuration(summary.breakdown.elapsedMs)}</dd>
+          </div>
+          <div>
+            <dt>Distracted time</dt>
+            <dd>{formatShortDuration(summary.breakdown.distractedMs)}</dd>
+          </div>
+          <div>
+            <dt>Away time</dt>
+            <dd>{formatShortDuration(summary.breakdown.awayMs)}</dd>
+          </div>
+          <div>
+            <dt>Unverified time</dt>
+            <dd>{formatShortDuration(summary.breakdown.unknownMs)}</dd>
+          </div>
+        </dl>
         <p className="muted small">
-          Focus time is assigned to the local date each session started.
+          Total time includes pauses. Unverified time was never confirmed as
+          focus or distraction.
+        </p>
+      </details>
+      <section className="panel chart-panel">
+        <h2>{RANGE_LABEL[range]}</h2>
+        <p className="muted small">
+          Focus time is split across the days it happened, using each
+          session&apos;s focus history. Sessions without history count on their
+          start date.
         </p>
         <div
-          className="chart"
+          className={`chart${compactChart ? ' scroll-x' : ''}`}
           role="img"
-          aria-label={days
-            .map((d) => `${d.label}: ${formatDuration(d.ms)}`)
+          aria-label={summary.days
+            .map(
+              (d) =>
+                `${d.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}: ${formatShortDuration(d.ms)}`,
+            )
             .join(', ')}
         >
-          {days.map((d, i) => (
-            <div className="chart-column" key={i}>
-              <span className="small">{formatDuration(d.ms)}</span>
+          {summary.days.map((d) => (
+            <div
+              className="chart-column"
+              key={d.key}
+              title={d.date.toLocaleDateString(undefined, {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+              })}
+            >
+              <span className="small">{formatShortDuration(d.ms)}</span>
               <div className="bar-track">
                 <div
                   className="bar"
                   style={{ height: `${(d.ms / max) * 100}%` }}
                 />
               </div>
-              <span className="muted small">{d.label}</span>
+              <span className="muted small">
+                {compactChart ? d.date.getDate() : d.label}
+              </span>
             </div>
           ))}
         </div>
-        {!stats.total && (
+        {!summary.hasEligible && (
           <p className="muted small">
-            Your first session will bring this chart to life.
+            No sessions yet — your first focus session will bring this chart to
+            life.
           </p>
         )}
       </section>

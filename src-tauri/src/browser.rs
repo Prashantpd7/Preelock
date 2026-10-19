@@ -40,6 +40,9 @@ impl Policy {
 #[derive(Default)]
 struct State {
     policy: Option<Policy>,
+    test_id: String,
+    test_result: String,
+    test_until: u64,
     last_seen: u64,
     applied_id: String,
     error: String,
@@ -62,6 +65,10 @@ pub struct BrowserStatus {
 }
 #[derive(Deserialize)]
 struct Heartbeat {
+    #[serde(default)]
+    test_id: String,
+    #[serde(default)]
+    test_result: String,
     client: String,
     applied_id: String,
     #[serde(default)]
@@ -187,7 +194,9 @@ impl Bridge {
                     let _ = req.respond(tiny_http::Response::empty(400));
                     continue;
                 };
-                if heartbeat.client.len() != 36
+                if heartbeat.test_result.len() > 240
+                    || heartbeat.test_id.len() > 80
+                    || heartbeat.client.len() != 36
                     || heartbeat.applied_id.len() > 80
                     || heartbeat.error.len() > 240
                     || heartbeat.active_domain.len() > 253
@@ -218,10 +227,23 @@ impl Bridge {
                     String::new()
                 };
                 state.browser_focused = observe && heartbeat.browser_focused;
+                if !heartbeat.test_id.is_empty()
+                    && heartbeat.test_id == state.test_id
+                    && !heartbeat.test_result.is_empty()
+                {
+                    state.test_result = heartbeat.test_result;
+                    state.test_until = 0;
+                }
+                let test_id = if state.policy.is_none() && state.test_until > clock::continuous_ms()
+                {
+                    state.test_id.clone()
+                } else {
+                    String::new()
+                };
                 let policy = state.policy.clone().filter(|p| p.expires_at > clock::now());
                 drop(state);
                 let mut res = tiny_http::Response::from_string(
-                    serde_json::json!({"policy":policy}).to_string(),
+                    serde_json::json!({"policy":policy,"test_id":test_id}).to_string(),
                 );
                 for (k, v) in [
                     ("Content-Type", "application/json"),
@@ -240,6 +262,31 @@ impl Bridge {
             server,
             stop,
         })
+    }
+    pub fn request_test(&self) -> Result<(), String> {
+        if !self.status().connected {
+            return Err("Connect your browser first.".into());
+        }
+        let mut state = self.state.lock().map_err(|_| "Browser unavailable.")?;
+        if state.policy.is_some() {
+            return Err("Finish your focus session first.".into());
+        }
+        state.test_id = uuid::Uuid::new_v4().to_string();
+        state.test_result = "Testing…".into();
+        state.test_until = clock::continuous_ms() + 45_000;
+        Ok(())
+    }
+    pub fn test_result(&self) -> String {
+        self.state
+            .lock()
+            .map(|s| {
+                if s.test_result == "Testing…" && s.test_until < clock::continuous_ms() {
+                    "No response. Reload the extension, then try again.".into()
+                } else {
+                    s.test_result.clone()
+                }
+            })
+            .unwrap_or_default()
     }
     pub fn rotate_token(&mut self, dir: &Path) -> Result<(), String> {
         use std::io::Write;

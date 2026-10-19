@@ -157,6 +157,9 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             task.title = title(name)?;
             task.completed = completed;
         }
+        Action::UpdatePreferences { preferences } => {
+            data.preferences = crate::settings::validate_preferences(preferences)?;
+        }
         Action::SetPreferences {
             theme,
             default_minutes,
@@ -167,7 +170,23 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             data.preferences = Preferences {
                 theme,
                 default_minutes: minutes(default_minutes)?,
+                ..data.preferences.clone()
             };
+        }
+        Action::DeleteSession { id } => {
+            let index = data
+                .sessions
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if matches!(
+                data.sessions[index].status,
+                Status::Running | Status::Paused | Status::Preparing
+            ) && data.sessions[index].focus.mode != crate::focus::Mode::Standard
+            {
+                return Err("Committed sessions require the deliberate emergency exit.".into());
+            }
+            data.sessions.remove(index);
         }
         action => {
             let (id, target, expected) = match action {

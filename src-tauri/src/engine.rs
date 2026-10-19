@@ -21,6 +21,7 @@ pub struct Engine {
     bridge_error: String,
     native: bool,
     camera_on: bool,
+    camera_test_until: u64,
     prepared_at: u64,
     failed: Option<String>,
 }
@@ -86,6 +87,7 @@ impl Engine {
             bridge_error,
             native,
             camera_on: false,
+            camera_test_until: 0,
             prepared_at: now,
             failed: None,
         };
@@ -93,6 +95,7 @@ impl Engine {
         Ok(engine)
     }
     pub fn shutdown(&mut self) {
+        self.stop_test();
         self.stop_camera();
         if let Some(b) = &self.bridge {
             b.publish(None);
@@ -128,6 +131,21 @@ impl Engine {
             .as_ref()
             .map(Bridge::status)
             .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+    }
+    pub fn test_browser(&self) -> Result<(), String> {
+        if self.has_active() {
+            return Err("Finish your focus session first.".into());
+        }
+        self.bridge
+            .as_ref()
+            .ok_or("Browser unavailable.")?
+            .request_test()
+    }
+    pub fn browser_test_result(&self) -> String {
+        self.bridge
+            .as_ref()
+            .map(|b| b.test_result())
+            .unwrap_or_default()
     }
     pub fn pairing_token(&self) -> String {
         self.bridge
@@ -198,11 +216,58 @@ impl Engine {
         }
         Ok(())
     }
+    pub fn current(&self) -> Snapshot {
+        self.data.clone()
+    }
+    pub fn has_active(&self) -> bool {
+        self.data.sessions.iter().any(|s| {
+            matches!(
+                s.status,
+                Status::Running | Status::Paused | Status::Preparing
+            )
+        })
+    }
+    pub fn test_camera(&mut self) -> Result<(), String> {
+        if self.has_active() {
+            return Err("Finish your session before testing the camera.".into());
+        }
+        if platform::camera_permission() != "granted" {
+            return Err("Allow camera access first.".into());
+        }
+        if !platform::camera_start() {
+            return Err("Camera unavailable. Close other camera apps and try again.".into());
+        }
+        self.camera_test_until = clock::continuous_ms() + 30_000;
+        Ok(())
+    }
+    pub fn stop_test(&mut self) {
+        if self.camera_test_until > 0 {
+            platform::camera_stop();
+            self.camera_test_until = 0;
+        }
+    }
+    pub fn backup(&mut self) -> Result<Snapshot, String> {
+        self.snapshot()?;
+        self.db.backup()
+    }
+    pub fn replace_data(&mut self, data: Snapshot) -> Result<(), String> {
+        if self.has_active() {
+            return Err("Finish your session before changing history.".into());
+        }
+        // Replace in one SQLite transaction, including records with matching IDs.
+        self.db.replace(&data)?;
+        // Re-read so tombstoned (deleted) sessions can never linger in memory.
+        self.data = self.db.load()?;
+        self.stop_test();
+        self.publish();
+        Ok(())
+    }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.commit(None)
     }
     pub fn execute(&mut self, action: Action) -> Result<Snapshot, String> {
         if let Action::StartSession { id } | Action::ResumeSession { id } = &action {
+            self.stop_test();
             self.preflight(id)?;
         }
         let result = self.commit(Some(action));
@@ -383,6 +448,9 @@ impl Engine {
         Ok(self.data.clone())
     }
     pub fn tick(&mut self) -> Result<(), String> {
+        if self.camera_test_until > 0 && clock::continuous_ms() >= self.camera_test_until {
+            self.stop_test();
+        }
         self.commit(None)?;
         let now = clock::now();
         let tick = clock::continuous_ms();

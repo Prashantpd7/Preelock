@@ -9,6 +9,8 @@ fn main() {
             "AppKit",
             "AVFoundation",
             "Vision",
+            "UserNotifications",
+            "ServiceManagement",
             "CoreGraphics",
             "CoreMedia",
             "CoreVideo",
@@ -20,6 +22,7 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "snapshot",
+            "settings_action",
             "execute",
             "capabilities",
             "focus_setup",

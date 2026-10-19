@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { BreakBar } from '../components/BreakBar';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   Timer,
@@ -11,7 +12,12 @@ import {
 import { useAppStore } from '../state/store';
 import { desktop } from '../services/api';
 import { useApplication } from '../hooks/useApplication';
-import { appConfig } from '../config';
+import { Dashboard } from '../pages/Dashboard';
+import { Sessions } from '../pages/Sessions';
+import { Tasks } from '../pages/Tasks';
+import { Activity as ActivityPage } from '../pages/Activity';
+import { Analytics } from '../pages/Analytics';
+import { Settings as SettingsPage } from '../pages/Settings';
 const navigation = [
   ['/', 'Dashboard', LayoutDashboard],
   ['/sessions', 'Focus Sessions', Timer],
@@ -20,8 +26,18 @@ const navigation = [
   ['/analytics', 'Analytics', ChartNoAxesColumn],
   ['/settings', 'Settings', Settings],
 ] as const;
+const pagePaths = [
+  '/',
+  '/sessions',
+  '/tasks',
+  '/activity',
+  '/analytics',
+  '/settings',
+];
 export function AppLayout() {
   useApplication();
+  const { pathname } = useLocation();
+  const activePath = pagePaths.includes(pathname) ? pathname : '/';
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
   return (
@@ -31,7 +47,6 @@ export function AppLayout() {
           <span className="brand-icon">V</span>VYSTRIQ
           <span className="brand-dot">.</span>
         </NavLink>
-        <p className="nav-label">WORKSPACE</p>
         <nav aria-label="Main navigation">
           {navigation.map(([to, label, Icon]) => (
             <NavLink key={to} to={to} end={to === '/'}>
@@ -40,13 +55,10 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="sidebar-footer">
-          <span className="status-dot" />
-          Local workspace<span className="version">v{appConfig.version}</span>
-        </div>
       </aside>
       <div className="main-shell">
         <main>
+          <BreakBar />
           {!desktop && (
             <div className="notice">
               Browser preview · Launch with <code>npm run desktop</code> to use
@@ -65,12 +77,29 @@ export function AppLayout() {
               </button>
             </div>
           )}
-          {loading ? <p role="status">Opening your workspace…</p> : <Outlet />}
+          {loading ? (
+            <p role="status">Opening your workspace…</p>
+          ) : (
+            <>
+              <div hidden={activePath !== '/'}>
+                <Dashboard />
+              </div>
+              <div hidden={activePath !== '/sessions'}>
+                <Sessions />
+              </div>
+              <div hidden={activePath !== '/tasks'}>
+                <Tasks />
+              </div>
+              <div hidden={activePath !== '/activity'}>
+                <ActivityPage />
+              </div>
+              <div hidden={activePath !== '/analytics'}>
+                <Analytics />
+              </div>
+              {activePath === '/settings' && <SettingsPage />}
+            </>
+          )}
         </main>
-        <footer className="main-footer">
-          Less noise. More meaningful work.
-          <span>LOCAL FIRST · PRODUCTIVE TIME</span>
-        </footer>
       </div>
     </div>
   );

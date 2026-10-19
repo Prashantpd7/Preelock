@@ -1,135 +1,206 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { api, desktop } from '../services/api';
+import { settingsAction, type SettingsInfo } from '../services/settings';
 import { BrowserSetup } from './BrowserSetup';
+import { Modal, SettingRow } from './SettingsControls';
 export function PermissionsPanel() {
-  const { setup, error, loading, refresh } = useFocusSetup();
-  const [notice, setNotice] = useState(''),
-    [guide, setGuide] = useState(false);
+  const { setup, error, refresh } = useFocusSetup();
+  const [panel, setPanel] = useState<'browser' | 'camera' | null>(null);
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SettingsInfo>({});
   const camera = setup?.camera_permission;
-  const cameraLabel =
-    camera === 'granted'
-      ? 'Allowed'
-      : camera === 'denied'
-        ? 'Blocked'
-        : camera === 'restricted'
-          ? 'Restricted'
-          : camera === 'unsupported'
-            ? 'Not supported'
-            : 'Not set up';
+  useEffect(() => {
+    if (!desktop || !panel) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+      void settingsAction({ type: 'status' })
+        .then(setStatus)
+        .catch((e) => setNotice(String(e)));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [panel, refresh]);
+  async function allowCamera() {
+    setBusy(true);
+    setNotice('');
+    try {
+      if (camera === 'denied' || camera === 'restricted') {
+        await api.openSetup('camera_settings');
+        setNotice('Turn on VYSTRIQ under Camera, then return here.');
+      } else {
+        await api.requestCamera();
+        setNotice('Choose Allow in the Mac permission window.');
+      }
+      setPanel('camera');
+      await refresh();
+    } catch (e) {
+      setNotice(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function test(
+    type: 'test_camera' | 'stop_camera_test' | 'test_browser',
+  ) {
+    setBusy(true);
+    setNotice('');
+    try {
+      await settingsAction({ type });
+      setStatus(await settingsAction({ type: 'status' }));
+    } catch (e) {
+      setNotice(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  function close() {
+    if (panel === 'camera')
+      void settingsAction({ type: 'stop_camera_test' }).catch(() => {});
+    setPanel(null);
+    setNotice('');
+  }
+  const cameraRunning =
+    !!status.camera_status &&
+    !['off', 'unsupported'].includes(status.camera_status);
+  const cameraText: Record<string, string> = {
+    person_detected: 'You are in view',
+    person_not_detected: 'Move into view',
+    extended_absence: 'Move into view',
+    starting: 'Starting camera…',
+    off: 'Camera is off',
+    camera_unavailable: 'Camera is in use or unavailable',
+    camera_stalled: 'Camera stopped responding',
+    analysis_error: 'Could not check the image',
+  };
   return (
-    <section className="panel form-panel compact-settings">
-      <div className="section-heading">
-        <h2>Connections</h2>
+    <section className="settings-section">
+      <h2>Connections</h2>
+      <SettingRow
+        title="Browser"
+        hint="Block websites in your connected browser."
+      >
         <button
-          className="secondary"
-          disabled={!desktop || loading}
-          onClick={() => void refresh()}
+          className={
+            setup?.browser.connected ? 'connected-button' : 'secondary'
+          }
+          disabled={!desktop}
+          onClick={() => {
+            setNotice('');
+            setPanel('browser');
+          }}
         >
-          Check again
+          {setup?.browser.connected ? 'Connected' : 'Connect'}
         </button>
-      </div>
-      {(error || notice) && (
-        <p role="status" className="notice">
-          {error || notice}
+      </SettingRow>
+      <SettingRow
+        title="Camera"
+        hint="Optional. Check whether you are at your desk."
+      >
+        <button
+          className={camera === 'granted' ? 'connected-button' : 'secondary'}
+          disabled={!desktop || busy || setup?.platform !== 'macos'}
+          onClick={() =>
+            camera === 'granted' ? setPanel('camera') : void allowCamera()
+          }
+        >
+          {camera === 'granted'
+            ? 'Allowed'
+            : camera === 'unsupported'
+              ? 'Unavailable'
+              : 'Allow camera'}
+        </button>
+      </SettingRow>
+      {error && (
+        <p role="alert" className="error">
+          {error}
         </p>
       )}
-      <div className="setting-row">
-        <div>
-          <h3>Browser extension</h3>
-          <p className="small muted">
-            {setup?.browser.connected
-              ? 'Connected'
-              : 'Connect once to block websites.'}
-          </p>
-        </div>
-        <button className="secondary" onClick={() => setGuide(!guide)}>
-          {guide ? 'Hide setup' : 'Set up'}
-        </button>
-      </div>
-      {guide && <BrowserSetup setup={setup} refresh={refresh} />}
-      <div className="setting-row">
-        <div>
-          <h3>
-            Camera <span className="badge">{cameraLabel}</span>
-          </h3>
-          <p className="small muted">
-            Optional. Checks if you are at your desk.
-          </p>
-        </div>
-        {camera !== 'granted' && (
-          <button
-            className="secondary"
-            disabled={!desktop || setup?.platform !== 'macos'}
-            onClick={async () => {
-              try {
-                await api.requestCamera();
-                setNotice(
-                  'Choose Allow in the macOS prompt, then click Check again.',
-                );
-                await refresh();
-              } catch (e) {
-                setNotice(String(e));
-              }
-            }}
-          >
-            Allow camera
-          </button>
-        )}
-      </div>
-      {camera !== 'granted' && setup?.platform === 'macos' && (
-        <details>
-          <summary>No camera prompt?</summary>
-          <ol className="setup-steps">
-            <li>Open System Settings → Privacy & Security → Camera.</li>
-            <li>Turn on VYSTRIQ.</li>
-            <li>Return here and click Check again.</li>
-          </ol>
-          <button
-            className="secondary"
-            onClick={async () => {
-              try {
-                await api.openSetup('camera_settings');
-              } catch (e) {
-                setNotice(String(e));
-              }
-            }}
-          >
-            Open camera settings
-          </button>
-        </details>
+      {panel && (
+        <Modal
+          title={panel === 'browser' ? 'Browser connection' : 'Camera'}
+          onClose={close}
+        >
+          {panel === 'browser' ? (
+            setup?.browser.connected ? (
+              <div className="dialog-stack">
+                <p className="muted">
+                  Your browser is ready for focus sessions.
+                </p>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => void test('test_browser')}
+                >
+                  Test blocking
+                </button>
+                {status.browser_test && (
+                  <p role="status">{status.browser_test}</p>
+                )}
+                <p className="small muted">
+                  After an app update, reload VYSTRIQ Focus on your browser’s
+                  Extensions page.
+                </p>
+                <button
+                  className="text-button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await api.resetPairing();
+                      await refresh();
+                    } catch (e) {
+                      setNotice(String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Reconnect browser
+                </button>
+              </div>
+            ) : (
+              <BrowserSetup
+                setup={setup}
+                refresh={async () => {
+                  await refresh();
+                }}
+              />
+            )
+          ) : camera === 'granted' ? (
+            <div className="dialog-stack">
+              <p className="muted">
+                Test for up to 30 seconds. No video is saved.
+              </p>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void test(cameraRunning ? 'stop_camera_test' : 'test_camera')
+                }
+              >
+                {cameraRunning ? 'Stop test' : 'Test camera'}
+              </button>
+              <p role="status">
+                {cameraText[status.camera_status ?? 'off'] ??
+                  'Camera unavailable. Try again.'}
+              </p>
+            </div>
+          ) : (
+            <p>
+              {notice ||
+                'Approve camera access in System Settings, then return here.'}
+            </p>
+          )}
+          {notice && !(panel === 'camera' && camera !== 'granted') && (
+            <p role="status" className="notice">
+              {camera === 'granted' && notice.startsWith('Choose Allow')
+                ? 'Camera access is ready.'
+                : notice}
+            </p>
+          )}
+        </Modal>
       )}
-      <div className="setting-row">
-        <div>
-          <h3>App activity</h3>
-          <p className="small muted">
-            {setup?.native_available
-              ? 'Ready. You choose when to enable it.'
-              : 'Unavailable on this device.'}
-          </p>
-        </div>
-        <span className="badge">Per session</span>
-      </div>
-      <details>
-        <summary>Privacy & recovery</summary>
-        <ul className="short-help">
-          <li>
-            Data stays on this device. No video, typing or page content is
-            saved.
-          </li>
-          <li>No Accessibility or Screen Recording permission is needed.</li>
-          <li>
-            Emergency exit stops a session. The VY menu can quit and release
-            blocks.
-          </li>
-          <li>Website blocking covers the connected browser profile only.</li>
-          <li>App blocking hides windows. It cannot lock the device.</li>
-          <li>
-            Camera results are estimates. Phone detection and learning
-            verification are unavailable.
-          </li>
-        </ul>
-      </details>
     </section>
   );
 }

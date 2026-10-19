@@ -6,13 +6,16 @@ export function useFocusSetup() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const refresh = useCallback(async () => {
-    if (!desktop) return;
+    if (!desktop) return null;
     setLoading(true);
     try {
-      setSetup(await api.focusSetup());
+      const value = await api.focusSetup();
+      setSetup(value);
       setError('');
+      return value;
     } catch (e) {
       setError(String(e));
+      return null;
     } finally {
       setLoading(false);
     }

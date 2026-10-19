@@ -81,7 +81,23 @@ async function sync() {
     });
     if (!response.ok)
       throw new Error(`Bridge rejected pairing (${response.status})`);
-    const next = (await response.json()).policy;
+    const payload = await response.json();
+    const next = payload.policy;
+    let testResult = {};
+    if (payload.test_id && !leaseValid(next)) {
+      try {
+        await selfTest();
+        testResult = {
+          test_id: payload.test_id,
+          test_result: 'Passed · 6 browser checks',
+        };
+      } catch (error) {
+        testResult = {
+          test_id: payload.test_id,
+          test_result: String(error).slice(0, 200),
+        };
+      }
+    }
     if (!leaseValid(next)) {
       await removeRules();
     } else {
@@ -120,6 +136,7 @@ async function sync() {
         blocks: installed.blocks || 0,
         error: '',
         ...(await activity(next)),
+        ...testResult,
       }),
       signal: AbortSignal.timeout(4000),
     });

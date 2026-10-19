@@ -28,16 +28,25 @@ export function Stat({
   label,
   value,
   detail,
+  detailTitle,
+  truncateDetail,
 }: {
   label: string;
   value: string;
   detail: string;
+  detailTitle?: string;
+  truncateDetail?: boolean;
 }) {
   return (
     <article className="panel stat">
       <span className="muted">{label}</span>
       <strong>{value}</strong>
-      <small>{detail}</small>
+      <small
+        title={detailTitle}
+        className={truncateDetail ? 'truncate' : undefined}
+      >
+        {detail}
+      </small>
     </article>
   );
 }

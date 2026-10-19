@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Choices } from './SettingsControls';
 import { api } from '../services/api';
 import type { FocusSetup } from '../types';
 export function BrowserSetup({
@@ -14,6 +15,7 @@ export function BrowserSetup({
   const [show, setShow] = useState(false);
   const [selected, setSelected] = useState(browserId);
   const browser = browserId || selected || setup?.browsers?.[0]?.id || '';
+  if (setup?.browser.connected) return null;
   async function open(target: 'extensions' | 'extension_folder') {
     try {
       await api.openSetup(target, browser);
@@ -33,25 +35,17 @@ export function BrowserSetup({
   }
   return (
     <div className="setup-guide">
-      <div className="section-heading">
-        <h3>Connect your browser</h3>
-        <span className={`badge ${setup?.browser.connected ? 'green' : ''}`}>
-          {setup?.browser.connected ? 'Connected' : 'Not connected'}
-        </span>
-      </div>
-      {!browserId && (
-        <label>
-          Browser
-          <select value={browser} onChange={(e) => setSelected(e.target.value)}>
-            <option value="">Open a browser first</option>
-            {setup?.browsers?.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
+      {!browserId &&
+        (setup?.browsers?.length ? (
+          <Choices
+            label="Browser"
+            value={browser}
+            choices={setup.browsers.map((a) => [a.id, a.name] as const)}
+            onChange={setSelected}
+          />
+        ) : (
+          <p>Open Comet, Chrome or Edge, then check again.</p>
+        ))}
       <ol className="setup-steps">
         <li>
           <strong>Open Extensions.</strong> Turn on <b>Developer mode</b>.
@@ -123,19 +117,35 @@ export function BrowserSetup({
           {setup.browser.error}
         </p>
       )}
-      <details>
-        <summary>Connection help</summary>
+      <div className="connection-help">
         <p className="small muted">
           Keep VYSTRIQ open. Use one browser profile. After an app update, click
           Reload on its extension card.
         </p>
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => setShow(!show)}
-        >
-          {show ? 'Hide code' : 'Show code'}
-        </button>
+        <div className="row controls">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setShow(!show)}
+          >
+            {show ? 'Hide code' : 'Show code'}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={async () => {
+              try {
+                await api.resetPairing();
+                await refresh();
+                setNotice('Code reset. Connect again with the new code.');
+              } catch (e) {
+                setNotice(String(e));
+              }
+            }}
+          >
+            Reset connection
+          </button>
+        </div>
         {show && (
           <>
             <input
@@ -152,22 +162,7 @@ export function BrowserSetup({
             />
           </>
         )}
-        <button
-          type="button"
-          className="secondary"
-          onClick={async () => {
-            try {
-              await api.resetPairing();
-              await refresh();
-              setNotice('Code reset. Connect again with the new code.');
-            } catch (e) {
-              setNotice(String(e));
-            }
-          }}
-        >
-          Reset connection
-        </button>
-      </details>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,12 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../state/store';
 export function useApplication() {
+  const largeText = useAppStore((s) => s.data.preferences.large_text);
+  useEffect(() => {
+    document.documentElement.dataset.textSize = largeText
+      ? 'large'
+      : 'standard';
+  }, [largeText]);
   const theme = useAppStore((s) => s.data.preferences.theme);
   useEffect(() => {
     void useAppStore.getState().initialize();

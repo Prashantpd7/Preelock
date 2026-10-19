@@ -5,6 +5,15 @@ import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
 import { defaultFocus } from '../types';
+vi.mock('../services/settings', () => ({
+  settingsAction: vi.fn().mockResolvedValue({}),
+  preferenceDefaults: {
+    theme: 'dark',
+    default_minutes: 25,
+    saved_setups: [],
+    reminder_days: [],
+  },
+}));
 vi.mock('../services/api', () => ({
   desktop: true,
   emptySnapshot: {
@@ -82,31 +91,30 @@ it('navigates all six routes and submits a task to the native boundary', async (
   });
   expect(await screen.findByText('Read chapter one')).toBeInTheDocument();
 });
-it('creates a session with its selected pause policy', async () => {
+it('creates a flexible session with manual checks', async () => {
   const user = userEvent.setup();
   window.location.hash = '#/sessions';
   render(<App />);
   await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New session' }));
   await user.type(screen.getByLabelText('Task name'), 'Write outline');
   await user.click(screen.getByRole('radio', { name: /Manual check-ins/ }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  await user.click(screen.getByText('More options'));
-  await user.click(screen.getByLabelText('Allow pausing'));
   vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
   await user.click(screen.getByRole('button', { name: 'Create session' }));
   expect(api.execute).toHaveBeenCalledWith({
     type: 'create_session',
     title: 'Write outline',
     minutes: 25,
-    allow_pause: false,
+    allow_pause: true,
     focus: {
       mode: 'standard',
       apps: [],
       domains: [],
       general_internet: true,
       browser_app: '',
-      activity_consent: false,
+      activity_consent: true,
       camera: false,
       attention: {
         ...defaultFocus.attention,
@@ -162,9 +170,12 @@ it('shows backend attention pauses and sends explicit manual checkpoints', async
   vi.mocked(api.snapshot).mockResolvedValue(state);
   vi.mocked(api.execute).mockResolvedValue(state);
   useAppStore.setState({ data: state });
+  window.location.hash = '#/sessions';
   render(<App />);
+  await userEvent.click(
+    await screen.findByRole('heading', { name: 'Read notes' }),
+  );
   expect(await screen.findByText('Checking focus')).toBeInTheDocument();
-  expect(screen.getByText('Confirm current work')).toBeInTheDocument();
   expect(screen.getByLabelText('Time remaining')).toHaveTextContent('00:45');
   await userEvent.click(
     screen.getByRole('button', {
@@ -188,6 +199,7 @@ it('shows Comet and stops unpaired website setup before session creation', async
   window.location.hash = '#/sessions';
   render(<App />);
   await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New session' }));
   await user.type(screen.getByLabelText('Task name'), 'Read docs');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('checkbox', { name: 'Comet' }));

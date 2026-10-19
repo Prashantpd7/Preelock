@@ -10,7 +10,7 @@ export function Tasks() {
   return (
     <>
       <PageHeading
-        eyebrow="TURN INTENTION INTO PROGRESS"
+        eyebrow=""
         title="Tasks"
         description="A clear list for a clearer mind. Keep it achievable."
       />

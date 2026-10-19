@@ -102,3 +102,85 @@ char *vy_camera_status(void) {
     }); return result;
 }
 void vy_free(char *data) { free(data); }
+
+// Settings integrations. All panels and AppKit work stay on the main thread.
+#import <UserNotifications/UserNotifications.h>
+#import <ServiceManagement/ServiceManagement.h>
+char *vy_settings_info(void) {
+    @autoreleasepool {
+        __block NSInteger auth = 0;
+        dispatch_semaphore_t wait = dispatch_semaphore_create(0);
+        [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+            auth = settings.authorizationStatus; dispatch_semaphore_signal(wait);
+        }];
+        dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 3*NSEC_PER_SEC));
+        NSInteger login = -1;
+        if (@available(macOS 13.0, *)) login = SMAppService.mainAppService.status;
+        NSDateComponents *parts = [NSCalendar.currentCalendar components:(NSCalendarUnitYear|NSCalendarUnitMonth|NSCalendarUnitDay|NSCalendarUnitWeekday|NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:NSDate.date];
+        return json(@{@"notifications":@(auth), @"login":@(login), @"day":@((parts.weekday+6)%7), @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day], @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]});
+    }
+}
+char *vy_login(int enabled) {
+    @autoreleasepool {
+        __block NSString *message = @"";
+        onMain(^{
+            if (@available(macOS 13.0, *)) {
+                NSError *error = nil;
+                if (enabled) [SMAppService.mainAppService registerAndReturnError:&error];
+                else [SMAppService.mainAppService unregisterAndReturnError:&error];
+                if (error) message = error.localizedDescription;
+            } else message = @"Open at login needs macOS 13 or later.";
+        });
+        return strdup(message.UTF8String);
+    }
+}
+int vy_notification_permission(void) {
+    __block BOOL granted = NO;
+    dispatch_semaphore_t wait = dispatch_semaphore_create(0);
+    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed, NSError *error) {
+        granted = allowed && !error; dispatch_semaphore_signal(wait);
+    }];
+    dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 60*NSEC_PER_SEC));
+    return granted;
+}
+@interface VYAlerts : NSObject <UNUserNotificationCenterDelegate>
+@end
+@implementation VYAlerts
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+    (void)center; (void)notification;
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList);
+}
+@end
+void vy_notify(const char *title, const char *body) {
+    static VYAlerts *delegate;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{delegate=[VYAlerts new]; UNUserNotificationCenter.currentNotificationCenter.delegate=delegate;});
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = [NSString stringWithUTF8String:title]; content.body = [NSString stringWithUTF8String:body];
+    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil];
+    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"VYSTRIQ notification unavailable: %@", error.localizedDescription); }];
+}
+void vy_sound(float volume) {
+    onMain(^{ NSSound *sound = [NSSound soundNamed:@"Glass"]; sound.volume = volume; [sound play]; });
+}
+char *vy_file_panel(int save, const char *filename) {
+    @autoreleasepool {
+        __block NSString *path = @"";
+        NSString *name = [NSString stringWithUTF8String:filename];
+        onMain(^{
+            [NSApp activateIgnoringOtherApps:YES];
+            if (save) {
+                NSSavePanel *panel = NSSavePanel.savePanel;
+                panel.nameFieldStringValue = name;
+                panel.canCreateDirectories = YES;
+                if ([panel runModal] == NSModalResponseOK) path = panel.URL.path;
+            } else {
+                NSOpenPanel *panel = NSOpenPanel.openPanel;
+                panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
+                panel.message = @"Choose a VYSTRIQ backup (.json).";
+                if ([panel runModal] == NSModalResponseOK) path = panel.URL.path;
+            }
+        });
+        return strdup(path.UTF8String);
+    }
+}

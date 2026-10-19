@@ -1,29 +1,33 @@
 import { Link } from 'react-router-dom';
-import { ArrowRight, Plus, Sparkles } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import {
   formatDuration,
+  formatShortDuration,
   productiveStatistics,
   statistics,
 } from '../services/analytics';
-import { Empty, PageHeading, Stat } from '../components/ui';
+import { PageHeading, Stat } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
-import { TaskList } from '../components/TaskList';
+import { useFocusSetup } from '../hooks/useFocusSetup';
 export function Dashboard() {
-  const { sessions, tasks } = useAppStore((s) => s.data);
+  const { sessions, tasks, preferences } = useAppStore((s) => s.data);
+  const { setup, refresh } = useFocusSetup();
   const stats = statistics(sessions, tasks);
   const productive = productiveStatistics(sessions);
-  const active = sessions.find((s) =>
-    ['preparing', 'running', 'paused'].includes(s.status),
-  );
-  const recent = sessions
-    .filter((s) => ['ended', 'completed', 'interrupted'].includes(s.status))
-    .slice(-3)
+  const upcoming = sessions
+    .filter((s) =>
+      ['ready', 'preparing', 'running', 'paused'].includes(s.status),
+    )
+    .slice()
     .reverse();
+  const appNames = Object.fromEntries(
+    (setup?.applications ?? []).map((a) => [a.id, a.name]),
+  );
   return (
     <>
       <PageHeading
-        eyebrow="A LITTLE CLARITY GOES A LONG WAY"
+        eyebrow=""
         title="Make room for deep work."
         description="One intention. One focused session. A little more progress."
         action={
@@ -33,6 +37,34 @@ export function Dashboard() {
           </Link>
         }
       />
+      {!!preferences.daily_goal && (
+        <section className="panel daily-goal">
+          <div className="section-heading">
+            <h2>Daily goal</h2>
+            <strong>
+              {formatShortDuration(
+                statistics(
+                  sessions.filter((s) => s.focus?.attention?.enabled),
+                  tasks,
+                ).today,
+              )}{' '}
+              / {formatShortDuration(preferences.daily_goal * 60000)}
+            </strong>
+          </div>
+          <progress
+            aria-label="Daily focus goal"
+            max={preferences.daily_goal * 60000}
+            value={Math.min(
+              preferences.daily_goal * 60000,
+              statistics(
+                sessions.filter((s) => s.focus?.attention?.enabled),
+                tasks,
+              ).today,
+            )}
+          />
+          <p className="small muted">Based on sessions started today.</p>
+        </section>
+      )}
       <div className="stats-grid">
         <Stat
           label="Focus time"
@@ -72,79 +104,24 @@ export function Dashboard() {
           detail="Completed in your workspace"
         />
       </div>
-      <div className="dashboard-grid">
-        <section>
+      {!!upcoming.length && (
+        <>
           <div className="section-heading">
-            <h2>Your focus space</h2>
-            <span className="eyebrow">
-              {active ? 'IN PROGRESS' : 'READY WHEN YOU ARE'}
-            </span>
+            <h2>Your sessions</h2>
           </div>
-          {active ? (
-            <SessionCard session={active} />
-          ) : (
-            <div className="panel focus-empty">
-              <span className="focus-orbit">
-                <Sparkles size={30} />
-              </span>
-              <h2>Start with a single intention.</h2>
-              <p className="muted">
-                Choose what matters, set your time,
-                <br />
-                and give it your full attention.
-              </p>
-              <Link className="button" to="/sessions">
-                Create a focus session <ArrowRight size={16} />
-              </Link>
-              <small>
-                Choose your boundaries and monitoring policy before starting.
-              </small>
-            </div>
-          )}
-        </section>
-        <section>
-          <div className="section-heading">
-            <h2>On your list</h2>
-            <Link to="/tasks">
-              View all <ArrowRight size={14} />
-            </Link>
+          <div className="session-list">
+            {upcoming.map((s) => (
+              <SessionCard
+                session={s}
+                key={s.id}
+                appNames={appNames}
+                setup={setup}
+                onSetupRefresh={refresh}
+              />
+            ))}
           </div>
-          <div className="panel">
-            <TaskList tasks={tasks.filter((t) => !t.completed).slice(0, 5)} />
-          </div>
-          <div className="quiet-note">
-            <span className="eyebrow">A SMALL REMINDER</span>
-            <p>
-              You don’t need to do it all.
-              <br />
-              Just the next meaningful thing.
-            </p>
-          </div>
-        </section>
-      </div>
-      <section>
-        <div className="section-heading">
-          <h2>Recent sessions</h2>
-          <Link to="/activity">
-            View history <ArrowRight size={14} />
-          </Link>
-        </div>
-        <div className="panel">
-          {recent.length ? (
-            recent.map((s) => (
-              <div className="history-row" key={s.id}>
-                <span className="grow">{s.title}</span>
-                <span className="muted">{formatDuration(s.focused_ms)}</span>
-                <span className="badge">{s.status}</span>
-              </div>
-            ))
-          ) : (
-            <Empty>
-              Your session history will appear here after your first session.
-            </Empty>
-          )}
-        </div>
-      </section>
+        </>
+      )}
     </>
   );
 }

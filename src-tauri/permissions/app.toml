@@ -32,3 +32,8 @@ commands.allow = ["reset_browser_pairing"]
 identifier = "open-setup"
 description = "Open the extension folder, selected supported browser extensions, or camera settings."
 commands.allow = ["open_setup"]
+
+[[permission]]
+identifier = "settings-tools"
+description = "Manage local settings, explicit camera tests, native file dialogs and notifications."
+commands.allow = ["settings_action"]

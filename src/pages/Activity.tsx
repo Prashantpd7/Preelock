@@ -9,7 +9,7 @@ export function Activity() {
   return (
     <>
       <PageHeading
-        eyebrow="YOUR WORK, OVER TIME"
+        eyebrow=""
         title="Activity"
         description="Your past sessions."
       />
