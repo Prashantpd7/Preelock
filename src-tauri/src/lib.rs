@@ -293,11 +293,11 @@ pub fn run() {
         Ok(app) => app.run(|app, event| match event {
             // Covers Cmd+Q, application-menu Quit, Dock Quit and app.exit(code).
             // Only the checked shutdown helper can approve the final exit.
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if !app.state::<ExitApproved>().0.load(Ordering::Acquire) {
-                    api.prevent_exit();
-                    quit(app);
-                }
+            tauri::RunEvent::ExitRequested { api, .. }
+                if !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
+            {
+                api.prevent_exit();
+                quit(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_window(app),
