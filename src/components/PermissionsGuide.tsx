@@ -134,11 +134,18 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
             {mac ? (
               <ol>
                 <li>
-                  In Finder, right-click VYSTRIQ and choose Open, if offered.
+                  Drag VYSTRIQ from the downloaded disk image into Applications,
+                  then open the installed app from Finder.
                 </li>
                 <li>
                   If blocked, open System Settings → Privacy & Security → Open
-                  Anyway, then confirm Open.
+                  Anyway, if offered, then confirm Open. This free build is not
+                  Apple-notarized.
+                </li>
+                <li>
+                  If approval is unavailable or the app is reported as damaged,
+                  check the release installation guide. Do not disable system
+                  protection.
                 </li>
               </ol>
             ) : (

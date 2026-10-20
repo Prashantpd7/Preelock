@@ -25,7 +25,14 @@ impossible to stop.
 
 ## Current release and downloads
 
-- Product version: `0.4.0`
+**Free distribution policy (20 October 2026):** the owner accepts OS warnings
+and does not want paid signing services. v0.4.0's Mac installer has an invalid
+bundle signature. v0.4.1 repairs the bundle seal using ad-hoc signing; it is not
+Apple-notarized. Windows remains unsigned. See [RELEASING.md](docs/RELEASING.md)
+and [INSTALLATION.md](docs/INSTALLATION.md). Do not require paid credentials or
+claim that every security policy permits manual approval.
+
+- Product version: `0.4.1`
 - Extension manifest version: `0.4.1`
 - Extension/bridge behavior protocol: `3`
 - Repository: `Prashantpd7/VYSTRIQ`
@@ -292,6 +299,13 @@ Build artifacts are uploaded under the target-specific artifact names. A
 successful Windows CI build can be attached to a GitHub release as the `.exe`.
 The public `v0.4.0` release already contains both the Mac DMG and Windows
 installer.
+
+Presence on a release is not distribution verification. CI checks the Mac
+bundle seal. `.github/workflows/release.yml` builds free installers, verifies
+final packaging and runner install/startup behavior, downloads and checks the
+uploaded hashes, and publishes all platforms together as a public beta. No
+signing secrets are required. Real-device security/permission/extension testing
+must be reported separately. Never overwrite old releases or delete user data.
 
 ## Important constraints for future changes
 
