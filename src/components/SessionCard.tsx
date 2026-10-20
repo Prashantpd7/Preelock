@@ -586,7 +586,12 @@ export function SessionCard({
             {needsCamera && (
               <section className="ready-check">
                 <h3>Camera</h3>
-                {setup?.platform === 'windows' ? (<p>Camera checks are not available on Windows. Edit this session and choose Apps only.</p>) : cameraState === 'ready' ? (
+                {setup?.platform === 'windows' ? (
+                  <p>
+                    Camera checks are not available on Windows. Edit this
+                    session and choose Apps only.
+                  </p>
+                ) : cameraState === 'ready' ? (
                   <p className="ready-box">Ready</p>
                 ) : cameraState === 'waiting' ? (
                   <>
@@ -699,7 +704,10 @@ export function SessionCard({
                         // sessionSetup is filtered to the session's dropdown
                         // browser and may already be connected, which would
                         // render the guide as nothing.
-                        api.focusSetup(target).then(setGuideSetup).catch(() => {});
+                        api
+                          .focusSetup(target)
+                          .then(setGuideSetup)
+                          .catch(() => {});
                       }}
                     >
                       Connect browser extension

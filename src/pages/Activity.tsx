@@ -3,10 +3,7 @@ import { PageHeading, Empty } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
 import { useAppStore } from '../state/store';
 import { useFocusSetup } from '../hooks/useFocusSetup';
-import {
-  ANALYTICS_RANGES,
-  type AnalyticsRange,
-} from '../services/analytics';
+import { ANALYTICS_RANGES, type AnalyticsRange } from '../services/analytics';
 function inRange(
   startedAt: number | null,
   range: AnalyticsRange,

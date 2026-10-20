@@ -215,5 +215,7 @@ it('uses the chosen Comet identity when Chrome is installed too', async () => {
   vi.stubGlobal('fetch', request);
   await import('./worker.js');
   await send({ type: 'sync' });
-  expect(JSON.parse(request.mock.calls[0][1].body).browser).toBe('ai.perplexity.comet');
+  expect(JSON.parse(request.mock.calls[0][1].body).browser).toBe(
+    'ai.perplexity.comet',
+  );
 });

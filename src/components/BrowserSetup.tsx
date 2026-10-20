@@ -180,16 +180,15 @@ export function BrowserSetup({
               <strong className="step-title">Load the extension folder</strong>
               {setup?.platform === 'windows' ? (
                 <span className="muted">
-                  Click <strong>Load unpacked</strong> in the browser, paste
-                  the folder path below into the file picker's address bar,
-                  press Enter, then select the folder.
+                  Click <strong>Load unpacked</strong> in the browser, paste the
+                  folder path below into the file picker's address bar, press
+                  Enter, then select the folder.
                 </span>
               ) : (
                 <span className="muted">
-                  Click <strong>Load unpacked</strong> in the browser. In
-                  the file picker, press <strong>⌘⇧G</strong>, paste the
-                  folder path, press Enter, then click{' '}
-                  <strong>Select</strong>.
+                  Click <strong>Load unpacked</strong> in the browser. In the
+                  file picker, press <strong>⌘⇧G</strong>, paste the folder
+                  path, press Enter, then click <strong>Select</strong>.
                 </span>
               )}
               <label className="code-label">
@@ -227,10 +226,10 @@ export function BrowserSetup({
             <li>
               <strong className="step-title">Connect the extension</strong>
               <span className="muted">
-                Copy the <strong>connection code</strong> from the setup
-                guide, click the Vystriq icon in {browserName}'s toolbar,
-                paste the code, choose {browserName}, and click <strong>Connect</strong> there.
-                Keep {browserName} open.
+                Copy the <strong>connection code</strong> from the setup guide,
+                click the Vystriq icon in {browserName}'s toolbar, paste the
+                code, choose {browserName}, and click <strong>Connect</strong>{' '}
+                there. Keep {browserName} open.
               </span>
             </li>
           </ol>

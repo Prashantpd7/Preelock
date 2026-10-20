@@ -27,10 +27,7 @@ export function setupProblem(
   if (network && (!setup?.browser.connected || browserMismatch))
     return 'Connect the browser extension below, then check again.';
   if (network && setup?.browser.error) return 'Reconnect the extension below.';
-  if (
-    focus.website_blocking === 'allowlist' &&
-    focus.domains.length === 0
-  )
+  if (focus.website_blocking === 'allowlist' && focus.domains.length === 0)
     return 'List at least one website to keep open, or pick a different blocking option.';
   if (
     !(focus.mode === 'strict' ? focus.apps : p.work_apps).length &&
