@@ -350,10 +350,7 @@ mod tests {
         let one = FocusConfig {
             mode: Mode::Strict,
             browser_app: "ai.perplexity.comet".into(),
-            apps: vec![
-                "ai.perplexity.comet".into(),
-                "com.microsoft.VSCode".into(),
-            ],
+            apps: vec!["ai.perplexity.comet".into(), "com.microsoft.VSCode".into()],
             activity_consent: true,
             domains: vec!["github.com".into()],
             ..Default::default()

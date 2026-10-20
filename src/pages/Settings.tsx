@@ -516,10 +516,12 @@ export function Settings() {
                   Test blocking. Reload the extension after an app update.
                 </p>
                 <p>
-                  Manage camera and notification access in Connections → Permissions.
+                  Manage camera and notification access in Connections →
+                  Permissions.
                 </p>
                 <p>
-                  During a session, closing and quitting are blocked. When idle, use the tray icon to reopen or quit.
+                  During a session, closing and quitting are blocked. When idle,
+                  use the tray icon to reopen or quit.
                 </p>
               </div>
               <p className="settings-footnote">

@@ -12,8 +12,13 @@ const FG = [0xc3, 0xed, 0x9b]; // #c3ed9b
 const RADIUS = 110;
 // V polygon in the 512 viewBox of app.svg
 const V = [
-  [112, 130], [194, 130], [256, 301], [318, 130],
-  [400, 130], [286, 394], [226, 394],
+  [112, 130],
+  [194, 130],
+  [256, 301],
+  [318, 130],
+  [400, 130],
+  [286, 394],
+  [226, 394],
 ];
 
 function pointInPolygon(x, y, poly) {
@@ -32,7 +37,11 @@ function inRoundedRect(x, y, s, r) {
   const cy = Math.min(Math.max(y, r), s - r);
   const dx = x - cx;
   const dy = y - cy;
-  return dx * dx + dy * dy <= r * r || (x >= r && x <= s - r) || (y >= r && y <= s - r);
+  return (
+    dx * dx + dy * dy <= r * r ||
+    (x >= r && x <= s - r) ||
+    (y >= r && y <= s - r)
+  );
 }
 
 // Simple CRC32 for PNG chunks.
@@ -112,11 +121,17 @@ function renderIcon(size) {
   const out = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      let rS = 0, gS = 0, bS = 0, aS = 0;
+      let rS = 0,
+        gS = 0,
+        bS = 0,
+        aS = 0;
       for (let dy = 0; dy < SS; dy++) {
         for (let dx = 0; dx < SS; dx++) {
           const i = ((y * SS + dy) * big + (x * SS + dx)) * 4;
-          rS += buf[i]; gS += buf[i + 1]; bS += buf[i + 2]; aS += buf[i + 3];
+          rS += buf[i];
+          gS += buf[i + 1];
+          bS += buf[i + 2];
+          aS += buf[i + 3];
         }
       }
       const n = SS * SS;

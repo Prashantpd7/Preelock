@@ -438,8 +438,7 @@ impl Bridge {
                         None => true,
                         Some(b) => {
                             let b_stale = b.ext_v != EXTENSION_VERSION;
-                            (!stale && b_stale)
-                                || (stale == b_stale && c.last_seen > b.last_seen)
+                            (!stale && b_stale) || (stale == b_stale && c.last_seen > b.last_seen)
                         }
                     };
                     if matches && better {
