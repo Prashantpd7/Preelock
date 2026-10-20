@@ -5,7 +5,10 @@ import { Settings } from '../pages/Settings';
 import { useAppStore } from '../state/store';
 import { api, emptySnapshot } from '../services/api';
 import { settingsAction, preferenceDefaults } from '../services/settings';
-import { FirstRunPermissions, PermissionsGuide } from '../components/PermissionsGuide';
+import {
+  FirstRunPermissions,
+  PermissionsGuide,
+} from '../components/PermissionsGuide';
 vi.mock('../services/api', () => ({
   desktop: true,
   emptySnapshot: {
@@ -70,7 +73,9 @@ beforeEach(() => {
 it('shows the first-run guide once after dismissal', async () => {
   const user = userEvent.setup();
   const view = render(<FirstRunPermissions />);
-  expect(await screen.findByRole('dialog')).toHaveTextContent('Permissions & setup');
+  expect(await screen.findByRole('dialog')).toHaveTextContent(
+    'Permissions & setup',
+  );
   await user.click(screen.getByRole('button', { name: 'Done' }));
   view.unmount();
   render(<FirstRunPermissions />);
@@ -78,7 +83,10 @@ it('shows the first-run guide once after dismissal', async () => {
 });
 it('opens camera settings after denial instead of requesting permission again', async () => {
   const setup = await api.focusSetup();
-  vi.mocked(api.focusSetup).mockResolvedValue({ ...setup, camera_permission: 'denied' });
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    camera_permission: 'denied',
+  });
   const user = userEvent.setup();
   render(<PermissionsGuide onClose={() => {}} />);
   await screen.findByText(/Denied — System Settings/);
@@ -89,11 +97,15 @@ it('opens camera settings after denial instead of requesting permission again', 
 it('gives Windows permission guidance without Mac-only controls', async () => {
   const setup = await api.focusSetup();
   vi.mocked(api.focusSetup).mockResolvedValue({
-    ...setup, platform: 'windows', camera_permission: 'unsupported',
+    ...setup,
+    platform: 'windows',
+    camera_permission: 'unsupported',
   });
   const user = userEvent.setup();
   render(<PermissionsGuide onClose={() => {}} />);
-  expect(await screen.findByRole('button', { name: 'Unavailable' })).toBeDisabled();
+  expect(
+    await screen.findByRole('button', { name: 'Unavailable' }),
+  ).toBeDisabled();
   expect(screen.queryByText(/System Settings/)).not.toBeInTheDocument();
   expect(screen.getByText(/More info → Run anyway/)).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Open settings' }));

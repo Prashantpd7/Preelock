@@ -160,11 +160,15 @@ it('shows Comet and stops unpaired website setup before session creation', async
   expect(screen.getByLabelText('Which browser?')).toHaveValue(
     'ai.perplexity.comet',
   );
-  await user.click(screen.getByRole('checkbox', { name: 'Block all websites except these' }));
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Block all websites except these' }),
+  );
   await user.type(screen.getByLabelText('Websites to keep open'), 'docs.rs');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   expect(
-    await screen.findByText('Connect the browser extension below, then check again.'),
+    await screen.findByText(
+      'Connect the browser extension below, then check again.',
+    ),
   ).toHaveAttribute('role', 'alert');
   expect(
     screen.getByRole('button', { name: 'Open Extensions' }),
@@ -180,7 +184,11 @@ it('keeps the removed sidebar section empty', async () => {
 
 it('disables camera checking on Windows', async () => {
   const setup = await api.focusSetup();
-  vi.mocked(api.focusSetup).mockResolvedValue({ ...setup, platform: 'windows', camera_permission: 'unsupported' });
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    platform: 'windows',
+    camera_permission: 'unsupported',
+  });
   const user = userEvent.setup();
   window.location.hash = '#/sessions';
   render(<App />);
