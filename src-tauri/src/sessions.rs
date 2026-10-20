@@ -72,6 +72,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 focus,
                 report: Default::default(),
                 attention: Default::default(),
+                force_quit: false,
             });
         }
         Action::EmergencyExit { id, confirmation } => {
@@ -100,22 +101,6 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 "Deliberate emergency exit; restrictions released.",
             );
         }
-        Action::ConfirmWork { id } => {
-            let s = data
-                .sessions
-                .iter_mut()
-                .find(|s| s.id == id)
-                .ok_or("Session not found.")?;
-            if s.status != Status::Running || s.focus.attention.verification != "manual_checkpoints"
-            {
-                return Err("Manual confirmation is not enabled for this running session.".into());
-            }
-            s.report.event(
-                now,
-                "work_confirmation",
-                "User confirmed current work for a maximum of 60 seconds.",
-            );
-        }
         Action::CorrectInterval {
             id,
             interval_id,
@@ -138,6 +123,19 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             s.report
                 .event(now, "camera_disabled", "Camera consent withdrawn.");
         }
+        Action::EnableCamera { id } => {
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if !matches!(s.status, Status::Running | Status::Paused) {
+                return Err("The camera can only be restarted during an active session.".into());
+            }
+            s.focus.camera = true;
+            s.report
+                .event(now, "camera_enabled", "Camera turned back on by you.");
+        }
         Action::CreateTask { title: name } => data.tasks.push(Task {
             id: uuid::Uuid::new_v4().to_string(),
             title: title(name)?,
@@ -156,6 +154,13 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 .ok_or("Task not found.")?;
             task.title = title(name)?;
             task.completed = completed;
+        }
+        Action::DeleteTask { id } => {
+            let before = data.tasks.len();
+            data.tasks.retain(|t| t.id != id);
+            if data.tasks.len() == before {
+                return Err("Task not found.".into());
+            }
         }
         Action::UpdatePreferences { preferences } => {
             data.preferences = crate::settings::validate_preferences(preferences)?;
@@ -187,6 +192,43 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 return Err("Committed sessions require the deliberate emergency exit.".into());
             }
             data.sessions.remove(index);
+        }
+        Action::RestartSession { id } => {
+            if data.sessions.iter().any(|s| {
+                s.id != id
+                    && matches!(
+                        s.status,
+                        Status::Running | Status::Paused | Status::Preparing
+                    )
+            }) {
+                return Err("End the current session before starting another.".into());
+            }
+            let s = data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if !matches!(
+                s.status,
+                Status::Completed | Status::Ended | Status::Interrupted
+            ) {
+                return Err("Only finished sessions can be restarted.".into());
+            }
+            // Fresh run, same configuration.
+            s.force_quit = false;
+            s.status = Status::Ready;
+            s.started_at = None;
+            s.ended_at = None;
+            s.deadline_ms = None;
+            s.remaining_ms = u64::from(s.duration_minutes) * 60_000;
+            s.focused_ms = 0;
+            s.report = Default::default();
+            s.attention = Default::default();
+            // A fresh run restores the camera the session was created with;
+            // a mid-run "stop" was runtime state, not configuration.
+            if s.focus.attention.verification == "camera_and_activity" {
+                s.focus.camera = true;
+            }
         }
         action => {
             let (id, target, expected) = match action {
@@ -280,6 +322,46 @@ mod tests {
         assert_eq!(d.sessions[0].focused_ms, 60_000);
         assert_eq!(d.sessions[0].ended_at, Some(61_000));
         assert_eq!(d.sessions[0].status, Status::Completed);
+    }
+    #[test]
+    fn finished_sessions_restart_as_fresh_runs() {
+        let mut d = data(true);
+        let id = d.sessions[0].id.clone();
+        // A running session cannot be "restarted".
+        assert!(apply(&mut d, Action::RestartSession { id: id.clone() }, 1000).is_err());
+        advance(&mut d.sessions[0], 90_000, 91_000);
+        assert_eq!(d.sessions[0].status, Status::Completed);
+        d.sessions[0].force_quit = true;
+        apply(&mut d, Action::RestartSession { id: id.clone() }, 200_000).unwrap();
+        assert!(!d.sessions[0].force_quit);
+        let s = &d.sessions[0];
+        assert_eq!(s.status, Status::Ready);
+        assert_eq!(s.started_at, None);
+        assert_eq!(s.ended_at, None);
+        assert_eq!(s.remaining_ms, 60_000);
+        assert_eq!(s.focused_ms, 0);
+        // A restarted camera session gets its camera back.
+        d.sessions[0].focus.attention.verification = "camera_and_activity".into();
+        d.sessions[0].focus.camera = false;
+        d.sessions[0].status = Status::Completed;
+        apply(&mut d, Action::RestartSession { id: id.clone() }, 300_000).unwrap();
+        assert!(d.sessions[0].focus.camera);
+        // The same card can start again.
+        apply(&mut d, Action::StartSession { id }, 200_000).unwrap();
+        assert_eq!(d.sessions[0].status, Status::Running);
+    }
+    #[test]
+    fn camera_can_be_restarted_after_stop() {
+        let mut d = data(true);
+        let id = d.sessions[0].id.clone();
+        d.sessions[0].focus.camera = true;
+        apply(&mut d, Action::DisableCamera { id: id.clone() }, 1000).unwrap();
+        assert!(!d.sessions[0].focus.camera);
+        apply(&mut d, Action::EnableCamera { id: id.clone() }, 2000).unwrap();
+        assert!(d.sessions[0].focus.camera);
+        // Only during an active session.
+        d.sessions[0].status = Status::Completed;
+        assert!(apply(&mut d, Action::EnableCamera { id }, 3000).is_err());
     }
     #[test]
     fn pause_policy_is_enforced() {

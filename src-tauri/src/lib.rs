@@ -13,7 +13,13 @@ mod settings;
 mod setup;
 use engine::Engine;
 use models::{Action, Snapshot};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+
+#[derive(Default)]
+struct ExitApproved(AtomicBool);
 use tauri::Manager;
 
 // Run native work off the event loop. macOS adapters dispatch AppKit calls to the main thread.
@@ -44,13 +50,23 @@ fn capabilities() -> Vec<capabilities::Capability> {
     capabilities::list()
 }
 #[tauri::command]
-async fn focus_setup(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn focus_setup(
+    app: tauri::AppHandle,
+    browser_id: Option<String>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move||{
         let applications=platform::applications()?;
-        let browsers:Vec<_>=applications.iter().filter(|a|focus::supported_browser(&a.id)).cloned().collect();
+        let mut browsers:Vec<_>=applications.iter().filter(|a|focus::supported_browser(&a.id)).cloned().collect();
+        for installed in platform::installed_browsers() {
+            if focus::supported_browser(&installed.id) && !browsers.iter().any(|b| b.id == installed.id) {
+                browsers.push(installed);
+            }
+        }
         let extension_directory=setup::extension_dir(&app)?;
+        // Default to the first known browser, matching the wizard's dropdown.
+        let browser_id=browser_id.filter(|s|!s.is_empty()).or_else(||browsers.first().map(|b|b.id.clone())).unwrap_or_default();
         let state=app.state::<Mutex<Engine>>();let engine=state.lock().map_err(|_|"Session engine unavailable.")?;
-        Ok(serde_json::json!({"platform":platform::name(),"native_available":platform::supported(),"applications":applications,"browsers":browsers,"camera_permission":platform::camera_permission(),"browser":engine.browser_status(),"pairing_token":engine.pairing_token(),"extension_directory":extension_directory}))
+        Ok(serde_json::json!({"platform":platform::name(),"native_available":platform::supported(),"applications":applications,"browsers":browsers,"camera_permission":platform::camera_permission(),"browser":engine.browser_status_for(&browser_id),"connected_browsers":engine.connected_browsers(),"pairing_token":engine.pairing_token(),"extension_directory":extension_directory}))
     }).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
@@ -95,18 +111,85 @@ fn show_window(app: &tauri::AppHandle) {
         let _ = window.set_focus();
     }
 }
+fn blocked_quit(app: &tauri::AppHandle) {
+    show_window(app);
+    desktop_settings::notify(
+        "Session in progress",
+        "Finish your focus session before closing VYSTRIQ.",
+    );
+}
 fn quit(app: &tauri::AppHandle) {
     let app = app.clone();
+    // Never wait on the engine from the UI thread: native sampling can be
+    // waiting for that same thread. Check and shut down under one lock.
     tauri::async_runtime::spawn_blocking(move || {
-        if let Ok(mut engine) = app.state::<Mutex<Engine>>().lock() {
-            engine.shutdown();
+        let approved = {
+            let state = app.state::<Mutex<Engine>>();
+            let result = match state.lock() {
+                Ok(mut engine) => {
+                    if engine.shutdown_if_idle() {
+                        app.state::<ExitApproved>().0.store(true, Ordering::Release);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => false,
+            };
+            result
+        };
+        if approved {
+            app.exit(0);
+        } else {
+            blocked_quit(&app);
         }
-        app.exit(0);
     });
+}
+fn live_session(snapshot: &models::Snapshot) -> Option<&models::Session> {
+    snapshot.sessions.iter().find(|s| {
+        matches!(
+            s.status,
+            models::Status::Running | models::Status::Paused | models::Status::Preparing
+        )
+    })
+}
+fn tray_timer_text(session: &models::Session) -> String {
+    let secs = session.remaining_ms / 1000;
+    let clock = format!("{:02}:{:02}", secs / 60, secs % 60);
+    match session.status {
+        models::Status::Paused => format!("Paused - {clock}"),
+        models::Status::Preparing => "Starting session...".to_string(),
+        _ => format!("{clock} left"),
+    }
+}
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    live: Option<&models::Session>,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    match live {
+        Some(session) => {
+            let timer = tauri::menu::MenuItem::with_id(
+                app,
+                "timer",
+                tray_timer_text(session),
+                true,
+                None::<&str>,
+            )?;
+            tauri::menu::Menu::with_items(app, &[&timer])
+        }
+        None => {
+            let quit =
+                tauri::menu::MenuItem::with_id(app, "quit", "Quit VYSTRIQ", true, None::<&str>)?;
+            tauri::menu::Menu::with_items(app, &[&quit])
+        }
+    }
 }
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    let result = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+    let result = builder
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -114,26 +197,21 @@ pub fn run() {
                 Engine::open_native(&dir.join("vystriq.sqlite")).map_err(std::io::Error::other)?,
             ));
             app.manage(Mutex::new(settings::Runtime::default()));
-            let show = tauri::menu::MenuItem::with_id(
-                app,
-                "show",
-                "Open VYSTRIQ / Emergency exit",
-                true,
-                None::<&str>,
-            )?;
-            let quit = tauri::menu::MenuItem::with_id(
-                app,
-                "quit",
-                "Quit and release restrictions",
-                true,
-                None::<&str>,
-            )?;
-            let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
+            app.manage(ExitApproved::default());
+            desktop_settings::install_quit_guard(app.handle()).map_err(std::io::Error::other)?;
+            let app_handle = app.handle();
+            let (initial_menu, mut showing_timer) = {
+                let state = app.state::<Mutex<Engine>>();
+                let engine = state.lock().map_err(|_| "Session engine unavailable.")?;
+                let snapshot = engine.current();
+                let live = live_session(&snapshot);
+                (build_tray_menu(app_handle, live)?, live.is_some())
+            };
             let mut tray = tauri::tray::TrayIconBuilder::with_id("focus-controller")
                 .tooltip("VYSTRIQ focus controller")
-                .menu(&menu)
+                .menu(&initial_menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_window(app),
+                    "timer" => show_window(app),
                     "quit" => self::quit(app),
                     _ => {}
                 });
@@ -142,6 +220,7 @@ pub fn run() {
             }
             tray.build(app)?;
             let handle = app.handle().clone();
+            let mut tray_menu = initial_menu;
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let data = {
@@ -155,6 +234,26 @@ pub fn run() {
                     }
                     engine.current()
                 };
+                // Tray menu follows the session: live timer while a session
+                // runs (no quit item), plain Quit when idle.
+                let live = live_session(&data);
+                let active = live.is_some();
+                if active != showing_timer {
+                    if let Ok(next) = build_tray_menu(&handle, live) {
+                        if let Some(tray) = handle.tray_by_id("focus-controller") {
+                            if tray.set_menu(Some(next.clone())).is_ok() {
+                                tray_menu = next;
+                                showing_timer = active;
+                            }
+                        }
+                    }
+                } else if active {
+                    if let (Some(session), Some(kind)) = (live, tray_menu.get("timer")) {
+                        if let Some(item) = kind.as_menuitem() {
+                            let _ = item.set_text(tray_timer_text(session));
+                        }
+                    }
+                }
                 if let Ok(mut runtime) = handle.state::<Mutex<settings::Runtime>>().lock() {
                     runtime.update(&handle, &data);
                 }
@@ -163,8 +262,20 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Covers the Mac close button/Cmd+W and Windows X/Alt+F4/
+                // taskbar close. A busy/poisoned engine fails closed.
                 api.prevent_close();
-                let _ = window.hide();
+                let state = window.app_handle().state::<Mutex<Engine>>();
+                let blocked = match state.try_lock() {
+                    Ok(engine) if !engine.has_active() => {
+                        let _ = window.hide();
+                        false
+                    }
+                    _ => true,
+                };
+                if blocked {
+                    blocked_quit(window.app_handle());
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -180,11 +291,13 @@ pub fn run() {
         .build(tauri::generate_context!());
     match result {
         Ok(app) => app.run(|app, event| match event {
-            tauri::RunEvent::ExitRequested {
-                api, code: None, ..
-            } => {
-                api.prevent_exit();
-                quit(app);
+            // Covers Cmd+Q, application-menu Quit, Dock Quit and app.exit(code).
+            // Only the checked shutdown helper can approve the final exit.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !app.state::<ExitApproved>().0.load(Ordering::Acquire) {
+                    api.prevent_exit();
+                    quit(app);
+                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_window(app),

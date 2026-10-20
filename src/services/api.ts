@@ -8,10 +8,16 @@ export const emptySnapshot: Snapshot = {
 };
 export const api = {
   openSetup: (
-    target: 'extensions' | 'extension_folder' | 'camera_settings',
+    target:
+      | 'extensions'
+      | 'extension_folder'
+      | 'camera_settings'
+      | 'notification_settings'
+      | 'privacy_settings',
     browserId = '',
   ) => invoke<void>('open_setup', { target, browserId }),
-  focusSetup: () => invoke<FocusSetup>('focus_setup'),
+  focusSetup: (browserId?: string) =>
+    invoke<FocusSetup>('focus_setup', { browserId: browserId ?? null }),
   requestCamera: () => invoke<void>('request_camera'),
   resetPairing: () => invoke<void>('reset_browser_pairing'),
   snapshot: () =>

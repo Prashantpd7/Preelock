@@ -119,6 +119,15 @@ impl Database {
         let ids: Vec<_> = data.sessions.iter().map(|s| &s.id).collect();
         let task_ids: Vec<_> = data.tasks.iter().map(|t| &t.id).collect();
         let ids_json = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+        if replace {
+            // Explicit backup restore may restore deleted IDs; ordinary saves
+            // must still reject stale writers.
+            tx.execute(
+                "DELETE FROM deleted_sessions WHERE id IN (SELECT value FROM json_each(?1))",
+                params![ids_json.clone()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         // Tombstone anything disappearing from the snapshot. Once deleted, a
         // session must never come back, even if a stale writer re-inserts it.
         tx.execute(
@@ -259,12 +268,11 @@ mod tests {
         data.sessions.clear();
         db.save(&data).unwrap();
         // A stale writer re-inserts the deleted row (old process, old restore).
-        db.0
-            .execute(
-                "INSERT INTO sessions(id,payload) VALUES (?1,?2)",
-                rusqlite::params![id, payload],
-            )
-            .unwrap();
+        db.0.execute(
+            "INSERT INTO sessions(id,payload) VALUES (?1,?2)",
+            rusqlite::params![id, payload],
+        )
+        .unwrap();
         drop(db);
         // After reopen the deleted session stays gone...
         let mut db = Database::open(&path).unwrap();
@@ -272,15 +280,13 @@ mod tests {
         // ...and the next save purges the resurrected row for good.
         let data = db.load().unwrap();
         db.save(&data).unwrap();
-        let count: i64 = db
-            .0
-            .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
-            .unwrap();
+        let count: i64 =
+            db.0.query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
+                .unwrap();
         assert_eq!(count, 0);
-        let tombed: i64 = db
-            .0
-            .query_row("SELECT count(*) FROM deleted_sessions", [], |r| r.get(0))
-            .unwrap();
+        let tombed: i64 =
+            db.0.query_row("SELECT count(*) FROM deleted_sessions", [], |r| r.get(0))
+                .unwrap();
         assert_eq!(tombed, 1);
     }
 }

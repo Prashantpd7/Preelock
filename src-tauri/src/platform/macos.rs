@@ -52,3 +52,27 @@ pub fn camera_stop() {
 pub fn camera_status() -> String {
     text(unsafe { vy_camera_status() }).unwrap_or_else(|_| "camera_error".into())
 }
+/// Browsers installed on this Mac (whether running or not), so the user can
+/// pick their browser without having to open it first.
+pub fn installed_browsers() -> Vec<Application> {
+    let known = [
+        ("com.google.Chrome", "Google Chrome", "Google Chrome.app"),
+        (
+            "com.microsoft.edgemac",
+            "Microsoft Edge",
+            "Microsoft Edge.app",
+        ),
+        ("com.brave.Browser", "Brave", "Brave Browser.app"),
+        ("com.vivaldi.Vivaldi", "Vivaldi", "Vivaldi.app"),
+        ("org.chromium.Chromium", "Chromium", "Chromium.app"),
+        ("ai.perplexity.comet", "Comet", "Comet.app"),
+    ];
+    known
+        .iter()
+        .filter(|(_, _, app)| std::path::Path::new("/Applications").join(app).exists())
+        .map(|(id, name, _)| Application {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+        .collect()
+}

@@ -19,7 +19,6 @@ const tabs = [
   'General',
   'Focus',
   'Alerts',
-  'Breaks',
   'Connections',
   'Data & help',
 ] as const;
@@ -97,9 +96,9 @@ export function Settings() {
       | 'menu_timer'
       | 'session_alert'
       | 'sound'
-      | 'reminder'
-      | 'offer_break'
-      | 'break_alert',
+      | 'session_start_alert'
+      | 'session_start_sound'
+      | 'reminder',
     hint?: string,
   ) {
     return (
@@ -174,9 +173,9 @@ export function Settings() {
                 title="Open at login"
                 hint={
                   info.login === 2
-                    ? 'Approve VYSTRIQ in Mac Login Items.'
+                    ? 'Approve VYSTRIQ in Login Items.'
                     : info.login === -1
-                      ? 'Needs macOS 13 or later.'
+                      ? 'Unavailable on this system.'
                       : 'Open the app when you sign in.'
                 }
               >
@@ -286,7 +285,7 @@ export function Settings() {
             <section className="settings-section">
               <h2>Alerts</h2>
               <SettingRow
-                title="Mac notifications"
+                title="Notifications"
                 hint="Allow focus and reminder alerts."
               >
                 <button
@@ -314,7 +313,9 @@ export function Settings() {
               </SettingRow>
               {switchRow('Session finished', 'session_alert')}
               {switchRow('Play a sound', 'sound')}
-              {draft.sound && (
+              {switchRow('Session started', 'session_start_alert')}
+              {switchRow('Play a sound', 'session_start_sound')}
+              {(draft.sound || draft.session_start_sound) && (
                 <SettingRow title="Volume">
                   <div className="volume-control">
                     <input
@@ -349,7 +350,7 @@ export function Settings() {
                 <>
                   <SettingRow
                     title="Reminder time"
-                    hint="Your Mac’s local time."
+                    hint="Your computer’s local time."
                   >
                     <input
                       aria-label="Reminder time"
@@ -391,55 +392,6 @@ export function Settings() {
                   </p>
                 </>
               )}
-            </section>
-          )}
-          {tab === 'Breaks' && (
-            <section className="settings-section">
-              <h2>Breaks</h2>
-              {switchRow(
-                'Offer a break',
-                'offer_break',
-                'After a completed focus session.',
-              )}
-              <SettingRow title="Break length">
-                <label className="number-control">
-                  <input
-                    aria-label="Break minutes"
-                    type="number"
-                    min={1}
-                    max={60}
-                    value={draft.break_minutes}
-                    onChange={(e) =>
-                      change('break_minutes', Number(e.target.value))
-                    }
-                  />{' '}
-                  min
-                </label>
-              </SettingRow>
-              {switchRow('Break finished', 'break_alert')}
-              <SettingRow
-                title="Try a break"
-                hint="Starts after your current session ends."
-              >
-                <button
-                  className="secondary"
-                  disabled={
-                    disabled ||
-                    data.sessions.some((s) =>
-                      ['running', 'paused', 'preparing'].includes(s.status),
-                    )
-                  }
-                  onClick={async () => {
-                    if (await save()) await run({ type: 'start_break' });
-                  }}
-                >
-                  Start break
-                </button>
-              </SettingRow>
-              <p className="settings-footnote">
-                Breaks do not count as focus time. Your next session starts only
-                when you choose.
-              </p>
             </section>
           )}
           {tab === 'Connections' && <PermissionsPanel />}
@@ -517,8 +469,8 @@ export function Settings() {
                 <article>
                   <h3>Your data</h3>
                   <p>
-                    Stored on this Mac. No video, typing or webpage content is
-                    saved.
+                    Stored on this device. No video, typing or webpage content
+                    is saved.
                   </p>
                 </article>
                 <article>
@@ -564,16 +516,19 @@ export function Settings() {
                   Test blocking. Reload the extension after an app update.
                 </p>
                 <p>
-                  Camera blocked? Select Allow camera in Connections to open Mac
-                  settings.
+                  Manage camera and notification access in Connections → Permissions.
                 </p>
                 <p>
-                  Closing the window keeps VYSTRIQ running. Use the menu bar
-                  icon to reopen or quit.
+                  During a session, closing and quitting are blocked. When idle, use the tray icon to reopen or quit.
                 </p>
               </div>
               <p className="settings-footnote">
-                VYSTRIQ {info.version ?? '0.4.0'} · Mac desktop
+                VYSTRIQ {info.version ?? '0.4.0'} ·{' '}
+                {info.platform === 'windows'
+                  ? 'Windows'
+                  : info.platform === 'macos'
+                    ? 'Mac'
+                    : 'Desktop'}
               </p>
             </section>
           )}
@@ -673,7 +628,7 @@ export function Settings() {
           <div className="dialog-stack">
             <p>
               {confirm === 'restore'
-                ? 'Replaces your history, tasks and preferences. A recovery backup is saved on this Mac first.'
+                ? 'Replaces your history, tasks and preferences. A recovery backup is saved on this device first.'
                 : confirm === 'delete_history'
                   ? 'This permanently deletes session history and analytics. Export a backup first if you need a copy.'
                   : 'Restores default preferences. Your history, tasks and saved setups stay.'}

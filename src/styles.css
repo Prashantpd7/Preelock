@@ -445,6 +445,41 @@ label {
   flex-direction: row;
   align-items: center;
 }
+.check-label.block-apps {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--text);
+}
+.blocking-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+.blocking-heading {
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+.blocking-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+.blocking-option input[type='checkbox'] {
+  flex-shrink: 0;
+}
+.blocking-option strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+textarea.blocking-sites {
+  margin-left: 30px;
+  width: calc(100% - 30px);
+}
 .form-panel {
   margin-bottom: 32px;
 }
@@ -494,6 +529,9 @@ button.icon-button {
   background: transparent;
   color: var(--muted);
   padding: 7px;
+}
+button.icon-button.danger {
+  color: #ed9b8e;
 }
 .session-list {
   display: grid;
@@ -603,6 +641,145 @@ td:first-child {
 }
 .active-session {
   border-color: #99bc7250;
+}
+.active-session-banner {
+  border-color: #99bc7250;
+  margin-bottom: 24px;
+}
+.active-session-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.active-session-timer {
+  margin: 0 0 8px;
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.active-session-banner .small {
+  margin: 0;
+}
+.text-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.text-link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.camera-warn {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #e0b45c18;
+  border: 1px solid #e0b45c66;
+  color: #e0b45c;
+  font-size: 13px;
+}
+.connect-warn {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #e05c5c14;
+  border: 1px solid #e05c5c66;
+  color: #ef8a8a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.force-quit-flag {
+  margin: 2px 0 0;
+  color: #ef8a8a;
+  font-size: 12px;
+  font-weight: 600;
+}
+.install-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  line-height: 1.6;
+}
+.install-steps li {
+  margin: 0;
+}
+.install-steps .step-title {
+  display: block;
+  margin-bottom: 6px;
+}
+.install-steps li > button,
+.install-steps li > .code-label {
+  margin-top: 10px;
+}
+.install-steps .code-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+.install-steps .muted.small {
+  margin: 8px 0 0;
+}
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+.live-indicator.paused {
+  color: #e8b34b;
+}
+.live-indicator.paused .live-dot {
+  background: #e8b34b;
+  animation: none;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+.started-at {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .timer {
   text-align: center;
@@ -825,10 +1002,6 @@ textarea {
 .consent {
   margin: 20px 0;
   line-height: 1.7;
-  align-items: flex-start;
-}
-.consent input {
-  margin-top: 3px;
 }
 .pairing-token {
   margin-top: 15px;
@@ -997,11 +1170,69 @@ details label {
   display: flex;
   margin: 26px 0;
 }
+.setup-guide > label.code-label {
+  display: block;
+  margin: 14px 0 0;
+}
+.setup-guide .code-hint {
+  margin: 10px 0 0;
+}
+.code-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+.code-row input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.code-row button {
+  flex-shrink: 0;
+  width: auto;
+  white-space: nowrap;
+}
 .setup-guide > label:first-child {
   margin-top: 6px;
 }
 .setup-guide > label:last-child {
   margin-bottom: 6px;
+}
+/* Permissions guide: "Opening a downloaded app" card. */
+.permission-guide .setup-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.permission-guide .setup-guide h3 {
+  font-size: 15px;
+}
+.permission-guide .setup-guide p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.permission-guide .setup-guide ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.permission-guide .setup-guide > button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+/* Modal footer: actions in a right-aligned row. */
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
 }
 .camera-status .setting-row {
   border-bottom: 0;
@@ -1024,6 +1255,9 @@ details label {
   gap: 18px;
   padding: 20px 0;
   border-bottom: 1px solid var(--border);
+}
+.setting-row.divider-top {
+  border-top: 1px solid var(--border);
 }
 .setting-row p {
   margin: 8px 0 0;

@@ -14,7 +14,6 @@ pub struct Engine {
     data: Snapshot,
     anchor: u64,
     sample_anchor: u64,
-    manual_until: u64,
     wall: i64,
     checkpoint: u64,
     bridge: Option<Bridge>,
@@ -22,7 +21,6 @@ pub struct Engine {
     native: bool,
     camera_on: bool,
     camera_test_until: u64,
-    prepared_at: u64,
     failed: Option<String>,
 }
 impl Engine {
@@ -36,6 +34,13 @@ impl Engine {
     fn open_inner(path: &Path, native: bool) -> Result<Self, String> {
         let mut db = Database::open(path)?;
         let mut data = db.load()?;
+        // Manual check-ins were removed; sessions saved with that
+        // verification now use app-based checking.
+        for s in &mut data.sessions {
+            if s.focus.attention.verification == "manual_checkpoints" {
+                s.focus.attention.verification = "activity_only".into();
+            }
+        }
         // Upgrade historical timers without ever crediting offline elapsed time.
         for s in &mut data.sessions {
             if !s.focus.attention.enabled
@@ -51,19 +56,28 @@ impl Engine {
             }
         }
         for s in &mut data.sessions {
-            attention::recover(s, clock::now());
-            if matches!(s.status, Status::Running | Status::Preparing) {
+            // A clean shutdown always settles live sessions via shutdown(),
+            // so a session still live at startup means the app was killed
+            // mid-session (force quit, crash, power loss). Flag it and end
+            // it: a killed session cannot reconnect its restrictions
+            // cleanly and would be left stuck with no way out.
+            if matches!(
+                s.status,
+                Status::Running | Status::Preparing | Status::Paused
+            ) {
+                s.force_quit = true;
+                s.status = Status::Interrupted;
+                s.ended_at = Some(clock::now());
+                s.deadline_ms = None;
+                s.report.enforcement = "Ended: the app was closed during the session".into();
                 s.report.event(
                     clock::now(),
-                    "restart",
-                    "Application restarted; checking restrictions again.",
+                    "force_quit",
+                    "VYSTRIQ was closed during this session; the session was ended.",
                 );
-                if s.focus.network_required() {
-                    s.status = Status::Preparing;
-                    s.deadline_ms = None;
-                    s.report.enforcement = "Waiting for browser reactivation".into();
-                }
+                continue;
             }
+            attention::recover(s, clock::now());
         }
         db.save(&data)?;
         let (bridge, bridge_error) = if native {
@@ -80,7 +94,6 @@ impl Engine {
             data,
             anchor: now,
             sample_anchor: now,
-            manual_until: 0,
             wall: clock::now(),
             checkpoint: now,
             bridge,
@@ -88,11 +101,17 @@ impl Engine {
             native,
             camera_on: false,
             camera_test_until: 0,
-            prepared_at: now,
             failed: None,
         };
         engine.publish();
         Ok(engine)
+    }
+    pub fn shutdown_if_idle(&mut self) -> bool {
+        if self.has_active() {
+            return false;
+        }
+        self.shutdown();
+        true
     }
     pub fn shutdown(&mut self) {
         self.stop_test();
@@ -132,6 +151,20 @@ impl Engine {
             .map(Bridge::status)
             .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
     }
+    /// Connection status for one specific browser (platform browser id).
+    pub fn browser_status_for(&self, browser_id: &str) -> browser::BrowserStatus {
+        self.bridge
+            .as_ref()
+            .map(|b| b.status_for(browser_id))
+            .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+    }
+    /// Browser ids with a live extension connection.
+    pub fn connected_browsers(&self) -> Vec<String> {
+        self.bridge
+            .as_ref()
+            .map(|b| b.connected_browsers())
+            .unwrap_or_default()
+    }
     pub fn test_browser(&self) -> Result<(), String> {
         if self.has_active() {
             return Err("Finish your focus session first.".into());
@@ -170,7 +203,38 @@ impl Engine {
 
         Ok(())
     }
-    fn preflight(&self, id: &str) -> Result<(), String> {
+    fn preflight(&mut self, id: &str) -> Result<(), String> {
+        // Friendly browser name for user-facing errors, falling back to
+        // the raw id when the browser isn't installed anymore.
+        fn browser_display_name(id: &str) -> String {
+            platform::installed_browsers()
+                .into_iter()
+                .find(|b| b.id.eq_ignore_ascii_case(id))
+                .map(|b| b.name)
+                .unwrap_or_else(|| id.to_string())
+        }
+        // The camera may have been stopped mid-run; if permission is granted,
+        // turn it back on for this run instead of failing below.
+        {
+            let s = self
+                .data
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("Session not found.")?;
+            if s.focus.attention.verification == "camera_and_activity"
+                && !s.focus.camera
+                && self.native
+                && platform::camera_permission() == "granted"
+            {
+                s.focus.camera = true;
+                s.report.event(
+                    clock::now(),
+                    "camera_enabled",
+                    "Camera turned back on for this run.",
+                );
+            }
+        }
         let s = self
             .data
             .sessions
@@ -183,9 +247,7 @@ impl Engine {
         if s.focus.mode == Mode::Deep {
             return Err("Deep Focus is unavailable: managed OS policy, a restricted account, signed deployment and administrator recovery must be configured separately.".into());
         }
-        if (s.focus.apps_required() || s.focus.activity_consent)
-            && (!self.native || !platform::supported())
-        {
+        if s.focus.activity_consent && (!self.native || !platform::supported()) {
             return Err("Native application restrictions are unavailable on this platform.".into());
         }
         if s.focus.camera && (!self.native || platform::camera_permission() != "granted") {
@@ -200,18 +262,25 @@ impl Engine {
             && !s.focus.camera
             && s.focus.attention.camera_fallback != "activity_only"
         {
-            return Err(
-                "Enable authorized camera monitoring or explicitly select activity-only fallback."
-                    .into(),
-            );
+            return Err("This session checks you're at your desk with the camera, but camera access isn't allowed. Allow it in setup, or start a session without camera checks.".into());
         }
         if s.focus.network_required() {
-            let b = self.browser_status();
-            if !b.connected || !b.error.is_empty() {
-                return Err("Pair the browser extension and use Sync now before starting. No session has started.".into());
+            // The website rules are enforced in every selected browser, so
+            // each one must be paired before the session starts. A selected
+            // browser without the extension would browse unfiltered.
+            for browser_id in s.focus.session_browsers() {
+                let b = self.browser_status_for(&browser_id);
+                let wrong_browser = b.client_browser.is_empty()
+                    || !browser::same_browser(&browser_id, &b.client_browser);
+                if !b.connected || !b.error.is_empty() || wrong_browser {
+                    return Err(format!(
+                        "Pair the Vystriq extension in {} before starting. No session has started.",
+                        browser_display_name(&browser_id)
+                    ));
+                }
             }
         }
-        if s.focus.apps_required() {
+        if s.focus.activity_consent {
             platform::sample().map_err(|e| format!("Native activity API unavailable: {e}"))?;
         }
         Ok(())
@@ -356,7 +425,6 @@ impl Engine {
                 sessions::advance(s, elapsed, now);
             }
         }
-        let confirmed = matches!(&action, Some(Action::ConfirmWork { .. }));
         let changed = action.is_some();
         let start = match &action {
             Some(Action::StartSession { id } | Action::ResumeSession { id }) => Some(id.clone()),
@@ -367,13 +435,12 @@ impl Engine {
         }
         if let Some(id) = start {
             self.sample_anchor = tick;
-            self.manual_until = 0;
             let s = next.sessions.iter_mut().find(|s| s.id == id).unwrap();
             s.attention.checkpoint_at = Some(now);
             s.attention.candidate_ms = 0;
             s.attention.state = State::Unknown;
             s.attention.reason = "Waiting for fresh observations".into();
-            if !s.focus.apps_required() && !s.focus.network_required() {
+            if !s.focus.activity_consent && !s.focus.network_required() {
                 s.report.enforcement = "No application or browser restrictions requested".into();
             }
             if s.focus.attention.enabled {
@@ -390,7 +457,6 @@ impl Engine {
                 s.attention.state = State::Preparing;
                 s.deadline_ms = None;
                 s.report.enforcement = "Waiting for browser rule acknowledgement".into();
-                self.prepared_at = tick;
             }
             s.report.event(
                 now,
@@ -437,9 +503,6 @@ impl Engine {
             }
             self.checkpoint = tick;
         }
-        if confirmed {
-            self.manual_until = tick.saturating_add(60_000);
-        }
         self.data = next;
         self.anchor = tick;
         self.wall = now;
@@ -456,7 +519,6 @@ impl Engine {
         let tick = clock::continuous_ms();
         let delta = tick.saturating_sub(self.sample_anchor);
         self.sample_anchor = tick;
-        let browser = self.browser_status();
         let Some(index) = self
             .data
             .sessions
@@ -468,15 +530,26 @@ impl Engine {
         };
         let mut next = self.data.clone();
         let s = &mut next.sessions[index];
+        // Track the connection of this session's own browser — the status
+        // of any other paired browser does not count here.
+        let browser = self.browser_status_for(&s.focus.browser_app);
         if s.status == Status::Preparing {
             s.attention.state = State::Preparing;
         }
-        let mut signals = Signals {
-            manual_confirmed: tick < self.manual_until,
-            ..Default::default()
-        };
+        let mut signals = Signals::default();
         if s.status == Status::Preparing {
-            if browser.connected && browser.applied_id == s.id && browser.error.is_empty() {
+            // The session starts once every selected browser has the rules
+            // installed: the policy is published to all paired browsers
+            // and each extension acknowledges it separately.
+            let rules_live_everywhere = s.focus.session_browsers().iter().all(|id| {
+                let b = self.browser_status_for(id);
+                b.connected
+                    && b.applied_id == s.id
+                    && b.error.is_empty()
+                    && !b.client_browser.is_empty()
+                    && browser::same_browser(id, &b.client_browser)
+            });
+            if rules_live_everywhere {
                 s.status = Status::Running;
                 s.started_at.get_or_insert(now);
                 s.deadline_ms = if s.focus.attention.enabled {
@@ -490,25 +563,16 @@ impl Engine {
                     "browser_activated",
                     "Paired browser acknowledged installed request rules.",
                 );
-            } else if tick.saturating_sub(self.prepared_at) > 45_000 {
-                s.status = Status::Interrupted;
-                s.ended_at = Some(now);
-                s.report.enforcement = "Activation failed; restrictions released".into();
-                s.report.event(
-                    now,
-                    "activation_failed",
-                    "Browser did not acknowledge rules within 45 seconds. Timer did not run.",
-                );
             }
         } else {
             if s.focus.network_required()
                 && (!browser.connected || browser.applied_id != s.id || !browser.error.is_empty())
             {
-                s.status = Status::Interrupted;
-                s.ended_at = Some(now);
+                s.status = Status::Preparing;
                 s.deadline_ms = None;
-                s.report.enforcement = "Released: browser disconnected".into();
-                s.report.event(now,"enforcement_lost","Browser rule acknowledgement was lost; use recovery or reconnect before another session.");
+                s.attention.state = State::Preparing;
+                s.report.enforcement = "Waiting for browser reconnection".into();
+                s.report.event(now, "enforcement_lost", "Browser disconnected. Session stays active; focus time waits for reconnection.");
             }
             if s.status == Status::Running && s.focus.activity_consent && self.native {
                 match platform::sample() {
@@ -568,15 +632,18 @@ impl Engine {
                         } else {
                             s.report.approved_ms += if delta <= 3000 { delta } else { 0 };
                         }
-                        if blocked && s.focus.apps_required() {
-                            if !platform::hide(&sample) {
-                                s.status = Status::Interrupted;
-                                s.ended_at = Some(now);
-                                s.deadline_ms = None;
-                                s.report.event(now,"enforcement_failed","OS refused to hide/minimize a restricted app; restrictions released.");
-                            } else {
+                        if blocked {
+                            // Best effort: the OS can refuse a hide request (for
+                            // example while the app is still launching). Never
+                            // end the session over it; the next sample retries,
+                            // and the time still counts as distracted.
+                            if platform::hide(&sample) {
                                 s.report.enforcement =
                                     "Native app redirection active (reversible)".into();
+                            } else {
+                                s.report.enforcement =
+                                    "A restricted app could not be hidden; session continues"
+                                        .into();
                             }
                         } else {
                             s.report.enforcement = if s.focus.network_required() {
@@ -672,6 +739,63 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::focus::FocusConfig;
+    /// Client UUID + browser report used by the network tests' fake extension.
+    const TEST_CLIENT: &str = "11111111-1111-1111-1111-111111111111";
+    const TEST_BROWSER: &str = "com.google.Chrome";
+    #[test]
+    fn normal_shutdown_refuses_every_active_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("exit.sqlite")).unwrap();
+        engine
+            .execute(Action::CreateSession {
+                title: "Work".into(),
+                minutes: 1,
+                allow_pause: true,
+                focus: Default::default(),
+            })
+            .unwrap();
+        for status in [Status::Running, Status::Paused, Status::Preparing] {
+            engine.data.sessions[0].status = status;
+            assert!(!engine.shutdown_if_idle());
+        }
+        engine.data.sessions[0].status = Status::Completed;
+        assert!(engine.shutdown_if_idle());
+    }
+    #[test]
+    fn restart_flags_sessions_killed_mid_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("killed.sqlite");
+        let mut engine = Engine::open_inner(&path, false).unwrap();
+        for title in ["Killed", "Clean"] {
+            engine
+                .execute(Action::CreateSession {
+                    title: title.into(),
+                    minutes: 25,
+                    allow_pause: true,
+                    focus: FocusConfig {
+                        attention: crate::attention::Policy {
+                            enabled: true,
+                            ..Default::default()
+                        },
+                        activity_consent: true,
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+        }
+        let clean_id = engine.data.sessions[1].id.clone();
+        engine.execute(Action::EndSession { id: clean_id }).unwrap();
+        // Simulate the process dying mid-session: shutdown() never ran,
+        // so the on-disk status is still live.
+        engine.data.sessions[0].status = Status::Running;
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let engine = Engine::open_inner(&path, false).unwrap();
+        assert!(engine.data.sessions[0].force_quit);
+        assert_eq!(engine.data.sessions[0].status, Status::Interrupted);
+        assert!(!engine.data.sessions[1].force_quit);
+    }
     #[test]
     fn productive_engine_checkpoints_recovery_and_emergency_cleanup() {
         let dir = tempfile::tempdir().unwrap();
@@ -689,25 +813,26 @@ mod tests {
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
         e.anchor = clock::continuous_ms().saturating_sub(30000);
         assert_eq!(e.snapshot().unwrap().sessions[0].focused_ms, 0); // UI polling cannot earn time.
-        e.execute(Action::ConfirmWork { id: id.clone() }).unwrap();
         for _ in 0..3 {
             e.sample_anchor = clock::continuous_ms().saturating_sub(1100);
             e.tick().unwrap();
         }
         let accepted = e.data.sessions[0].focused_ms;
-        assert!((2000..5000).contains(&accepted));
+        assert_eq!(accepted, 0); // No verification signal, no credit.
         e.sample_anchor = clock::continuous_ms().saturating_sub(60000);
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].focused_ms, accepted);
         assert_eq!(e.data.sessions[0].attention.state, State::Recovering);
-        e.db.save(&e.data).unwrap();
-        drop(e);
-        let mut e = Engine::open(&path).unwrap();
-        assert_eq!(e.snapshot().unwrap().sessions[0].focused_ms, accepted);
-        assert_eq!(e.manual_until, 0);
+        // One more quiet tick: the attention state settles back and records
+        // another interval, so the emergency cleanup below has intervals
+        // spanning the whole session to preserve.
         e.sample_anchor = clock::continuous_ms().saturating_sub(1100);
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].focused_ms, accepted);
+        // Emergency exit while the engine is still alive; a later reopen
+        // must preserve the emergency state and the checkpoints. (Reopening
+        // a still-Running session instead would mean the app was killed,
+        // which now ends the session as Interrupted.)
         e.execute(Action::EmergencyExit {
             id,
             confirmation: "END FOCUS".into(),
@@ -718,6 +843,7 @@ mod tests {
         let state = e.snapshot().unwrap();
         assert_eq!(state.sessions[0].attention.state, State::EmergencyExit);
         assert_eq!(state.sessions[0].status, Status::Interrupted);
+        assert_eq!(state.sessions[0].focused_ms, accepted);
         let conn = rusqlite::Connection::open(path).unwrap();
         let count: i64 = conn
             .query_row("SELECT count(*) FROM attention_intervals", [], |r| r.get(0))
@@ -758,7 +884,10 @@ mod tests {
         let state = restored.snapshot().unwrap();
         assert_eq!(state.tasks[0].title, "Read");
         assert_eq!(state.preferences.theme, "light");
-        assert_eq!(state.sessions[0].status, crate::models::Status::Paused);
+        // A paused session on disk means the app was killed mid-session:
+        // it ends as Interrupted (flagged), it is never resumed.
+        assert_eq!(state.sessions[0].status, crate::models::Status::Interrupted);
+        assert!(state.sessions[0].force_quit);
     }
     #[test]
     fn rejected_action_does_not_persist_partial_changes() {
@@ -778,7 +907,10 @@ mod tests {
     fn network_engine(dir: &Path) -> (Engine, String) {
         let mut e = Engine::open(&dir.join("test.sqlite")).unwrap();
         e.bridge = Some(Bridge::test_bridge(dir));
-        e.bridge.as_ref().unwrap().acknowledge("");
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, "");
         let state = e
             .execute(Action::CreateSession {
                 title: "Network".into(),
@@ -803,33 +935,46 @@ mod tests {
         assert!(state.sessions[0].started_at.is_none());
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Preparing);
-        e.bridge.as_ref().unwrap().acknowledge(&id);
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Running);
         e.data.sessions[0].remaining_ms = 0;
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Completed);
         assert!(e.browser_status().cleanup_pending);
-        e.bridge.as_ref().unwrap().acknowledge("");
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, "");
         assert!(!e.browser_status().cleanup_pending);
     }
     #[test]
-    fn missing_ack_times_out_and_browser_loss_interrupts() {
+    fn missing_ack_and_browser_loss_keep_session_active() {
         let dir = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir.path());
         e.execute(Action::StartSession { id }).unwrap();
-        // Set the monotonic preparation timestamp in the past without waiting.
-        e.prepared_at = clock::continuous_ms().saturating_sub(46_000);
+        // Missing browser acknowledgement must never end the commitment.
         e.tick().unwrap();
-        assert_eq!(e.data.sessions[0].status, Status::Interrupted);
+        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert!(!e.shutdown_if_idle());
         let dir2 = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir2.path());
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
-        e.bridge.as_ref().unwrap().acknowledge(&id);
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
         e.tick().unwrap();
-        e.bridge.as_ref().unwrap().acknowledge("");
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, "");
         e.tick().unwrap();
-        assert_eq!(e.data.sessions[0].status, Status::Interrupted);
+        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert!(!e.shutdown_if_idle());
     }
     #[test]
     fn unsupported_os_deep_and_missing_camera_permission_fail_before_start() {
@@ -854,27 +999,36 @@ mod tests {
         assert_eq!(e.data.sessions[0].status, Status::Ready);
     }
     #[test]
-    fn restart_revalidates_network_instead_of_claiming_enforcement() {
+    fn restart_flags_killed_network_session() {
         let dir = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir.path());
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
-        e.bridge.as_ref().unwrap().acknowledge(&id);
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
         e.tick().unwrap();
         drop(e);
+        // The app was killed mid-session: the session ends flagged, it is
+        // not resumed, and no enforcement is claimed across the restart.
         let restored = Engine::open(&dir.path().join("test.sqlite")).unwrap();
-        assert_eq!(restored.data.sessions[0].status, Status::Preparing);
+        assert_eq!(restored.data.sessions[0].status, Status::Interrupted);
+        assert!(restored.data.sessions[0].force_quit);
         assert!(restored.data.sessions[0]
             .report
             .events
             .iter()
-            .any(|e| e.kind == "restart"));
+            .any(|e| e.kind == "force_quit"));
     }
     #[test]
     fn sqlite_failure_releases_policy_and_preserves_prior_disk_state() {
         let dir = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir.path());
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
-        e.bridge.as_ref().unwrap().acknowledge(&id);
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
         e.tick().unwrap();
         let conn = rusqlite::Connection::open(dir.path().join("test.sqlite")).unwrap();
         conn.execute_batch("CREATE TRIGGER fail_save BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END;").unwrap();

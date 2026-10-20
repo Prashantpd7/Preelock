@@ -9,15 +9,25 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAppStore } from '../state/store';
-import { countdown, formatDuration } from '../services/analytics';
+import { countdown } from '../services/analytics';
 import { api, desktop } from '../services/api';
 import { Modal } from './SettingsControls';
 import { BrowserSetup } from './BrowserSetup';
+import { sameBrowser, sessionBrowsers } from '../types';
 import type { FocusSetup, Session } from '../types';
 function prettyApp(id: string, names?: Record<string, string>) {
   if (names?.[id]) return names[id];
   const tail = id.split('.').pop() || id;
   return tail.replace(/[-_]/g, ' ').trim() || id;
+}
+function formatStartedAt(ms: number) {
+  return new Date(ms).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 export function SessionCard({
   session,
@@ -25,12 +35,16 @@ export function SessionCard({
   appNames,
   setup,
   onSetupRefresh,
+  showStartedAt,
+  hideStart,
 }: {
   session: Session;
   onEdit?: (session: Session) => void;
   appNames?: Record<string, string>;
   setup?: FocusSetup | null;
   onSetupRefresh?: () => Promise<FocusSetup | null>;
+  showStartedAt?: boolean;
+  hideStart?: boolean;
 }) {
   const execute = useAppStore((s) => s.execute);
   const busy = useAppStore((s) => s.busy);
@@ -44,8 +58,26 @@ export function SessionCard({
   const [allowingCamera, setAllowingCamera] = useState(false);
   const [checking, setChecking] = useState(false);
   const [showBrowserSetup, setShowBrowserSetup] = useState(false);
+  // Which browser the connect guide targets: the first unpaired one.
+  const [guideBrowser, setGuideBrowser] = useState('');
+  // Connection status for this session's own browser, fetched when the
+  // pre-start popup opens. Falls back to the shared setup until loaded.
+  const [sessionSetup, setSessionSetup] = useState<FocusSetup | null>(null);
+  // Connection status for the browser the embedded connect guide targets.
+  // Kept separate from sessionSetup: the guide's browser can differ from
+  // the session's dropdown browser, and reusing a status filtered to an
+  // already-connected browser would render the guide as nothing.
+  const [guideSetup, setGuideSetup] = useState<FocusSetup | null>(null);
   const autoStarted = useRef(false);
+  const finished = ['completed', 'interrupted', 'ended'].includes(
+    session.status,
+  );
   async function requestStart() {
+    if (finished) {
+      // Reuse the card: reset it to a fresh run first.
+      const ok = await execute({ type: 'restart_session', id: session.id });
+      if (!ok) return;
+    }
     if (!desktop || allReady) {
       void execute({ type: 'start_session', id: session.id });
       return;
@@ -53,6 +85,8 @@ export function SessionCard({
     autoStarted.current = false;
     setCameraWaiting(false);
     setShowBrowserSetup(false);
+    setGuideBrowser('');
+    setGuideSetup(null);
     setReadyOpen(true);
   }
   async function allowCamera() {
@@ -105,8 +139,31 @@ export function SessionCard({
   const cameraBlocked =
     cameraPermission === 'denied' || cameraPermission === 'restricted';
   const cameraReady = !needsCamera || cameraPermission === 'granted';
+  const cameraStopped = (report?.events ?? []).some(
+    (e) => e.kind === 'camera_disabled',
+  );
+  // The paired extension must report that it lives in this session's
+  // browser — a connection from any other browser does not count.
+  // Prefers the per-session status fetched for the popup; falls back to
+  // the shared setup until it loads.
+  const browserSetup = sessionSetup ?? setup;
+  // Strict sessions enforce the website rules in every selected browser,
+  // so all of them need the extension paired.
+  const sessionBrowserIds = focusCfg ? sessionBrowsers(focusCfg) : [];
+  const connectedIds = browserSetup?.connected_browsers ?? [];
+  const unpairedBrowsers = sessionBrowserIds.filter(
+    (id) => !connectedIds.some((c) => sameBrowser(c, id)),
+  );
   const browserOk =
-    !!setup?.browser.connected && !setup?.browser.error;
+    !!browserSetup?.browser.connected &&
+    !browserSetup?.browser.error &&
+    (!focusCfg?.browser_app ||
+      (!!browserSetup?.browser.client_browser &&
+        sameBrowser(
+          focusCfg.browser_app,
+          browserSetup.browser.client_browser,
+        ))) &&
+    unpairedBrowsers.length === 0;
   const browserReady = !needsBrowser || browserOk;
   const allReady = cameraReady && browserReady;
   const cameraState = cameraReady
@@ -116,6 +173,21 @@ export function SessionCard({
       : cameraWaiting
         ? 'waiting'
         : 'ask';
+  // Fetch this session's own browser connection when the pre-start popup
+  // opens — it can differ from the most recently used browser elsewhere.
+  useEffect(() => {
+    if (!readyOpen || !desktop) return;
+    let active = true;
+    api
+      .focusSetup(session.focus?.browser_app ?? '')
+      .then((v) => {
+        if (active) setSessionSetup(v);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [readyOpen, session.focus?.browser_app]);
   useEffect(() => {
     if (!readyOpen || !allReady || autoStarted.current) return;
     autoStarted.current = true;
@@ -133,28 +205,26 @@ export function SessionCard({
   const workAppNames = workAppIds.map((id) => prettyApp(id, appNames));
   const verificationText = !focusCfg?.attention?.enabled
     ? 'Timer only — no focus checks.'
-    : verification === 'manual_checkpoints'
-      ? 'You confirm you are working when asked.'
-      : verification === 'camera_and_activity'
-        ? "Checks your apps and that you're at your desk."
-        : 'Checks which app you are using.';
+    : verification === 'camera_and_activity'
+      ? "Checks your apps and that you're at your desk."
+      : 'Checks which app you are using.';
   const styleText = strictMode
     ? 'Strict — no pausing. Use Emergency exit to stop early.'
     : session.allow_pause
       ? 'Flexible — you can pause anytime.'
       : 'Pausing is turned off for this session.';
   const websiteRows: string[] = [];
-  const allowedSites = strictMode ? (focusCfg?.domains ?? []) : [];
-  const earningSites = !strictMode
-    ? (focusCfg?.attention?.work_domains ?? [])
-    : [];
-  const blockedSites = !strictMode ? (focusCfg?.domains ?? []) : [];
-  if (allowedSites.length)
-    websiteRows.push(`Only these are allowed: ${allowedSites.join(', ')}`);
+  const blocking = focusCfg?.website_blocking ?? 'auto';
+  const effectiveBlocking =
+    blocking === 'auto' ? (strictMode ? 'allowlist' : 'blocklist') : blocking;
+  const domains = focusCfg?.domains ?? [];
+  const earningSites = focusCfg?.attention?.work_domains ?? [];
   if (earningSites.length)
     websiteRows.push(`These earn focus time: ${earningSites.join(', ')}`);
-  if (blockedSites.length)
-    websiteRows.push(`Blocked: ${blockedSites.join(', ')}`);
+  if (effectiveBlocking === 'allowlist' && domains.length)
+    websiteRows.push(`Only these are open: ${domains.join(', ')}`);
+  if (effectiveBlocking === 'blocklist' && domains.length)
+    websiteRows.push(`Blocked: ${domains.join(', ')}`);
   const outcomeText =
     session.status === 'completed'
       ? 'Completed the full session.'
@@ -193,19 +263,41 @@ export function SessionCard({
                 ? 'Flexible'
                 : 'No pause'}
           </p>
+          {session.force_quit && (
+            <p className="force-quit-flag" role="note">
+              Force quit during session
+            </p>
+          )}
         </div>
-        {session.status === 'ready' && (
-          <button
-            disabled={busy || !desktop}
-            onClick={(e) => {
-              e.stopPropagation();
-              void requestStart();
-            }}
+        {live && (
+          <span
+            className={`live-indicator${session.status === 'paused' ? ' paused' : ''}`}
+            role="status"
+            aria-label={
+              session.status === 'paused' ? 'Session paused' : 'Session active'
+            }
           >
-            <Play size={15} />
-            Start session
-          </button>
+            <span className="live-dot" aria-hidden="true" />
+            {session.status === 'paused'
+              ? 'Paused'
+              : countdown(session.remaining_ms)}
+          </span>
         )}
+        {!hideStart &&
+          ['ready', 'completed', 'interrupted', 'ended'].includes(
+            session.status,
+          ) && (
+            <button
+              disabled={busy || !desktop}
+              onClick={(e) => {
+                e.stopPropagation();
+                void requestStart();
+              }}
+            >
+              <Play size={15} />
+              Start session
+            </button>
+          )}
         {session.status === 'running' && session.allow_pause && !committed && (
           <button
             className="secondary"
@@ -231,64 +323,74 @@ export function SessionCard({
             Resume
           </button>
         )}
-        <div className="menu-wrap">
-          <button
-            className="icon-button"
-            aria-label="Session options"
-            aria-haspopup="menu"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (menu) closeMenu();
-              else setMenu(true);
-            }}
+        {showStartedAt && session.started_at != null && (
+          <span
+            className="started-at"
+            title={new Date(session.started_at).toLocaleString()}
           >
-            <MoreVertical size={18} />
-          </button>
-          {menu && (
-            <>
-              <div
-                className="menu-backdrop"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMenu();
-                }}
-              />
-              <div className="menu" role="menu">
-                {session.status === 'ready' && onEdit && (
+            {formatStartedAt(session.started_at)}
+          </span>
+        )}
+        {!live && (
+          <div className="menu-wrap">
+            <button
+              className="icon-button"
+              aria-label="Session options"
+              aria-haspopup="menu"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (menu) closeMenu();
+                else setMenu(true);
+              }}
+            >
+              <MoreVertical size={18} />
+            </button>
+            {menu && (
+              <>
+                <div
+                  className="menu-backdrop"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeMenu();
+                  }}
+                />
+                <div className="menu" role="menu">
+                  {session.status === 'ready' && onEdit && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeMenu();
+                        onEdit?.(session);
+                      }}
+                    >
+                      <Pencil size={15} />
+                      Edit the session
+                    </button>
+                  )}
                   <button
                     type="button"
                     role="menuitem"
+                    className="danger"
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (!confirmDelete) {
+                        setConfirmDelete(true);
+                        return;
+                      }
                       closeMenu();
-                      onEdit?.(session);
+                      void execute({ type: 'delete_session', id: session.id });
                     }}
                   >
-                    <Pencil size={15} />
-                    Edit the session
+                    <Trash2 size={15} />
+                    {confirmDelete ? 'Confirm delete?' : 'Delete session'}
                   </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!confirmDelete) {
-                      setConfirmDelete(true);
-                      return;
-                    }
-                    closeMenu();
-                    void execute({ type: 'delete_session', id: session.id });
-                  }}
-                >
-                  <Trash2 size={15} />
-                  {confirmDelete ? 'Confirm delete?' : 'Delete session'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
       {open && (
         <div className="session-details">
@@ -365,19 +467,15 @@ export function SessionCard({
                   <span>Focused {countdown(session.focused_ms)}</span>
                   <span>Distracted {countdown(attention.distracted_ms)}</span>
                   <span>Away {countdown(attention.absent_ms)}</span>
+                  <span>
+                    Total{' '}
+                    {countdown(
+                      session.focused_ms +
+                        attention.distracted_ms +
+                        attention.absent_ms,
+                    )}
+                  </span>
                 </div>
-                {session.status === 'running' &&
-                  session.focus.attention.verification ===
-                    'manual_checkpoints' && (
-                    <button
-                      disabled={busy}
-                      onClick={() =>
-                        void execute({ type: 'confirm_work', id: session.id })
-                      }
-                    >
-                      I'm working · count 1 minute
-                    </button>
-                  )}
               </section>
             )}
           {!session.focus?.attention?.enabled && (
@@ -391,32 +489,6 @@ export function SessionCard({
               Reconnect.
             </p>
           )}
-          {report &&
-            !['ready', 'preparing'].includes(session.status) &&
-            session.focus?.activity_consent && (
-              <details className="detail-block">
-                <summary>App & website activity</summary>
-                {live && report.enforcement && (
-                  <p className="small">{report.enforcement}</p>
-                )}
-                {live && (
-                  <p className="muted small">
-                    Now using: {report.active_app || 'nothing yet'}
-                  </p>
-                )}
-                <div className="report-metrics">
-                  <span>On-task {formatDuration(report.approved_ms)}</span>
-                  <span>
-                    Distracting {formatDuration(report.distracting_ms)}
-                  </span>
-                  <span>Idle {formatDuration(report.idle_ms)}</span>
-                  <span>
-                    {report.interruptions} interruption
-                    {report.interruptions === 1 ? '' : 's'}
-                  </span>
-                </div>
-              </details>
-            )}
           {live && session.focus?.camera && (
             <p className="small" role="status">
               Camera:{' '}
@@ -456,6 +528,20 @@ export function SessionCard({
                   Stop camera
                 </button>
               )}
+              {!session.focus?.camera &&
+                live &&
+                cameraStopped &&
+                !cameraBlocked && (
+                  <button
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      void execute({ type: 'enable_camera', id: session.id })
+                    }
+                  >
+                    Start camera
+                  </button>
+                )}
             </div>
           )}
           {recovery && live && (
@@ -477,7 +563,7 @@ export function SessionCard({
             >
               <p>
                 Stop this session and release its blocks. If websites stay
-                blocked, use Emergency unblock in the browser extension.
+                blocked, disconnect Vystriq in the browser extension.
               </p>
               <label>
                 Type END FOCUS
@@ -500,7 +586,7 @@ export function SessionCard({
             {needsCamera && (
               <section className="ready-check">
                 <h3>Camera</h3>
-                {cameraState === 'ready' ? (
+                {setup?.platform === 'windows' ? (<p>Camera checks are not available on Windows. Edit this session and choose Apps only.</p>) : cameraState === 'ready' ? (
                   <p className="ready-box">Ready</p>
                 ) : cameraState === 'waiting' ? (
                   <>
@@ -551,9 +637,7 @@ export function SessionCard({
                       This session checks that you're at your desk using your
                       camera.
                     </p>
-                    <p className="muted small">
-                      Your video never leaves this Mac.
-                    </p>
+                    <p className="muted small">Video stays on this device.</p>
                     <div className="row controls">
                       <button
                         type="button"
@@ -581,21 +665,42 @@ export function SessionCard({
                   <p className="ready-box">Ready</p>
                 ) : showBrowserSetup ? (
                   <BrowserSetup
-                    setup={setup ?? null}
+                    setup={guideSetup}
                     refresh={async () => {
+                      const target =
+                        guideBrowser || session.focus?.browser_app || '';
+                      setGuideSetup(await api.focusSetup(target));
+                      // Keep the popup's own readiness check live so it
+                      // flips to Ready (and auto-starts) once paired.
+                      setSessionSetup(
+                        await api.focusSetup(session.focus?.browser_app ?? ''),
+                      );
                       await onSetupRefresh?.();
                     }}
-                    browserId={session.focus?.browser_app ?? ''}
+                    browserId={guideBrowser || session.focus?.browser_app || ''}
                   />
                 ) : (
                   <>
                     <p>
-                      This session needs the browser extension paired to
-                      enforce its website rules.
+                      This session needs the browser extension paired to enforce
+                      its website rules.
                     </p>
                     <button
                       type="button"
-                      onClick={() => setShowBrowserSetup(true)}
+                      onClick={() => {
+                        const target =
+                          unpairedBrowsers[0] ??
+                          session.focus?.browser_app ??
+                          '';
+                        setGuideBrowser(target);
+                        setGuideSetup(null);
+                        setShowBrowserSetup(true);
+                        // Fetch this browser's status now: the popup's
+                        // sessionSetup is filtered to the session's dropdown
+                        // browser and may already be connected, which would
+                        // render the guide as nothing.
+                        api.focusSetup(target).then(setGuideSetup).catch(() => {});
+                      }}
                     >
                       Connect browser extension
                     </button>

@@ -8,12 +8,26 @@ pub enum Mode {
     Strict,
     Deep,
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebsiteBlocking {
+    /// Sessions saved before this choice existed: follow `mode`.
+    #[default]
+    Auto,
+    /// No website blocking.
+    None,
+    /// `domains` lists the sites to block.
+    Blocklist,
+    /// `domains` lists the sites to keep; everything else is blocked.
+    Allowlist,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FocusConfig {
     pub mode: Mode,
     pub apps: Vec<String>,
     pub domains: Vec<String>,
+    pub website_blocking: WebsiteBlocking,
     pub general_internet: bool,
     pub browser_app: String,
     pub activity_consent: bool,
@@ -26,6 +40,7 @@ impl Default for FocusConfig {
             mode: Mode::Standard,
             apps: vec![],
             domains: vec![],
+            website_blocking: WebsiteBlocking::Auto,
             general_internet: true,
             browser_app: String::new(),
             activity_consent: false,
@@ -41,19 +56,38 @@ impl FocusConfig {
             || (self.mode != Mode::Standard && !self.browser_app.is_empty())
             || !self.attention.work_domains.is_empty()
     }
+    /// The single browser this session's website rules cover. One browser
+    /// per session: the engine requires it to be paired before the
+    /// session starts.
+    pub fn session_browsers(&self) -> Vec<String> {
+        if self.browser_app.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.browser_app.clone()]
+        }
+    }
     pub fn apps_required(&self) -> bool {
-        !self.apps.is_empty() || self.mode != Mode::Standard
+        self.activity_consent
     }
     pub fn blocked(&self, id: &str) -> bool {
         if protected(id) {
             return false;
         }
-        let selected = self.apps.iter().any(|a| a.eq_ignore_ascii_case(id));
-        if self.mode == Mode::Standard {
-            selected
-        } else {
-            !selected && !id.eq_ignore_ascii_case(&self.browser_app)
+        if !self.activity_consent {
+            // App blocking is off: other apps are left alone.
+            return false;
         }
+        // "Block all other apps" is on: strict allowlist — everything except
+        // the chosen work apps and the paired browser is blocked.
+        let work = if self.mode == Mode::Standard {
+            self.attention
+                .work_apps
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(id))
+        } else {
+            self.apps.iter().any(|a| a.eq_ignore_ascii_case(id))
+        };
+        !work && !id.eq_ignore_ascii_case(&self.browser_app)
     }
 }
 pub fn protected(id: &str) -> bool {
@@ -221,9 +255,6 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     if config.mode == Mode::Strict && config.apps.is_empty() && config.browser_app.is_empty() {
         return Err("Choose a work app or browser for Strict mode.".into());
     }
-    if config.apps_required() && !config.activity_consent {
-        return Err("Application restrictions require visible activity-monitoring consent.".into());
-    }
     if config.mode == Mode::Strict
         && !config.browser_app.is_empty()
         && config.general_internet
@@ -237,13 +268,25 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     if config.mode == Mode::Standard && config.apps.iter().any(|a| a == &config.browser_app) {
         return Err("The paired browser cannot also be in the app blocklist.".into());
     }
+    // One browser per session: a second browser approved as a work app
+    // would need its own pairing and its own rules. Browsers the
+    // extension cannot run in stay forbidden, since they would browse
+    // unfiltered.
     if config.mode == Mode::Strict
         && config
             .apps
             .iter()
-            .any(|id| known_browser(id) && !id.eq_ignore_ascii_case(&config.browser_app))
+            .any(|id| supported_browser(id) && !id.eq_ignore_ascii_case(&config.browser_app))
     {
-        return Err("Strict mode cannot approve another known browser outside the paired profile. Remove it from approved apps.".into());
+        return Err("Only one browser per session. Remove the other browser from your work apps, or pick it as your browser.".into());
+    }
+    if config.mode == Mode::Strict
+        && config
+            .apps
+            .iter()
+            .any(|id| known_browser(id) && !supported_browser(id))
+    {
+        return Err("Strict mode cannot approve a browser the Vystriq extension doesn't support. Remove it from approved apps.".into());
     }
     Ok(config)
 }
@@ -303,6 +346,36 @@ mod tests {
         assert!(!browser.blocked("ai.perplexity.comet"));
     }
     #[test]
+    fn strict_rejects_second_browser_but_not_unsupported_ones() {
+        let one = FocusConfig {
+            mode: Mode::Strict,
+            browser_app: "ai.perplexity.comet".into(),
+            apps: vec![
+                "ai.perplexity.comet".into(),
+                "com.microsoft.VSCode".into(),
+            ],
+            activity_consent: true,
+            domains: vec!["github.com".into()],
+            ..Default::default()
+        };
+        assert!(validate(one.clone()).is_ok());
+        assert_eq!(one.session_browsers(), vec!["ai.perplexity.comet"]);
+        let two = FocusConfig {
+            apps: vec![
+                "ai.perplexity.comet".into(),
+                "com.brave.Browser".into(),
+                "com.microsoft.VSCode".into(),
+            ],
+            ..one.clone()
+        };
+        assert!(validate(two).is_err());
+        let bad = FocusConfig {
+            apps: vec!["com.apple.Safari".into()],
+            ..one
+        };
+        assert!(validate(bad).is_err());
+    }
+    #[test]
     fn normalizes_domains_and_rejects_injection() {
         assert_eq!(
             domains(vec![" Example.COM. ".into(), "example.com".into()]).unwrap(),
@@ -338,5 +411,28 @@ mod tests {
         assert!(c.blocked("com.apple.Safari"));
         assert!(!c.blocked("com.apple.ActivityMonitor"));
         assert!(!c.blocked("com.google.Chrome"));
+    }
+    #[test]
+    fn block_other_apps_switch() {
+        // Unchecked: no app is blocked, other apps are left alone.
+        let off = FocusConfig {
+            mode: Mode::Strict,
+            apps: vec!["com.microsoft.VSCode".into()],
+            activity_consent: false,
+            ..Default::default()
+        };
+        assert!(!off.blocked("com.apple.Safari"));
+        assert!(!off.blocked("com.microsoft.VSCode"));
+        // Checked in Standard mode: strict allowlist against the work apps.
+        let mut flex = FocusConfig {
+            mode: Mode::Standard,
+            activity_consent: true,
+            ..Default::default()
+        };
+        flex.attention.work_apps = vec!["com.microsoft.VSCode".into()];
+        assert!(flex.blocked("com.apple.Safari"));
+        assert!(!flex.blocked("com.microsoft.VSCode"));
+        // Protected system apps are never blocked, even when checked.
+        assert!(!flex.blocked("com.apple.Finder"));
     }
 }

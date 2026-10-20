@@ -89,3 +89,60 @@ pub fn camera_stop() {}
 pub fn camera_status() -> String {
     "unsupported".into()
 }
+pub fn installed_browsers() -> Vec<super::Application> {
+    use winreg::{enums::*, RegKey};
+    let mut candidates = Vec::new();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+            if let Ok(root) = RegKey::predef(hive)
+                .open_subkey_with_flags(r"SOFTWARE\Clients\StartMenuInternet", KEY_READ | view)
+            {
+                for name in root.enum_keys().flatten() {
+                    if let Ok(command) = root.open_subkey(format!(r"{name}\shell\open\command")) {
+                        if let Ok(value) = command.get_value::<String, _>("") {
+                            if let Some(path) = super::browser_paths::executable(&value) {
+                                candidates.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for base in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+        if let Some(root) = std::env::var_os(base) {
+            for relative in [
+                r"Google\Chrome\Application\chrome.exe",
+                r"Microsoft\Edge\Application\msedge.exe",
+                r"BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"Vivaldi\Application\vivaldi.exe",
+                r"Chromium\Application\chrome.exe",
+                r"Perplexity\Comet\Application\comet.exe",
+                r"Comet\Application\comet.exe",
+            ] {
+                candidates.push(
+                    std::path::PathBuf::from(&root)
+                        .join(relative)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut result: Vec<Application> = Vec::new();
+    for mut id in candidates {
+        for (key, value) in std::env::vars() {
+            id = id.replace(&format!("%{key}%"), &value);
+        }
+        if !crate::focus::supported_browser(&id)
+            || !std::path::Path::new(&id).is_file()
+            || result.iter().any(|a| a.id.eq_ignore_ascii_case(&id))
+        {
+            continue;
+        }
+        let name = super::browser_paths::name(&id).to_string();
+        result.push(Application { id, name });
+    }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
+}

@@ -3,6 +3,7 @@
 mod mac {
     use std::ffi::{c_char, CStr, CString};
     unsafe extern "C" {
+        fn vy_install_quit_guard(callback: extern "C" fn()) -> i32;
         fn vy_settings_info() -> *mut c_char;
         fn vy_login(enabled: i32) -> *mut c_char;
         fn vy_notification_permission() -> i32;
@@ -18,6 +19,21 @@ mod mac {
         let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
         unsafe { vy_free(p) };
         Ok(s)
+    }
+    static QUIT_APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+    extern "C" fn native_quit_requested() {
+        if let Some(app) = QUIT_APP.get() {
+            crate::quit(app);
+        }
+    }
+    pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
+        QUIT_APP
+            .set(app.clone())
+            .map_err(|_| "Quit guard already installed.")?;
+        if unsafe { vy_install_quit_guard(native_quit_requested) } == 0 {
+            return Err("Could not install the Mac quit guard.".into());
+        }
+        Ok(())
     }
     pub fn info() -> Result<serde_json::Value, String> {
         serde_json::from_str(&text(unsafe { vy_settings_info() })?).map_err(|e| e.to_string())
@@ -48,8 +64,11 @@ mod mac {
 }
 #[cfg(target_os = "macos")]
 pub use mac::*;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod other {
+    pub fn install_quit_guard(_: &tauri::AppHandle) -> Result<(), String> {
+        Ok(())
+    }
     pub fn info() -> Result<serde_json::Value, String> {
         Ok(serde_json::json!({"notifications":-1,"login":-1}))
     }
@@ -65,5 +84,8 @@ mod other {
         Err("File tools are available on Mac only.".into())
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use other::*;
+
+#[cfg(target_os = "windows")]
+pub use crate::platform::settings_windows::*;

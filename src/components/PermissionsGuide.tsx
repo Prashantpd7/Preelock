@@ -1,0 +1,213 @@
+import { useEffect, useState } from 'react';
+import { api, desktop } from '../services/api';
+import { settingsAction, type SettingsInfo } from '../services/settings';
+import { useFocusSetup } from '../hooks/useFocusSetup';
+import { Modal, SettingRow } from './SettingsControls';
+
+export function PermissionsGuide({ onClose }: { onClose: () => void }) {
+  const { setup, refresh } = useFocusSetup();
+  const [info, setInfo] = useState<SettingsInfo>({});
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const mac = setup?.platform === 'macos';
+  async function check() {
+    await refresh();
+    try {
+      setInfo(await settingsAction({ type: 'info' }));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  useEffect(() => {
+    let active = true;
+    const read = () =>
+      void settingsAction({ type: 'info' })
+        .then((v) => {
+          if (active) setInfo(v);
+        })
+        .catch((e) => {
+          if (active) setError(String(e));
+        });
+    read();
+    window.addEventListener('focus', read);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', read);
+    };
+  }, []);
+  async function act(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError('');
+    try {
+      await action();
+      await check();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const cameraDenied = ['denied', 'restricted'].includes(
+    setup?.camera_permission ?? '',
+  );
+  return (
+    <Modal title="Permissions & setup" onClose={onClose}>
+      {!setup ? (
+        <p>Checking your system…</p>
+      ) : (
+        <div className="dialog-stack permission-guide">
+          <SettingRow
+            title="App control"
+            hint={
+              mac
+                ? 'Hides distracting apps during sessions. Accessibility and Screen Recording access are not required.'
+                : 'Minimizes distracting windows during sessions. Administrator access is not required.'
+            }
+          >
+            <span>Ready</span>
+          </SettingRow>
+          <SettingRow
+            title="Camera"
+            hint={
+              !mac
+                ? 'Not available on Windows. Use Apps only.'
+                : cameraDenied
+                  ? 'Denied — System Settings → Privacy & Security → Camera → turn on VYSTRIQ.'
+                  : 'Optional. Checks if you are at your desk. No video is saved.'
+            }
+          >
+            <button
+              className="secondary"
+              disabled={busy || !mac || setup.camera_permission === 'granted'}
+              onClick={() =>
+                void act(() =>
+                  cameraDenied
+                    ? api.openSetup('camera_settings')
+                    : api.requestCamera(),
+                )
+              }
+            >
+              {!mac
+                ? 'Unavailable'
+                : setup.camera_permission === 'granted'
+                  ? 'Allowed'
+                  : cameraDenied
+                    ? 'Open settings'
+                    : 'Allow camera'}
+            </button>
+          </SettingRow>
+          <SettingRow
+            title="Notifications"
+            hint={
+              mac
+                ? 'System Settings → Notifications → VYSTRIQ → Allow notifications.'
+                : 'Settings → System → Notifications → turn on VYSTRIQ. Install the app first; Do not disturb may silence alerts.'
+            }
+          >
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                void act(() =>
+                  mac && info.notifications === 0
+                    ? settingsAction({ type: 'allow_notifications' })
+                    : api.openSetup('notification_settings'),
+                )
+              }
+            >
+              {info.notifications === 1
+                ? 'Denied · Open settings'
+                : mac && info.notifications === 0
+                  ? 'Allow notifications'
+                  : 'Open settings'}
+            </button>
+          </SettingRow>
+          <SettingRow
+            title="Browser extension"
+            hint="Connect each browser you use. Enable Allow in Incognito on its Extensions page to block private windows too."
+          >
+            <span>Use Connections</span>
+          </SettingRow>
+          <section className="setup-guide">
+            <h3>Opening a downloaded app</h3>
+            <p>Continue only if you trust where you downloaded VYSTRIQ.</p>
+            {mac ? (
+              <ol>
+                <li>
+                  In Finder, right-click VYSTRIQ and choose Open, if offered.
+                </li>
+                <li>
+                  If blocked, open System Settings → Privacy & Security → Open
+                  Anyway, then confirm Open.
+                </li>
+              </ol>
+            ) : (
+              <ol>
+                <li>
+                  If SmartScreen says “Windows protected your PC,” choose More
+                  info → Run anyway, if offered.
+                </li>
+                <li>
+                  If your organization or Smart App Control blocks it, ask your
+                  administrator. Do not turn off system protection.
+                </li>
+              </ol>
+            )}
+            {mac && (
+              <button
+                className="secondary"
+                onClick={() =>
+                  void act(() => api.openSetup('privacy_settings'))
+                }
+              >
+                Open Privacy & Security
+              </button>
+            )}
+          </section>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <div className="dialog-footer">
+        {setup && (
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => void act(async () => {})}
+          >
+            Check again
+          </button>
+        )}
+        <button onClick={onClose}>Done</button>
+      </div>
+    </Modal>
+  );
+}
+
+export function FirstRunPermissions() {
+  const [open, setOpen] = useState(() => {
+    try {
+      return (
+        desktop && localStorage.getItem('vystriq-permissions-v1') !== 'seen'
+      );
+    } catch {
+      return desktop;
+    }
+  });
+  if (!open) return null;
+  return (
+    <PermissionsGuide
+      onClose={() => {
+        try {
+          localStorage.setItem('vystriq-permissions-v1', 'seen');
+        } catch {
+          /* Still dismiss for this run. */
+        }
+        setOpen(false);
+      }}
+    />
+  );
+}

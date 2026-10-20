@@ -1,41 +1,135 @@
 body {
-  width: 330px;
+  width: 300px;
   background: #141715;
   color: #e8ece8;
-  font: 13px system-ui;
-  padding: 18px;
-  line-height: 1.6;
+  font: 13px/1.6 system-ui;
+  padding: 20px;
+  margin: 0;
 }
 h1 {
-  font-size: 20px;
+  font-size: 18px;
+  margin: 0 0 14px;
+}
+p {
+  color: #b4beb4;
+  margin: 0 0 12px;
 }
 label {
   display: block;
+  margin-bottom: 4px;
 }
 input {
   box-sizing: border-box;
   display: block;
   width: 100%;
-  margin: 10px 0;
-  padding: 10px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
   background: #222922;
   color: #fff;
   border: 1px solid #485146;
-  border-radius: 6px;
+  border-radius: 8px;
+  font: inherit;
+}
+input::placeholder {
+  color: #6f7a6f;
 }
 button {
+  width: 100%;
   background: #c3ed9b;
   color: #172213;
   border: 0;
-  border-radius: 6px;
-  padding: 10px;
-  margin: 8px 0;
+  border-radius: 8px;
+  padding: 11px;
+  font: inherit;
+  font-weight: 600;
   cursor: pointer;
 }
-p {
-  color: #b4beb4;
+button:hover {
+  filter: brightness(1.06);
 }
-details {
-  border-top: 1px solid #485146;
-  padding-top: 12px;
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #a2ca7b18;
+  border: 1px solid #a2ca7b66;
+  color: #c3ed9b;
+  font-weight: 600;
+}
+.pill::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c3ed9b;
+}
+.health {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 0;
+}
+.health .dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-top: 6px;
+}
+.health .dot.ok {
+  background: #c3ed9b;
+  box-shadow: 0 0 8px #c3ed9b88;
+}
+.health .dot.idle {
+  background: #e0b45c;
+}
+.warn {
+  color: #e0b45c;
+  margin: 12px 0 0;
+}
+.incognito-warn {
+  color: #e0b45c;
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+.browser-line {
+  color: #6f7a6f;
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+.ghost {
+  background: transparent;
+  color: #b4beb4;
+  border: 1px solid #485146;
+  margin-top: 12px;
+}
+.ghost:hover {
+  filter: none;
+  border-color: #6f7a6f;
+}
+
+.browser-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.browser-choices label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.browser-choices input {
+  width: auto;
+  margin: 0;
+}
+fieldset {
+  border: 0;
+  margin: 0 0 16px;
+  padding: 0;
+}
+legend {
+  margin-bottom: 8px;
 }

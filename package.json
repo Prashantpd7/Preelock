@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "prebuild": "node browser-extension/make-icons.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "tauri dev",
     "desktop:build": "tauri build",

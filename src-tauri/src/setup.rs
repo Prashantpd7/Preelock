@@ -22,12 +22,19 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     for file in [
         "manifest.json",
+        "icon16.png",
+        "icon32.png",
+        "icon48.png",
+        "icon128.png",
         "worker.js",
+        "identity.js",
         "rules.js",
         "self-test.js",
         "popup.html",
         "popup.css",
         "popup.js",
+        "blocked.html",
+        "blocked.css",
     ] {
         let bytes = std::fs::read(source.join(file)).map_err(|e| e.to_string())?;
         let dest = target.join(file);
@@ -50,6 +57,12 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
             "camera_settings" => {
                 cmd.arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera");
             }
+            "notification_settings" => {
+                cmd.arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension");
+            }
+            "privacy_settings" => {
+                cmd.arg("x-apple.systempreferences:com.apple.preference.security?Privacy");
+            }
             "extensions" => {
                 if !crate::focus::supported_browser(browser_id) {
                     return Err("Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
@@ -68,14 +81,23 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
             }
             "extensions" => {
                 if !crate::focus::supported_browser(browser_id)
-                    || !crate::platform::applications()?
+                    || !crate::platform::installed_browsers()
                         .iter()
-                        .any(|a| a.id == browser_id)
+                        .chain(crate::platform::applications()?.iter())
+                        .any(|a| a.id.eq_ignore_ascii_case(browser_id))
                 {
                     return Err("Open your browser first, then refresh.".into());
                 }
                 cmd = std::process::Command::new(browser_id);
                 cmd.arg("chrome://extensions/");
+            }
+            "camera_settings" | "notification_settings" | "privacy_settings" => {
+                cmd = std::process::Command::new("explorer.exe");
+                cmd.arg(match target {
+                    "camera_settings" => "ms-settings:privacy-webcam",
+                    "notification_settings" => "ms-settings:notifications",
+                    _ => "ms-settings:privacy",
+                });
             }
             _ => return Err("This setup action is unavailable on Windows.".into()),
         }

@@ -8,6 +8,8 @@ export const preferenceDefaults: Required<Preferences> = {
   daily_goal: 0,
   session_alert: true,
   sound: false,
+  session_start_alert: false,
+  session_start_sound: false,
   volume: 50,
   reminder: false,
   reminder_time: '09:00',
@@ -37,6 +39,7 @@ export type SettingsAction =
   | { type: 'preview_sound'; volume: number }
   | { type: 'restore' | 'delete_history'; confirmation: string };
 export interface SettingsInfo {
+  platform?: string;
   login?: number;
   notifications?: number;
   version?: string;

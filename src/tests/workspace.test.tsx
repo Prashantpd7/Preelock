@@ -29,6 +29,7 @@ vi.mock('../services/api', () => ({
   },
 }));
 beforeEach(() => {
+  localStorage.setItem('vystriq-permissions-v1', 'seen');
   window.location.hash = '#/';
   vi.clearAllMocks();
   useAppStore.setState({
@@ -52,6 +53,7 @@ beforeEach(() => {
       error: '',
       blocks: 0,
       cleanup_pending: false,
+      extension_stale: false,
     },
   });
 });
@@ -91,15 +93,21 @@ it('navigates all six routes and submits a task to the native boundary', async (
   });
   expect(await screen.findByText('Read chapter one')).toBeInTheDocument();
 });
-it('creates a flexible session with manual checks', async () => {
+it('creates a flexible session with app checks', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'com.microsoft.VSCode', name: 'VS Code' }],
+  });
   const user = userEvent.setup();
   window.location.hash = '#/sessions';
   render(<App />);
   await screen.findByRole('heading', { name: 'Focus Sessions' });
   await user.click(screen.getByRole('button', { name: 'New session' }));
   await user.type(screen.getByLabelText('Task name'), 'Write outline');
-  await user.click(screen.getByRole('radio', { name: /Manual check-ins/ }));
+  await user.click(screen.getByRole('radio', { name: /Apps only/ }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('checkbox', { name: 'VS Code' }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
   await user.click(screen.getByRole('button', { name: 'Create session' }));
@@ -110,6 +118,7 @@ it('creates a flexible session with manual checks', async () => {
     allow_pause: true,
     focus: {
       mode: 'standard',
+      website_blocking: 'none',
       apps: [],
       domains: [],
       general_internet: true,
@@ -118,7 +127,8 @@ it('creates a flexible session with manual checks', async () => {
       camera: false,
       attention: {
         ...defaultFocus.attention,
-        verification: 'manual_checkpoints',
+        verification: 'activity_only',
+        work_apps: ['com.microsoft.VSCode'],
       },
     },
   });
@@ -130,62 +140,6 @@ it('reports persistence errors without inventing success', async () => {
     expect(useAppStore.getState().error).toBe('Disk is full.'),
   );
   expect(useAppStore.getState().data.tasks).toHaveLength(0);
-});
-
-it('shows backend attention pauses and sends explicit manual checkpoints', async () => {
-  const state = {
-    ...structuredClone(emptySnapshot),
-    sessions: [
-      {
-        id: 'attention',
-        title: 'Read notes',
-        duration_minutes: 1,
-        remaining_ms: 45000,
-        focused_ms: 15000,
-        allow_pause: false,
-        status: 'running' as const,
-        started_at: 1,
-        ended_at: null,
-        deadline_ms: null,
-        focus: {
-          ...defaultFocus,
-          attention: {
-            ...defaultFocus.attention!,
-            verification: 'manual_checkpoints' as const,
-          },
-        },
-        attention: {
-          state: 'UNKNOWN',
-          reason: 'Confirm current work',
-          elapsed_ms: 30000,
-          distracted_ms: 0,
-          absent_ms: 0,
-          unknown_ms: 15000,
-          corrected_ms: 0,
-          intervals: [],
-        },
-      },
-    ],
-  };
-  vi.mocked(api.snapshot).mockResolvedValue(state);
-  vi.mocked(api.execute).mockResolvedValue(state);
-  useAppStore.setState({ data: state });
-  window.location.hash = '#/sessions';
-  render(<App />);
-  await userEvent.click(
-    await screen.findByRole('heading', { name: 'Read notes' }),
-  );
-  expect(await screen.findByText('Checking focus')).toBeInTheDocument();
-  expect(screen.getByLabelText('Time remaining')).toHaveTextContent('00:45');
-  await userEvent.click(
-    screen.getByRole('button', {
-      name: "I'm working · count 1 minute",
-    }),
-  );
-  expect(api.execute).toHaveBeenCalledWith({
-    type: 'confirm_work',
-    id: 'attention',
-  });
 });
 
 it('shows Comet and stops unpaired website setup before session creation', async () => {
@@ -206,11 +160,12 @@ it('shows Comet and stops unpaired website setup before session creation', async
   expect(screen.getByLabelText('Which browser?')).toHaveValue(
     'ai.perplexity.comet',
   );
-  await user.type(screen.getByLabelText('Websites for this task'), 'docs.rs');
+  await user.click(screen.getByRole('checkbox', { name: 'Block all websites except these' }));
+  await user.type(screen.getByLabelText('Websites to keep open'), 'docs.rs');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Connect the browser extension',
-  );
+  expect(
+    await screen.findByText('Connect the browser extension below, then check again.'),
+  ).toHaveAttribute('role', 'alert');
   expect(
     screen.getByRole('button', { name: 'Open Extensions' }),
   ).toBeInTheDocument();
@@ -221,4 +176,16 @@ it('keeps the removed sidebar section empty', async () => {
   await screen.findByRole('heading', { name: 'Make room for deep work.' });
   expect(screen.queryByText('Your focus. Your space.')).not.toBeInTheDocument();
   expect(screen.queryByText('Privacy & capabilities')).not.toBeInTheDocument();
+});
+
+it('disables camera checking on Windows', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({ ...setup, platform: 'windows', camera_permission: 'unsupported' });
+  const user = userEvent.setup();
+  window.location.hash = '#/sessions';
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New session' }));
+  expect(screen.getByRole('radio', { name: /Apps \+ camera/ })).toBeDisabled();
+  expect(screen.getByRole('radio', { name: /Apps only/ })).toBeChecked();
 });

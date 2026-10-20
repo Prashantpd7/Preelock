@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Pencil, X } from 'lucide-react';
+import { Check, Pencil, Trash2, X } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { desktop } from '../services/api';
 import type { Task } from '../types';
@@ -67,6 +67,14 @@ function TaskRow({ task }: { task: Task }) {
             }}
           >
             <Pencil size={15} />
+          </button>
+          <button
+            className="icon-button danger"
+            aria-label={`Delete ${task.title}`}
+            disabled={busy || !desktop}
+            onClick={() => void execute({ type: 'delete_task', id: task.id })}
+          >
+            <Trash2 size={15} />
           </button>
         </>
       )}

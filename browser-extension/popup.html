@@ -2,38 +2,46 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>VYSTRIQ Focus</title>
+    <title>Vystriq</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>VYSTRIQ Focus</h1>
-    <p>Connect to the VYSTRIQ desktop app.</p>
-    <form id="pair">
-      <label
-        >Connection code<input
-          id="token"
-          type="password"
-          required
-          minlength="64"
-          maxlength="64"
-          autocomplete="off" /></label
-      ><button>Connect</button>
-    </form>
-    <button id="retry">Reconnect</button>
-    <button id="self-test">Test blocking</button>
-    <p id="status" role="status"></p>
-    <details>
-      <summary>Emergency unblock</summary>
-      <p>
-        Unblock this browser and stop the focus session. Connect again before
-        your next session.
-      </p>
-      <input
-        id="confirm"
-        aria-label="Type END FOCUS"
-        placeholder="Type END FOCUS"
-      /><button id="release">Unblock browser</button>
-    </details>
+    <h1>Vystriq</h1>
+    <div id="connected-view" hidden>
+      <p class="pill">Connected</p>
+      <p id="health" class="health" role="status"></p>
+      <p id="browser-line" class="browser-line"></p>
+      <div id="identify-view" hidden>
+        <p class="warn" role="alert">
+          Which browser is this? Vystriq needs to know to run your sessions
+          in the right browser.
+        </p>
+        <div id="browser-choices-connected" class="browser-choices"></div>
+        <button id="save-browser" type="button">Save</button>
+      </div>
+      <button id="disconnect" class="ghost" type="button">Disconnect</button>
+    </div>
+    <div id="pair-view" hidden>
+      <p>Connect to the VYSTRIQ desktop app.</p>
+      <form id="pair">
+        <fieldset>
+          <legend>Which browser is this?</legend>
+          <div id="browser-choices" class="browser-choices"></div>
+        </fieldset>
+        <label
+          >Connection code<input
+            id="token"
+            type="password"
+            required
+            minlength="64"
+            maxlength="64"
+            autocomplete="off"
+            placeholder="Paste the code from VYSTRIQ Settings"
+        /></label>
+        <button>Connect</button>
+      </form>
+      <p id="pair-status" class="warn" role="status"></p>
+    </div>
     <script src="popup.js" type="module"></script>
   </body>
 </html>

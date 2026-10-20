@@ -14,6 +14,7 @@ const setup: FocusSetup = {
     error: '',
     blocks: 0,
     cleanup_pending: false,
+    extension_stale: false,
   },
 };
 it('permits app-only Strict sessions without forcing extension setup', () => {
@@ -35,7 +36,7 @@ it('requires consent and camera permission for camera-based focus', () => {
       verification: 'camera_and_activity' as const,
     },
   };
-  expect(setupProblem(focus, setup)).toContain('Allow app activity');
+  expect(setupProblem(focus, setup)).toContain('Block all other apps');
   focus.activity_consent = true;
   expect(setupProblem(focus, setup)).toContain('Allow camera');
   focus.camera = true;
@@ -44,14 +45,14 @@ it('requires consent and camera permission for camera-based focus', () => {
   );
 });
 
-it('requires a work choice even for Strict manual sessions', () => {
+it('requires a work choice even for Strict sessions', () => {
   const focus = {
     ...structuredClone(defaultFocus),
     mode: 'strict' as const,
     activity_consent: true,
     attention: {
       ...defaultFocus.attention!,
-      verification: 'manual_checkpoints' as const,
+      verification: 'activity_only' as const,
     },
   };
   expect(setupProblem(focus, setup)).toContain('Choose at least one');

@@ -30,6 +30,11 @@ pub struct Session {
     pub report: crate::focus::FocusReport,
     #[serde(default)]
     pub attention: crate::attention::Tracking,
+    /// Set at startup when this session was still live: a clean shutdown
+    /// always settles live sessions first, so this means the app was
+    /// killed mid-session (force quit, crash, power loss).
+    #[serde(default)]
+    pub force_quit: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,6 +62,8 @@ pub struct Preferences {
     pub daily_goal: u32,
     pub session_alert: bool,
     pub sound: bool,
+    pub session_start_alert: bool,
+    pub session_start_sound: bool,
     pub volume: u32,
     pub reminder: bool,
     pub reminder_time: String,
@@ -76,6 +83,8 @@ impl Default for Preferences {
             daily_goal: 0,
             session_alert: true,
             sound: false,
+            session_start_alert: false,
+            session_start_sound: false,
             volume: 50,
             reminder: false,
             reminder_time: "09:00".into(),
@@ -122,12 +131,12 @@ pub enum Action {
     DeleteSession {
         id: String,
     },
+    RestartSession {
+        id: String,
+    },
     EmergencyExit {
         id: String,
         confirmation: String,
-    },
-    ConfirmWork {
-        id: String,
     },
     CorrectInterval {
         id: String,
@@ -137,6 +146,9 @@ pub enum Action {
     DisableCamera {
         id: String,
     },
+    EnableCamera {
+        id: String,
+    },
     CreateTask {
         title: String,
     },
@@ -144,6 +156,9 @@ pub enum Action {
         id: String,
         title: String,
         completed: bool,
+    },
+    DeleteTask {
+        id: String,
     },
     UpdatePreferences {
         preferences: Preferences,

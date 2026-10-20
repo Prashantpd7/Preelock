@@ -201,6 +201,18 @@ impl Runtime {
                         self.offered = s.id.clone();
                     }
                 }
+                if s.status == Status::Running
+                    && previous
+                        .get(&s.id)
+                        .is_some_and(|old| matches!(old, Status::Ready | Status::Preparing))
+                {
+                    if p.session_start_alert {
+                        native::notify("Focus started", "Your session timer is running.");
+                    }
+                    if p.session_start_sound {
+                        native::sound(p.volume);
+                    }
+                }
             }
         }
         self.previous = Some(
@@ -242,6 +254,13 @@ impl Runtime {
         };
         if title != self.tray_title {
             if let Some(tray) = app.tray_by_id("focus-controller") {
+                #[cfg(target_os = "windows")]
+                let _ = tray.set_tooltip(Some(if title.is_empty() {
+                    "VYSTRIQ".to_string()
+                } else {
+                    format!("VYSTRIQ · {title} left")
+                }));
+                #[cfg(not(target_os = "windows"))]
                 let _ = tray.set_title(if title.is_empty() {
                     None
                 } else {
@@ -308,6 +327,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
                 json!(runtime.break_end.saturating_sub(clock::continuous_ms()));
             info["break_offer"] = json!(runtime.offered);
             info["camera_status"] = json!(platform::camera_status());
+            info["platform"] = json!(platform::name());
             info["version"] = json!(app.package_info().version.to_string());
             Ok(info)
         }
@@ -318,7 +338,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
         SettingsAction::AllowNotifications => {
             if !native::permission() {
                 return Err(
-                    "Notifications are blocked. Enable VYSTRIQ in System Settings → Notifications."
+                    "Notifications are blocked. Open notification settings in the Permissions guide to enable VYSTRIQ."
                         .into(),
                 );
             }

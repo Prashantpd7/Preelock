@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import {
+  countdown,
   formatDuration,
   formatShortDuration,
   productiveStatistics,
@@ -15,17 +16,52 @@ export function Dashboard() {
   const { setup, refresh } = useFocusSetup();
   const stats = statistics(sessions, tasks);
   const productive = productiveStatistics(sessions);
+  const isLiveStatus = (s: (typeof sessions)[number]) =>
+    ['running', 'paused', 'preparing'].includes(s.status);
+  // Every session stays as a reusable card; live ones sort first.
   const upcoming = sessions
-    .filter((s) =>
-      ['ready', 'preparing', 'running', 'paused'].includes(s.status),
-    )
     .slice()
-    .reverse();
+    .reverse()
+    .sort((a, b) => Number(isLiveStatus(b)) - Number(isLiveStatus(a)));
   const appNames = Object.fromEntries(
     (setup?.applications ?? []).map((a) => [a.id, a.name]),
   );
+  const liveSession = sessions.find((s) => isLiveStatus(s));
+  const cameraBlocking =
+    !!liveSession?.focus?.camera &&
+    liveSession.status === 'running' &&
+    (liveSession.attention?.state === 'unknown' ||
+      liveSession.attention?.state === 'absent');
   return (
     <>
+      {liveSession && (
+        <section
+          className="panel active-session-banner"
+          aria-live="polite"
+          aria-label="Active session"
+        >
+          <p className="active-session-kicker">
+            <span className="live-dot" aria-hidden="true" />
+            Active session · {liveSession.title}
+            {liveSession.status === 'preparing' && ' · waiting for browser'}
+            {liveSession.status === 'paused' && ' · paused'}
+          </p>
+          <p className="active-session-timer">
+            {countdown(liveSession.remaining_ms)}
+          </p>
+          <p className="small muted">
+            {liveSession.status === 'preparing'
+              ? 'Waiting for the browser extension to connect…'
+              : 'Distracting apps and websites stay blocked until this session ends.'}
+          </p>
+          {cameraBlocking && (
+            <p className="camera-warn" role="alert">
+              Camera isn&apos;t detecting you — timer is paused. Sit in front of
+              the camera to resume.
+            </p>
+          )}
+        </section>
+      )}
       <PageHeading
         eyebrow=""
         title="Make room for deep work."

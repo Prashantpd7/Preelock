@@ -1,14 +1,16 @@
 import { useState } from 'react';
-import { ArrowLeft, Plus, Timer } from 'lucide-react';
+import { ArrowLeft, Plus, RefreshCw, Timer } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { api, desktop } from '../services/api';
 import { setupProblem, splitDomains } from '../services/focusSetup';
 import { PageHeading, Empty } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
 import { BrowserSetup } from '../components/BrowserSetup';
+import { domainInputError, normalizeDomainInput } from '../services/domains';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import {
   defaultFocus,
+  sameBrowser,
   type AttentionPolicy,
   type FocusConfig,
   type Session,
@@ -18,7 +20,6 @@ const CAMERA_GUIDE =
   'Choose Allow in the macOS prompt, then click Check camera.';
 export function Sessions() {
   const { data, execute, busy } = useAppStore();
-  const { setup, error, loading, refresh } = useFocusSetup();
   const [step, setStep] = useState(0),
     [title, setTitle] = useState(''),
     [minutes, setMinutes] = useState(data.preferences.default_minutes);
@@ -26,29 +27,45 @@ export function Sessions() {
     structuredClone(defaultFocus),
   );
   const [workApps, setWorkApps] = useState<string[]>([]),
-    [sites, setSites] = useState(''),
-    [blockedSites, setBlockedSites] = useState('');
+    [blockSites, setBlockSites] = useState('');
+  const [blockSitesError, setBlockSitesError] = useState('');
+  const [blockModeOverride, setBlockModeOverride] = useState<
+    'none' | 'blocklist' | 'allowlist' | null
+  >(null);
   const [web, setWeb] = useState(false),
     [guide, setGuide] = useState(false),
+    [rechecking, setRechecking] = useState(false),
     [problem, setProblem] = useState('');
+  // One browser per session: shown when the user tries to pick a second.
+  const [browserWarn, setBrowserWarn] = useState('');
   const [maxStep, setMaxStep] = useState(0);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   function applySavedSetup(preset: SavedSetup) {
     const f = structuredClone(preset.focus);
+    // Saved before Manual check-ins was removed: use Apps only instead.
+    if (
+      f.attention &&
+      (f.attention.verification as string) === 'manual_checkpoints'
+    )
+      f.attention.verification = 'activity_only';
     f.camera = false;
     f.activity_consent = false;
     setTitle(preset.name);
     setMinutes(preset.minutes);
     setFocus(f);
     setWorkApps(f.mode === 'strict' ? f.apps : (f.attention?.work_apps ?? []));
-    setSites(
-      (f.mode === 'strict'
-        ? f.domains
-        : (f.attention?.work_domains ?? [])
-      ).join('\n'),
-    );
-    setBlockedSites((f.mode === 'strict' ? [] : f.domains).join('\n'));
+    const savedDomains = f.domains ?? [];
+    setBlockSites(savedDomains.join('\n'));
+    setBlockSitesError('');
+    if (savedDomains.length) {
+      const wb = f.website_blocking ?? 'auto';
+      setBlockModeOverride(
+        wb === 'auto' ? (f.mode === 'strict' ? 'allowlist' : 'blocklist') : wb,
+      );
+    } else {
+      setBlockModeOverride(f.mode === 'strict' ? 'allowlist' : null);
+    }
     setWeb(
       !!f.browser_app ||
         f.domains.length > 0 ||
@@ -71,15 +88,24 @@ export function Sessions() {
       attention: {
         ...(structuredClone(defaultFocus).attention as AttentionPolicy),
         ...f?.attention,
+        // Sessions saved before Manual check-ins was removed: Apps only.
+        verification:
+          (f?.attention?.verification as string) === 'manual_checkpoints'
+            ? 'activity_only'
+            : (f?.attention?.verification ?? 'activity_only'),
       },
     });
     setWorkApps(f?.attention?.work_apps ? [...f.attention.work_apps] : []);
-    if (strictMode) {
-      setSites((f?.domains ?? []).join('\n'));
-      setBlockedSites('');
+    const editDomains = f?.domains ?? [];
+    setBlockSites(editDomains.join('\n'));
+    setBlockSitesError('');
+    if (editDomains.length) {
+      const wb = f?.website_blocking ?? 'auto';
+      setBlockModeOverride(
+        wb === 'auto' ? (strictMode ? 'allowlist' : 'blocklist') : wb,
+      );
     } else {
-      setSites((f?.attention?.work_domains ?? []).join('\n'));
-      setBlockedSites((f?.domains ?? []).join('\n'));
+      setBlockModeOverride(strictMode ? 'allowlist' : null);
     }
     setWeb(
       !!f?.browser_app ||
@@ -99,30 +125,52 @@ export function Sessions() {
     setFocus((c) => ({ ...c, ...patch }));
   const updateAttention = (patch: Partial<AttentionPolicy>) =>
     setFocus((c) => ({ ...c, attention: { ...c.attention!, ...patch } }));
-  const manual = attention.verification === 'manual_checkpoints',
-    strict = focus.mode === 'strict';
+  const strict = focus.mode === 'strict';
+  // Website blocking choice. Defaults follow the session style unless the
+  // user picks an option explicitly.
+  const blockMode = blockModeOverride ?? (strict ? 'allowlist' : 'none');
+  const setBlockMode = (mode: 'none' | 'blocklist' | 'allowlist') =>
+    setBlockModeOverride(blockMode === mode ? 'none' : mode);
+  const { setup, error, loading, refresh } = useFocusSetup(
+    web && focus.browser_app ? focus.browser_app : undefined,
+  );
   const browsers = setup?.browsers ?? [];
   const browserId = web ? focus.browser_app || browsers[0]?.id || '' : '';
+  // "Connected" counts only when the paired extension reports that it
+  // lives in the browser picked above. A connection from another browser —
+  // or one that cannot say which browser it is in — does not count.
+  const browserConnected =
+    !!setup?.browser.connected &&
+    !!setup?.browser.client_browser &&
+    (!browserId || sameBrowser(browserId, setup.browser.client_browser));
   const selected: FocusConfig = {
     ...focus,
     apps: strict ? workApps : focus.apps,
     browser_app: browserId,
     general_internet: web ? focus.general_internet : true,
-    domains: web ? splitDomains(strict ? sites : blockedSites) : [],
-    camera: attention.verification === 'camera_and_activity',
+    domains: web && blockMode !== 'none' ? splitDomains(blockSites) : [],
+    website_blocking: web ? blockMode : 'none',
+    camera:
+      setup?.platform !== 'windows' &&
+      attention.verification === 'camera_and_activity',
     attention: {
       ...attention,
+      verification:
+        setup?.platform === 'windows'
+          ? 'activity_only'
+          : attention.verification,
       work_apps: workApps,
-      work_domains: web && !strict ? splitDomains(sites) : [],
+      work_domains: [],
     },
   };
   // App-only Strict sessions do not require an unused browser connection.
+  const isLiveStatus = (s: (typeof data.sessions)[number]) =>
+    ['running', 'paused', 'preparing'].includes(s.status);
+  // Every session stays as a reusable card; live ones sort first.
   const sessions = data.sessions
-    .filter((s) =>
-      ['ready', 'preparing', 'running', 'paused'].includes(s.status),
-    )
     .slice()
-    .reverse();
+    .reverse()
+    .sort((a, b) => Number(isLiveStatus(b)) - Number(isLiveStatus(a)));
   const apps =
     setup?.applications.filter(
       (a) =>
@@ -139,21 +187,11 @@ export function Sessions() {
       setProblem(String(e));
     }
   }
-  async function checkCamera() {
-    const s = await refresh();
-    if (s?.camera_permission !== 'granted') {
-      setProblem(
-        s?.camera_permission === 'denied'
-          ? 'Camera access is blocked. Turn on VYSTRIQ in System Settings → Privacy & Security → Camera, then click Check camera.'
-          : CAMERA_GUIDE,
-      );
-    }
-  }
-  // The camera guide clears itself once permission is granted.
-  const visibleProblem =
-    problem === CAMERA_GUIDE && setup?.camera_permission === 'granted'
-      ? ''
-      : problem;
+  // Stale problems clear themselves once the underlying issue is fixed.
+  let visibleProblem = problem;
+  if (problem === CAMERA_GUIDE && setup?.camera_permission === 'granted')
+    visibleProblem = '';
+  if (problem.includes('extension') && browserConnected) visibleProblem = '';
   return (
     <>
       <PageHeading
@@ -209,12 +247,12 @@ export function Sessions() {
               }
               if (
                 web &&
-                (!manual || strict) &&
                 selected.general_internet &&
-                !sites.trim()
+                blockMode !== 'none' &&
+                !blockSites.trim()
               ) {
                 setProblem(
-                  'Add at least one work website, or turn off websites.',
+                  'Add at least one website above, or turn off "I need websites for this task".',
                 );
                 return;
               }
@@ -307,7 +345,7 @@ export function Sessions() {
                 </label>
                 <fieldset>
                   <legend>How should we check your focus?</legend>
-                  <div className="choice-grid">
+                  <div className="choice-grid two">
                     {[
                       [
                         'activity_only',
@@ -319,11 +357,6 @@ export function Sessions() {
                         'Apps + camera',
                         'Also check that you are at your desk.',
                       ],
-                      [
-                        'manual_checkpoints',
-                        'Manual check-ins',
-                        'You confirm your work once a minute.',
-                      ],
                     ].map(([value, label, help]) => (
                       <label
                         className={`choice-card ${attention.verification === value ? 'selected' : ''}`}
@@ -333,7 +366,15 @@ export function Sessions() {
                           type="radio"
                           name="verification"
                           value={value}
-                          checked={attention.verification === value}
+                          disabled={
+                            value === 'camera_and_activity' &&
+                            setup?.platform === 'windows'
+                          }
+                          checked={
+                            (setup?.platform === 'windows'
+                              ? 'activity_only'
+                              : attention.verification) === value
+                          }
                           onChange={() =>
                             updateAttention({
                               verification:
@@ -343,7 +384,12 @@ export function Sessions() {
                         />
                         <span>
                           <strong>{label}</strong>
-                          <small>{help}</small>
+                          <small>
+                            {value === 'camera_and_activity' &&
+                            setup?.platform === 'windows'
+                              ? 'Not available on Windows.'
+                              : help}
+                          </small>
                         </span>
                       </label>
                     ))}
@@ -409,7 +455,7 @@ export function Sessions() {
                   </button>
                 </div>
                 <p className="small muted">
-                  {strict
+                  {strict || focus.activity_consent
                     ? 'Other apps will be hidden.'
                     : 'Time counts in the apps you choose.'}{' '}
                   Open a missing app, then refresh.
@@ -421,6 +467,31 @@ export function Sessions() {
                         type="checkbox"
                         checked={workApps.includes(app.id)}
                         onChange={(e) => {
+                          const isBrowser = browsers.some(
+                            (b) => b.id === app.id,
+                          );
+                          if (e.target.checked && isBrowser) {
+                            // One browser per session: refuse a second one
+                            // with a warning instead of silently adding it.
+                            const other = workApps.find(
+                              (id) =>
+                                id !== app.id &&
+                                browsers.some((b) => b.id === id),
+                            );
+                            if (other) {
+                              const otherName =
+                                browsers.find((b) => b.id === other)?.name ??
+                                'another browser';
+                              setBrowserWarn(
+                                `Only one browser per session. Uncheck ${otherName} to use ${app.name} instead.`,
+                              );
+                              return;
+                            }
+                            setBrowserWarn('');
+                          }
+                          if (!e.target.checked && isBrowser) {
+                            setBrowserWarn('');
+                          }
                           setWorkApps(
                             e.target.checked
                               ? [...workApps, app.id]
@@ -431,10 +502,7 @@ export function Sessions() {
                               apps: focus.apps.filter((id) => id !== app.id),
                             });
                           }
-                          if (
-                            e.target.checked &&
-                            browsers.some((b) => b.id === app.id)
-                          ) {
+                          if (e.target.checked && isBrowser) {
                             setWeb(true);
                             update({ browser_app: app.id });
                           }
@@ -449,11 +517,6 @@ export function Sessions() {
                     </p>
                   )}
                 </div>
-                {manual && (
-                  <p className="small muted">
-                    App choices are optional for Flexible manual sessions.
-                  </p>
-                )}
                 <label className="check-label consent">
                   <input
                     type="checkbox"
@@ -476,9 +539,28 @@ export function Sessions() {
                       Which browser?
                       <select
                         value={browserId}
-                        onChange={(e) =>
-                          update({ browser_app: e.target.value })
-                        }
+                        onChange={(e) => {
+                          const picked = e.target.value;
+                          const other = workApps.find(
+                            (id) =>
+                              id !== picked &&
+                              browsers.some((b) => b.id === id),
+                          );
+                          if (picked && other) {
+                            const otherName =
+                              browsers.find((b) => b.id === other)?.name ??
+                              'another browser';
+                            const pickedName =
+                              browsers.find((b) => b.id === picked)?.name ??
+                              'this browser';
+                            setBrowserWarn(
+                              `Only one browser per session. Uncheck ${otherName} to use ${pickedName} instead.`,
+                            );
+                            return;
+                          }
+                          setBrowserWarn('');
+                          update({ browser_app: picked });
+                        }}
                       >
                         <option value="">Choose a browser</option>
                         {browsers.map((b) => (
@@ -488,26 +570,51 @@ export function Sessions() {
                         ))}
                       </select>
                     </label>
-                    <div className="setting-row">
+                    {browserWarn && (
+                      <p role="alert" className="camera-warn">
+                        {browserWarn}
+                      </p>
+                    )}
+                    <div className="setting-row divider-top">
                       <span>Browser extension</span>
-                      {setup?.browser.connected ? (
+                      <div className="row">
                         <button
                           type="button"
-                          className="connected-pill"
-                          aria-disabled="true"
-                          tabIndex={-1}
+                          className="icon-button"
+                          aria-label="Re-check browser connection"
+                          title="Re-check browser connection"
+                          disabled={rechecking}
+                          onClick={() => {
+                            setRechecking(true);
+                            void refresh().finally(() => {
+                              setTimeout(() => setRechecking(false), 1500);
+                            });
+                          }}
                         >
-                          Connected
+                          <RefreshCw
+                            size={16}
+                            className={rechecking ? 'spin' : undefined}
+                          />
                         </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setGuide(!guide)}
-                        >
-                          {guide ? 'Hide setup' : 'Connect browser'}
-                        </button>
-                      )}
+                        {browserConnected ? (
+                          <button
+                            type="button"
+                            className="connected-pill"
+                            aria-disabled="true"
+                            tabIndex={-1}
+                          >
+                            Connected
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => setGuide(!guide)}
+                          >
+                            {guide ? 'Hide setup' : 'Connect browser'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {guide && (
                       <BrowserSetup
@@ -524,82 +631,80 @@ export function Sessions() {
                         apps.
                       </p>
                     )}
-                    <label>
-                      Websites for this task
-                      <textarea
-                        rows={3}
-                        value={sites}
-                        onChange={(e) => setSites(e.target.value)}
-                        placeholder="github.com\ndocs.rs"
-                      />
-                    </label>
-                    <p className="small muted">
-                      One website per line.
-                      {strict
-                        ? ' Other websites will be blocked.'
-                        : ' Only these websites earn focus time.'}
-                    </p>
-                    <div className="row controls">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() =>
-                          setSites('github.com\ndocs.rs\ndeveloper.mozilla.org')
-                        }
-                      >
-                        Coding examples
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => setSites('coursera.org\nedx.org')}
-                      >
-                        Study examples
-                      </button>
-                    </div>
-                    {!strict && (
-                      <details>
-                        <summary>Block distracting websites</summary>
-                        <label>
-                          Websites to block
+                    <div className="blocking-section">
+                      <p className="blocking-heading">Website blocking</p>
+                      <label className="blocking-option">
+                        <input
+                          type="checkbox"
+                          checked={blockMode === 'blocklist'}
+                          onChange={() => setBlockMode('blocklist')}
+                        />
+                        <strong>Block distracting websites</strong>
+                      </label>
+                      {blockMode === 'blocklist' && (
+                        <>
                           <textarea
                             rows={3}
-                            value={blockedSites}
-                            onChange={(e) => setBlockedSites(e.target.value)}
-                            placeholder="reddit.com\ninstagram.com"
+                            className="blocking-sites"
+                            aria-label="Websites to block"
+                            value={blockSites}
+                            onChange={(e) => {
+                              setBlockSites(e.target.value);
+                              setBlockSitesError(
+                                domainInputError(e.target.value),
+                              );
+                            }}
+                            onBlur={() => {
+                              const next = normalizeDomainInput(blockSites);
+                              setBlockSites(next.text);
+                              setBlockSitesError(domainInputError(next.text));
+                            }}
+                            placeholder="youtube.com"
                           />
-                        </label>
-                      </details>
-                    )}
-                  </div>
-                )}
-                {!strict && (
-                  <details>
-                    <summary>Block distracting apps (optional)</summary>
-                    <div className="application-picker">
-                      {apps
-                        .filter(
-                          (a) => !workApps.includes(a.id) && a.id !== browserId,
-                        )
-                        .map((app) => (
-                          <label className="check-label" key={app.id}>
-                            <input
-                              type="checkbox"
-                              aria-label={`Block ${app.name}`}
-                              checked={focus.apps.includes(app.id)}
-                              onChange={(e) =>
-                                update({
-                                  apps: e.target.checked
-                                    ? [...focus.apps, app.id]
-                                    : focus.apps.filter((id) => id !== app.id),
-                                })
-                              }
-                            />
-                            {app.name}
-                          </label>
-                        ))}
+                          {blockSitesError && (
+                            <p className="error small" role="alert">
+                              {blockSitesError}
+                            </p>
+                          )}
+                        </>
+                      )}
+                      <label className="blocking-option">
+                        <input
+                          type="checkbox"
+                          checked={blockMode === 'allowlist'}
+                          onChange={() => setBlockMode('allowlist')}
+                        />
+                        <strong>Block all websites except these</strong>
+                      </label>
+                      {blockMode === 'allowlist' && (
+                        <>
+                          <textarea
+                            rows={3}
+                            className="blocking-sites"
+                            aria-label="Websites to keep open"
+                            value={blockSites}
+                            onChange={(e) => {
+                              setBlockSites(e.target.value);
+                              setBlockSitesError(
+                                domainInputError(e.target.value),
+                              );
+                            }}
+                            onBlur={() => {
+                              const next = normalizeDomainInput(blockSites);
+                              setBlockSites(next.text);
+                              setBlockSitesError(domainInputError(next.text));
+                            }}
+                            placeholder="github.com"
+                          />
+                          {blockSitesError && (
+                            <p className="error small" role="alert">
+                              {blockSitesError}
+                            </p>
+                          )}
+                        </>
+                      )}
                     </div>
-                  </details>
+                  </div>
                 )}
               </>
             )}
@@ -609,55 +714,39 @@ export function Sessions() {
                 <p className="session-summary">
                   {title} · {minutes} min · {strict ? 'Strict' : 'Flexible'}
                 </p>
-                {attention.verification === 'camera_and_activity' && (
-                  <div className="setup-guide camera-status">
-                    <div className="setting-row">
-                      <strong>Camera</strong>
-                      {setup?.camera_permission === 'granted' ? (
-                        <span className="status-pill">Ready</span>
-                      ) : (
-                        <span>Permission needed</span>
-                      )}
-                    </div>
-                    {setup?.camera_permission !== 'granted' && (
-                      <div className="row controls">
-                        {setup?.camera_permission === 'denied' ? (
+                {setup?.platform !== 'windows' &&
+                  attention.verification === 'camera_and_activity' && (
+                    <div className="setup-guide camera-status">
+                      <div className="setting-row">
+                        <strong>Camera</strong>
+                        {setup?.camera_permission === 'granted' ? (
+                          <span className="status-pill">Ready</span>
+                        ) : (
                           <button
                             type="button"
                             onClick={() =>
                               void (async () => {
-                                try {
-                                  await api.openSetup('camera_settings');
-                                  setProblem(
-                                    'Turn on VYSTRIQ in System Settings → Privacy & Security → Camera, then click Check camera.',
-                                  );
-                                } catch (e) {
-                                  setProblem(String(e));
+                                if (setup?.camera_permission === 'denied') {
+                                  try {
+                                    await api.openSetup('camera_settings');
+                                    setProblem(
+                                      'Turn on VYSTRIQ in System Settings → Privacy & Security → Camera, then come back here.',
+                                    );
+                                  } catch (e) {
+                                    setProblem(String(e));
+                                  }
+                                } else {
+                                  await cameraPermission();
                                 }
                               })()
                             }
                           >
-                            Open camera settings
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => void cameraPermission()}
-                          >
                             Allow camera
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => void checkCamera()}
-                        >
-                          Check camera
-                        </button>
                       </div>
-                    )}
-                  </div>
-                )}
+                    </div>
+                  )}
                 <div className="setup-guide">
                   <label>
                     Wait before labeling a distraction
@@ -674,30 +763,11 @@ export function Sessions() {
                       <option value={20}>20 seconds</option>
                     </select>
                   </label>
-                  {attention.verification === 'camera_and_activity' && (
-                    <label>
-                      If the camera stops working
-                      <select
-                        value={attention.camera_fallback}
-                        onChange={(e) =>
-                          updateAttention({
-                            camera_fallback: e.target
-                              .value as AttentionPolicy['camera_fallback'],
-                          })
-                        }
-                      >
-                        <option value="unknown">Pause the timer</option>
-                        <option value="activity_only">
-                          Continue using app activity
-                        </option>
-                      </select>
-                    </label>
-                  )}
                 </div>
               </>
             )}
             {step === 2 && (
-              <label className="check-line">
+              <label className="check-label block-apps">
                 <input
                   type="checkbox"
                   checked={focus.activity_consent}
@@ -705,7 +775,7 @@ export function Sessions() {
                     update({ activity_consent: e.target.checked })
                   }
                 />
-                Allow app activity for this session
+                Block all other apps during this session
               </label>
             )}
             {(visibleProblem || error) && (

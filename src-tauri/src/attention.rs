@@ -75,20 +75,9 @@ pub struct Signals {
     pub browser_relevant: Option<bool>,
     pub browser_required: bool,
     pub camera_status: String,
-    pub manual_confirmed: bool,
 }
 pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
     let p = &config.attention;
-    if p.verification == "manual_checkpoints" {
-        return if signal.manual_confirmed {
-            (State::Focused, "Work confirmed by you.".into())
-        } else {
-            (
-                State::Unknown,
-                "Click ‘I’m working’ to count the next minute.".into(),
-            )
-        };
-    }
     if !config.activity_consent || !signal.activity_available {
         return (
             State::Unknown,
@@ -123,10 +112,9 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
             "person_not_detected" | "extended_absence" => {
                 return (
                     State::Unknown,
-                    "Camera view is unclear. Timer paused.".into(),
+                    "No person detected by the camera. Timer paused.".into(),
                 )
             }
-            _ if p.camera_fallback == "activity_only" => {}
             _ => return (State::Unknown, "Camera unavailable. Timer paused.".into()),
         }
     }
@@ -136,8 +124,8 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
     };
     if signal.idle_ms > idle_limit && signal.camera_status != "person_detected" {
         return (
-            State::Unknown,
-            "No recent activity. Waiting for a fresh focus check.".into(),
+            State::Absent,
+            "You seem to be away. Time will resume when you return.".into(),
         );
     }
     (
@@ -205,7 +193,7 @@ pub fn observe(s: &mut Session, signal: &Signals, delta: u64, now: i64) {
             s,
             delta,
             State::Recovering,
-            "Monitoring stopped or the Mac slept. This time was not counted.".into(),
+            "Monitoring stopped or the computer slept. This time was not counted.".into(),
             now,
         );
         return;
@@ -382,17 +370,47 @@ mod tests {
         assert_eq!(classify(&s.focus, &signal).0, State::Absent);
     }
     #[test]
-    fn missing_camera_requires_explicit_fallback() {
+    fn long_idle_without_camera_counts_as_away() {
+        let s = configured();
+        let signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            idle_ms: 360_000,
+            ..Default::default()
+        };
+        assert_eq!(classify(&s.focus, &signal).0, State::Absent);
+    }
+    #[test]
+    fn camera_session_never_counts_without_person() {
         let mut s = configured();
         s.focus.attention.verification = "camera_and_activity".into();
+        // Work app open, camera missing: timer stays paused.
         let signal = Signals {
             activity_available: true,
             approved_app: true,
             ..Default::default()
         };
         assert_eq!(classify(&s.focus, &signal).0, State::Unknown);
+        // Even with the old activity fallback selected, a missing camera
+        // must not count time.
         s.focus.attention.camera_fallback = "activity_only".into();
-        assert_eq!(classify(&s.focus, &signal).0, State::Focused);
+        assert_eq!(classify(&s.focus, &signal).0, State::Unknown);
+        // Camera on and reporting no person: paused even with a work app open.
+        let no_person = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_not_detected".into(),
+            ..Default::default()
+        };
+        assert_eq!(classify(&s.focus, &no_person).0, State::Unknown);
+        // Person back in view: time counts again.
+        let person = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_detected".into(),
+            ..Default::default()
+        };
+        assert_eq!(classify(&s.focus, &person).0, State::Focused);
     }
     #[test]
     fn recovery_never_awards_offline_time() {
@@ -416,17 +434,17 @@ mod tests {
         assert!(correct(&mut s, &id, "Reading", 10001).is_err());
     }
     #[test]
-    fn target_completion_caps_credit_and_manual_policy_is_explicit() {
+    fn target_completion_caps_credit() {
         let mut s = configured();
         s.remaining_ms = 500;
-        s.focus.attention.verification = "manual_checkpoints".into();
         assert_eq!(classify(&s.focus, &Signals::default()).0, State::Unknown);
         s.attention.candidate = State::Focused;
         s.attention.candidate_ms = 2000;
         observe(
             &mut s,
             &Signals {
-                manual_confirmed: true,
+                activity_available: true,
+                approved_app: true,
                 ..Default::default()
             },
             1000,

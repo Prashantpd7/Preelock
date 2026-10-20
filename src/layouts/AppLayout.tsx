@@ -1,3 +1,4 @@
+import { FirstRunPermissions } from '../components/PermissionsGuide';
 import { BreakBar } from '../components/BreakBar';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
@@ -81,6 +82,7 @@ export function AppLayout() {
             <p role="status">Opening your workspace…</p>
           ) : (
             <>
+              <FirstRunPermissions />
               <div hidden={activePath !== '/'}>
                 <Dashboard />
               </div>

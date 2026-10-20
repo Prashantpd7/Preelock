@@ -1,3 +1,4 @@
+import { sameBrowser } from '../types';
 import type { FocusConfig, FocusSetup } from '../types';
 export const splitDomains = (value: string) =>
   value
@@ -15,27 +16,30 @@ export function setupProblem(
     !focus.general_internet ||
     focus.domains.length > 0 ||
     p.work_domains.length > 0;
-  if (p.verification !== 'manual_checkpoints' && !setup?.native_available)
-    return 'App checking is unavailable. Choose Manual check-ins in step 1.';
+  if (!setup?.native_available)
+    return 'App checking is unavailable on this device.';
   if (network && !focus.browser_app) return 'Choose your browser below.';
-  if (network && !setup?.browser.connected)
+  // A connection from a different browser than the one picked — or one
+  // that cannot say which browser it is in — does not count.
+  const browserMismatch =
+    !setup?.browser.client_browser ||
+    !sameBrowser(focus.browser_app, setup.browser.client_browser);
+  if (network && (!setup?.browser.connected || browserMismatch))
     return 'Connect the browser extension below, then check again.';
   if (network && setup?.browser.error) return 'Reconnect the extension below.';
   if (
-    (p.verification !== 'manual_checkpoints' || focus.mode === 'strict') &&
+    focus.website_blocking === 'allowlist' &&
+    focus.domains.length === 0
+  )
+    return 'List at least one website to keep open, or pick a different blocking option.';
+  if (
     !(focus.mode === 'strict' ? focus.apps : p.work_apps).length &&
     !p.work_domains.length &&
     !(focus.mode === 'strict' && focus.domains.length)
   )
     return 'Choose at least one work app or website.';
-  if (
-    consent &&
-    (p.verification !== 'manual_checkpoints' ||
-      focus.apps.length > 0 ||
-      focus.mode === 'strict') &&
-    !focus.activity_consent
-  )
-    return 'Allow app activity below to continue.';
+  if (consent && !focus.activity_consent)
+    return 'Block all other apps below to continue.';
   if (
     consent &&
     p.verification === 'camera_and_activity' &&

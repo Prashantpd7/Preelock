@@ -2,15 +2,26 @@ import { useEffect, useState } from 'react';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
+import { PermissionsGuide } from './PermissionsGuide';
 import { BrowserSetup } from './BrowserSetup';
 import { Modal, SettingRow } from './SettingsControls';
 export function PermissionsPanel() {
-  const { setup, error, refresh } = useFocusSetup();
-  const [panel, setPanel] = useState<'browser' | 'camera' | null>(null);
+  const [pairBrowser, setPairBrowser] = useState('');
+  const { setup, error, refresh } = useFocusSetup(pairBrowser || undefined);
+  const [panel, setPanel] = useState<
+    'browser' | 'add-browser' | 'camera' | null
+  >(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<SettingsInfo>({});
+  const [permissions, setPermissions] = useState(false);
   const camera = setup?.camera_permission;
+  // Several browsers can stay paired at once; the row reflects all of them.
+  const connectedIds = setup?.connected_browsers ?? [];
+  const connectedNames = connectedIds.map(
+    (id) => setup?.browsers?.find((b) => b.id === id)?.name ?? id,
+  );
+  const anyBrowserConnected = connectedNames.length > 0;
   useEffect(() => {
     if (!desktop || !panel) return;
     const timer = window.setInterval(() => {
@@ -77,25 +88,47 @@ export function PermissionsPanel() {
     <section className="settings-section">
       <h2>Connections</h2>
       <SettingRow
+        title="Permissions"
+        hint="Camera, notifications and setup help."
+      >
+        <button className="secondary" onClick={() => setPermissions(true)}>
+          Open guide
+        </button>
+      </SettingRow>
+      {permissions && (
+        <PermissionsGuide
+          onClose={() => {
+            setPermissions(false);
+            void refresh();
+          }}
+        />
+      )}
+      <SettingRow
         title="Browser"
-        hint="Block websites in your connected browser."
+        hint={
+          anyBrowserConnected
+            ? `Connected in: ${connectedNames.join(', ')}.`
+            : 'Block websites in your connected browser.'
+        }
       >
         <button
-          className={
-            setup?.browser.connected ? 'connected-button' : 'secondary'
-          }
+          className={anyBrowserConnected ? 'connected-button' : 'secondary'}
           disabled={!desktop}
           onClick={() => {
             setNotice('');
             setPanel('browser');
           }}
         >
-          {setup?.browser.connected ? 'Connected' : 'Connect'}
+          {anyBrowserConnected ? 'Connected' : 'Connect'}
         </button>
       </SettingRow>
       <SettingRow
         title="Camera"
-        hint="Optional. Check whether you are at your desk."
+        hint={
+          setup?.platform === 'windows'
+            ? 'Not available on Windows. Use Apps only.'
+            : 'Optional. Check whether you are at your desk.'
+        }
       >
         <button
           className={camera === 'granted' ? 'connected-button' : 'secondary'}
@@ -118,14 +151,14 @@ export function PermissionsPanel() {
       )}
       {panel && (
         <Modal
-          title={panel === 'browser' ? 'Browser connection' : 'Camera'}
+          title={panel === 'camera' ? 'Camera' : 'Browser connection'}
           onClose={close}
         >
-          {panel === 'browser' ? (
-            setup?.browser.connected ? (
+          {panel !== 'camera' ? (
+            anyBrowserConnected && panel !== 'add-browser' ? (
               <div className="dialog-stack">
                 <p className="muted">
-                  Your browser is ready for focus sessions.
+                  Connected in: {connectedNames.join(', ')}.
                 </p>
                 <button
                   className="secondary"
@@ -138,8 +171,18 @@ export function PermissionsPanel() {
                   <p role="status">{status.browser_test}</p>
                 )}
                 <p className="small muted">
-                  After an app update, reload VYSTRIQ Focus on your browser’s
+                  After an app update, reload Vystriq on each browser's
                   Extensions page.
+                </p>
+                <button
+                  className="secondary"
+                  onClick={() => setPanel('add-browser')}
+                >
+                  Connect another browser
+                </button>
+                <p className="small muted">
+                  Resetting disconnects every browser; each one will need the
+                  connection code again.
                 </p>
                 <button
                   className="text-button"
@@ -156,16 +199,31 @@ export function PermissionsPanel() {
                     }
                   }}
                 >
-                  Reconnect browser
+                  Reset all browser connections
                 </button>
               </div>
             ) : (
-              <BrowserSetup
-                setup={setup}
-                refresh={async () => {
-                  await refresh();
-                }}
-              />
+              <div className="dialog-stack">
+                <div className="choice-group" aria-label="Browser to connect">
+                  {setup?.browsers?.map((browser) => (
+                    <button
+                      key={browser.id}
+                      className="secondary"
+                      aria-pressed={pairBrowser === browser.id}
+                      onClick={() => setPairBrowser(browser.id)}
+                    >
+                      {browser.name}
+                    </button>
+                  ))}
+                </div>
+                <BrowserSetup
+                  browserId={pairBrowser}
+                  setup={setup}
+                  refresh={async () => {
+                    await refresh();
+                  }}
+                />
+              </div>
             )
           ) : camera === 'granted' ? (
             <div className="dialog-stack">

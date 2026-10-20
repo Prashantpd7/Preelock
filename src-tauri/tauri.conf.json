@@ -47,12 +47,19 @@
     },
     "resources": {
       "../browser-extension/manifest.json": "browser-extension/manifest.json",
+      "../browser-extension/icon16.png": "browser-extension/icon16.png",
+      "../browser-extension/icon32.png": "browser-extension/icon32.png",
+      "../browser-extension/icon48.png": "browser-extension/icon48.png",
+      "../browser-extension/icon128.png": "browser-extension/icon128.png",
       "../browser-extension/worker.js": "browser-extension/worker.js",
       "../browser-extension/rules.js": "browser-extension/rules.js",
       "../browser-extension/self-test.js": "browser-extension/self-test.js",
       "../browser-extension/popup.html": "browser-extension/popup.html",
       "../browser-extension/popup.css": "browser-extension/popup.css",
-      "../browser-extension/popup.js": "browser-extension/popup.js"
+      "../browser-extension/popup.js": "browser-extension/popup.js",
+      "../browser-extension/blocked.html": "browser-extension/blocked.html",
+      "../browser-extension/blocked.css": "browser-extension/blocked.css",
+      "../browser-extension/identity.js": "browser-extension/identity.js"
     }
   }
 }

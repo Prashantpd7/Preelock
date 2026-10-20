@@ -3,6 +3,8 @@
 #import <Vision/Vision.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <mach/mach_time.h>
+#import <objc/runtime.h>
+#import <Carbon/Carbon.h>
 
 static void onMain(dispatch_block_t work) {
     if ([NSThread isMainThread]) work(); else dispatch_sync(dispatch_get_main_queue(), work);
@@ -183,4 +185,29 @@ char *vy_file_panel(int save, const char *filename) {
         });
         return strdup(path.UTF8String);
     }
+}
+
+// AppKit's terminate: path bypasses Tauri's ExitRequested on macOS.
+static void (*vyQuitRequest)(void);
+static NSApplicationTerminateReply vyShouldTerminate(id self, SEL selector, NSApplication *sender) {
+    (void)self; (void)selector; (void)sender;
+    // Let macOS shut down/log out. SQLite checkpoints retain unfinished work.
+    NSAppleEventDescriptor *event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+    OSType reason = [[event attributeDescriptorForKeyword:kAEQuitReason] typeCodeValue];
+    if (reason == kAELogOut || reason == kAEShutDown || reason == kAERestart)
+        return NSTerminateNow;
+    if (vyQuitRequest) vyQuitRequest();
+    return NSTerminateCancel;
+}
+int vy_install_quit_guard(void (*callback)(void)) {
+    __block BOOL installed = NO;
+    onMain(^{
+        Class delegateClass = [NSApp.delegate class];
+        if (!delegateClass) return;
+        // Add only our missing delegate method; never replace Tauri's delegate.
+        installed = class_addMethod(delegateClass, @selector(applicationShouldTerminate:),
+                                    (IMP)vyShouldTerminate, "Q@:@");
+        if (installed) vyQuitRequest = callback;
+    });
+    return installed;
 }

@@ -5,6 +5,7 @@ import { Settings } from '../pages/Settings';
 import { useAppStore } from '../state/store';
 import { api, emptySnapshot } from '../services/api';
 import { settingsAction, preferenceDefaults } from '../services/settings';
+import { FirstRunPermissions, PermissionsGuide } from '../components/PermissionsGuide';
 vi.mock('../services/api', () => ({
   desktop: true,
   emptySnapshot: {
@@ -26,6 +27,7 @@ vi.mock('../services/settings', async (importOriginal) => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '');
   };
@@ -60,8 +62,42 @@ beforeEach(() => {
       error: '',
       blocks: 0,
       cleanup_pending: false,
+      extension_stale: false,
     },
+    connected_browsers: ['com.brave.Browser'],
   });
+});
+it('shows the first-run guide once after dismissal', async () => {
+  const user = userEvent.setup();
+  const view = render(<FirstRunPermissions />);
+  expect(await screen.findByRole('dialog')).toHaveTextContent('Permissions & setup');
+  await user.click(screen.getByRole('button', { name: 'Done' }));
+  view.unmount();
+  render(<FirstRunPermissions />);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+it('opens camera settings after denial instead of requesting permission again', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({ ...setup, camera_permission: 'denied' });
+  const user = userEvent.setup();
+  render(<PermissionsGuide onClose={() => {}} />);
+  await screen.findByText(/Denied — System Settings/);
+  await user.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
+  expect(api.openSetup).toHaveBeenCalledWith('camera_settings');
+  expect(api.requestCamera).not.toHaveBeenCalled();
+});
+it('gives Windows permission guidance without Mac-only controls', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup, platform: 'windows', camera_permission: 'unsupported',
+  });
+  const user = userEvent.setup();
+  render(<PermissionsGuide onClose={() => {}} />);
+  expect(await screen.findByRole('button', { name: 'Unavailable' })).toBeDisabled();
+  expect(screen.queryByText(/System Settings/)).not.toBeInTheDocument();
+  expect(screen.getByText(/More info → Run anyway/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Open settings' }));
+  expect(api.openSetup).toHaveBeenCalledWith('notification_settings');
 });
 it('saves real preferences with button choices and no dropdowns', async () => {
   const user = userEvent.setup();

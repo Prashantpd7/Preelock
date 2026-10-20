@@ -11,14 +11,53 @@ describe('real browser policy rule generation', () => {
     expect(rules[0].action.type).toBe('block');
   });
   it('allows only selected domains and recovery loopback in strict mode', () => {
-    const [rule] = compileRules({ mode: 'allowlist', domains: ['docs.rs'] });
-    expect(rule.condition.excludedRequestDomains).toContain('docs.rs');
-    expect(rule.condition.excludedRequestDomains).toContain('127.0.0.1');
-    expect(rule.condition.regexFilter).toBe('^(https?|wss?)://');
+    const rules = compileRules({ mode: 'allowlist', domains: ['docs.rs'] });
+    // Allow rules (priority 2) for the domain + localhost, then a
+    // catch-all block rule (priority 1).
+    const allows = rules.filter((r) => r.action.type === 'allow');
+    const blocks = rules.filter((r) => r.action.type === 'block');
+    expect(
+      allows.some((r) => r.condition.requestDomains.includes('docs.rs')),
+    ).toBe(true);
+    expect(
+      allows.some((r) => r.condition.requestDomains.includes('127.0.0.1')),
+    ).toBe(true);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].condition.regexFilter).toBe('^(https?|wss?)://');
+    expect(blocks[0].priority).toBe(1);
+    expect(allows[0].priority).toBe(2);
+  });
+  it('allowlist blocks navigation only so allowed pages load their assets', () => {
+    const rules = compileRules({ mode: 'allowlist', domains: ['docs.rs'] });
+    for (const rule of rules) {
+      expect(rule.condition.resourceTypes).toEqual(['main_frame', 'sub_frame']);
+    }
+  });
+  it('offline keeps filtering every request type', () => {
+    const rules = compileRules({ mode: 'offline', domains: [] });
+    const blocks = rules.filter((r) => r.action.type === 'block');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].condition.resourceTypes).toContain('main_frame');
+    expect(blocks[0].condition.resourceTypes).toContain('stylesheet');
+    for (const rule of rules.filter((r) => r.action.type === 'allow')) {
+      expect(rule.condition.resourceTypes).toContain('xmlhttprequest');
+    }
+    const [blockRule] = compileRules({
+      mode: 'blocklist',
+      domains: ['example.com'],
+    });
+    expect(blockRule.condition.resourceTypes).toContain('main_frame');
+    expect(blockRule.condition.resourceTypes).toContain('stylesheet');
   });
   it('offline mode does not retain approved public destinations', () => {
-    const [rule] = compileRules({ mode: 'offline', domains: ['docs.rs'] });
-    expect(rule.condition.excludedRequestDomains).not.toContain('docs.rs');
+    const rules = compileRules({ mode: 'offline', domains: ['docs.rs'] });
+    const allows = rules.filter((r) => r.action.type === 'allow');
+    expect(
+      allows.some((r) => r.condition.requestDomains.includes('docs.rs')),
+    ).toBe(false);
+    expect(
+      allows.some((r) => r.condition.requestDomains.includes('127.0.0.1')),
+    ).toBe(true);
   });
   it('removes every rule for cleanup and rejects malformed domains', () => {
     expect(compileRules(null)).toEqual([]);

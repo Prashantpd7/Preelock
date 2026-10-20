@@ -17,6 +17,8 @@ export interface Session {
   started_at: number | null;
   ended_at: number | null;
   deadline_ms: number | null;
+  /** True when the app was killed mid-session (force quit, crash). */
+  force_quit?: boolean;
   focus?: FocusConfig;
   report?: FocusReport;
   attention?: AttentionTracking;
@@ -41,6 +43,8 @@ export interface Preferences {
   daily_goal?: number;
   session_alert?: boolean;
   sound?: boolean;
+  session_start_alert?: boolean;
+  session_start_sound?: boolean;
   volume?: number;
   reminder?: boolean;
   reminder_time?: string;
@@ -77,14 +81,16 @@ export type Action =
         | 'pause_session'
         | 'resume_session'
         | 'end_session'
-        | 'delete_session';
+        | 'delete_session'
+        | 'restart_session';
       id: string;
     }
   | { type: 'emergency_exit'; id: string; confirmation: string }
-  | { type: 'disable_camera' | 'confirm_work'; id: string }
+  | { type: 'disable_camera' | 'enable_camera'; id: string }
   | { type: 'correct_interval'; id: string; interval_id: string; note: string }
   | { type: 'create_task'; title: string }
   | { type: 'update_task'; id: string; title: string; completed: boolean }
+  | { type: 'delete_task'; id: string }
   | {
       type: 'set_preferences';
       theme: Preferences['theme'];
@@ -95,6 +101,7 @@ export interface FocusConfig {
   mode: 'standard' | 'strict' | 'deep';
   apps: string[];
   domains: string[];
+  website_blocking?: 'auto' | 'none' | 'blocklist' | 'allowlist';
   general_internet: boolean;
   browser_app: string;
   activity_consent: boolean;
@@ -116,13 +123,46 @@ export interface BrowserStatus {
   available: boolean;
   connected: boolean;
   applied_id: string;
+  client_browser?: string;
   error: string;
   blocks: number;
   cleanup_pending: boolean;
+  /** The connected extension copy predates the behavior the app shipped with. */
+  extension_stale: boolean;
+}
+/**
+ * True when `id` — a platform browser id (macOS bundle id, or a Windows
+ * executable path) — refers to the browser the extension reported in its
+ * sync (`reported`, a canonical bundle id). Mirrors `same_browser` in the
+ * Rust bridge. Empty values never match.
+ */
+export function sameBrowser(id: string, reported: string): boolean {
+  const a = (id || '').toLowerCase();
+  const b = (reported || '').toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const exe: Record<string, string> = {
+    'com.google.chrome': 'chrome.exe',
+    'com.microsoft.edgemac': 'msedge.exe',
+    'com.brave.browser': 'brave.exe',
+    'com.vivaldi.vivaldi': 'vivaldi.exe',
+    'org.chromium.chromium': 'chromium.exe',
+    'ai.perplexity.comet': 'comet.exe',
+  };
+  const name = exe[b];
+  return !!name && a.endsWith('\\' + name);
+}
+/** The single browser a session's website rules cover: the chosen browser.
+ *  One browser per session. Mirrors `FocusConfig::session_browsers` in the
+ *  Rust backend. */
+export function sessionBrowsers(focus: FocusConfig): string[] {
+  return focus.browser_app ? [focus.browser_app] : [];
 }
 export interface FocusSetup {
   browsers?: { id: string; name: string }[];
   extension_directory?: string;
+  /** Browser ids with a live extension connection. */
+  connected_browsers?: string[];
   platform: string;
   native_available: boolean;
   applications: { id: string; name: string }[];
@@ -134,6 +174,7 @@ export const defaultFocus: FocusConfig = {
   mode: 'standard',
   apps: [],
   domains: [],
+  website_blocking: 'auto',
   general_internet: true,
   browser_app: '',
   activity_consent: true,
@@ -152,7 +193,7 @@ export const defaultFocus: FocusConfig = {
 export interface AttentionPolicy {
   enabled: boolean;
   task: string;
-  verification: 'activity_only' | 'camera_and_activity' | 'manual_checkpoints';
+  verification: 'activity_only' | 'camera_and_activity';
   grace_seconds: number;
   camera_fallback: 'unknown' | 'activity_only';
   work_apps: string[];

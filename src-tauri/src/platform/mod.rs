@@ -50,6 +50,14 @@ mod unsupported {
     pub fn camera_status() -> String {
         "unsupported".into()
     }
+    pub fn installed_browsers() -> Vec<Application> {
+        Vec::new()
+    }
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use unsupported::*;
+
+#[cfg(any(target_os = "windows", test))]
+mod browser_paths;
+#[cfg(target_os = "windows")]
+pub mod settings_windows;
