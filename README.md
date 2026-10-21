@@ -58,6 +58,7 @@ Mac-only. Browser filtering requires manually loading and pairing the bundled
 Chromium extension; Safari and Firefox are unsupported. Restrictions are not
 system-wide or administrator-proof. No screen recording is performed.
 
-Maintainers: [release procedure](docs/RELEASING.md).
+Maintainers: [release procedure](docs/RELEASING.md) and
+[Microsoft Store MSIX preparation](docs/STORE_SUBMISSION.md).
 
 See the [0.4.1 validation record](docs/VALIDATION_0.4.1.md) for tested and untested flows.

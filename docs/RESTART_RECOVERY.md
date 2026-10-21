@@ -11,10 +11,11 @@ Local development build, 2026-10-21 (based on 0.4.1; not a published release).
 - Capture stops when the session finishes, is user-paused, or camera consent is withdrawn. App-only sessions never start capture. While a camera session is active, capture continues checking for the person's return; an empty frame does not permanently switch off the camera. No video is saved.
 - The first-run setup now offers Open at login alongside camera and notification permissions. OS permission decisions and login registration remain OS-owned. The upgraded guide is shown once to existing users too.
 - Windows camera capture remains unsupported; this change does not claim to add it. macOS can require permission again after an unsigned/ad-hoc application rebuild.
+- In a Microsoft Store (MSIX) install, startup registration cannot use the registry `Run` key because HKCU writes are virtualised inside the package. Packaged builds use the manifest `startupTask` instead (disabled by default, toggled only by the user) and report the state Windows actually stored. The recovery logic above is unchanged. See [STORE_SUBMISSION.md](STORE_SUBMISSION.md).
 
 ## Verification
 
-Rust regression coverage: same-boot Force Quit, boot change, consumed shutdown marker, preserved time/consent/user pause, browser-policy reactivation, camera outage/stall retries and revoked/restored permission. Frontend coverage: startup opt-in, no camera reprompt when granted, active-session retry and permission recovery controls. macOS ARM release bundle built and signature/resources checked. Windows runtime and a real physical reboot remain manual checks.
+Rust regression coverage: same-boot Force Quit, boot change, consumed shutdown marker, preserved time/consent/user pause, browser-policy reactivation, camera outage/stall retries, revoked/restored permission, and packaged startup-state mapping. Frontend coverage: startup opt-in, no camera reprompt when granted, active-session retry and permission recovery controls. macOS ARM release bundle built and signature/resources checked. Windows runtime, MSIX installation, and a real physical reboot remain manual checks; none were run on Windows from this checkout.
 
 ## Manual test
 

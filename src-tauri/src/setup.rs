@@ -14,11 +14,19 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
     } else {
         return Err("Extension files are missing. Reinstall VYSTRIQ.".into());
     };
-    let target = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("browser-extension");
+    // Store (MSIX) packages virtualise AppData into a private per-package
+    // store. The browser and Explorer are separate processes, so they cannot
+    // read a copy kept there. Packaged builds therefore deploy the extension
+    // to a normal user-writable folder outside AppData.
+    let base = if crate::platform::packaged() {
+        app.path()
+            .home_dir()
+            .map_err(|e| e.to_string())?
+            .join("VYSTRIQ")
+    } else {
+        app.path().app_data_dir().map_err(|e| e.to_string())?
+    };
+    let target = base.join("browser-extension");
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     for file in [
         "manifest.json",

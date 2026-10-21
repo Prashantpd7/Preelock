@@ -324,6 +324,11 @@ must be reported separately. Never overwrite old releases or delete user data.
   enforcement.
 - Preserve deleted-session tombstones and migration compatibility.
 - Test both macOS and Windows conditional code when changing platform logic.
+- Keep the MSIX startup task declarative (`Enabled="false"`) and never enable
+  startup without an explicit user action. Do not reintroduce a registry `Run`
+  registration for packaged builds.
+- Keep the packaged extension folder outside AppData; a virtualised copy is not
+  readable by the browser.
 - Use targeted tests first, then the full checks before release.
 - Do not modify the extension version check as a shortcut for unrelated issues.
 
@@ -347,5 +352,43 @@ The emergency-exit button, form, and availability text were removed and the old
 IPC command now rejects requests. Strict sessions cannot be paused, ended early,
 or deleted while active. Flexible-session controls retain their existing policy.
 Historical emergency-exit records still load. OS termination remains possible.
-Windows runtime verification and MSIX Store packaging remain separate work.
-Publishing source code does not replace existing release installers.
+Windows runtime verification remains separate work. Publishing source code does
+not replace existing release installers.
+
+## Microsoft Store MSIX prep (21 October 2026)
+
+An unsigned x64 MSIX has been built on the free Windows CI runner (commit
+`b9939d4`, version `1.4.1.0`, SHA-256
+`4e2f9613660ecfc9551d68d7157bfebed0a030d23bd94ea79a04b72dfaf846ca`) and its
+structure verified with `makeappx` and independently. It has **not** been
+installed, launched, updated, uninstalled, or WACK-tested; those remain manual
+Windows steps. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for the
+exact status, listing copy and test plan. Nothing was uploaded or published.
+
+- `windows/msix/identity.json` holds the reserved Partner Center identity
+  (`Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`,
+  display name `Prashantpd7`). `scripts/package-msix.ps1` uses it by default and
+  `windows/msix/AppxManifest.xml.template` receives the rendered values. The
+  script refuses to build without a real identity unless
+  `-AllowPlaceholderIdentity` is used, which marks output `-validation`.
+  The MSIX package version is independent of the app version: `0.4.1` maps to
+  `1.4.1.0` because the Store rejects a zero first segment; keep it increasing.
+- `scripts/verify-msix.ps1` checks an artifact structurally.
+  `scripts/sign-msix-dev.ps1` makes a free self-signed certificate for local
+  sideload testing only. The Store re-signs accepted packages.
+- `.github/workflows/msix.yml` builds and validates on a free `windows-2022`
+  runner. It never signs, uploads, or publishes.
+- Packaged startup uses the manifest `desktop:StartupTask`
+  (`TaskId=VYSTRIQ`, `Enabled="false"`) plus
+  `Windows.ApplicationModel.StartupTask` in `platform/settings_windows.rs`.
+  HKCU is virtualised inside a package, so the unpackaged registry `Run` entry
+  cannot be used there. Unpackaged builds keep it; macOS keeps its login item.
+- Packaged AppData is private to the package, so the bundled extension is
+  deployed to `%USERPROFILE%\VYSTRIQ\browser-extension` for packaged builds so
+  the browser and Explorer can read it. Unpackaged and macOS paths are unchanged.
+- Data: existing `%APPDATA%\com.vystriq.desktop` data is reused in place after a
+  Store install; newly created files in a fresh package live in the private
+  AppData store and are removed on uninstall. Never migrate or delete data
+  silently.
+- Windows camera presence is still unimplemented and is reported as unavailable.
+  Do not claim or simulate it. Do not weaken the app's honest capability text.

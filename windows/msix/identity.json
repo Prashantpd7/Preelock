@@ -1,0 +1,9 @@
+{
+  "_source": "Partner Center > Product management > App identity, supplied by the owner on 2026-10-21.",
+  "_note": "The three packaging values must match Partner Center exactly. packageFamilyName and storeId are informational: Windows derives the family name from the name and publisher, and the storeId is the Store listing identifier.",
+  "identityName": "Prashantpd7.VYSTRIQ",
+  "publisher": "CN=2A3BE073-2A0A-47AA-958D-9543D60D234A",
+  "publisherDisplayName": "Prashantpd7",
+  "packageFamilyName": "Prashantpd7.VYSTRIQ_jkzj39eszd2zgp",
+  "storeId": "9NCZGZM843N5"
+}

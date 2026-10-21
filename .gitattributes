@@ -1,0 +1,13 @@
+# Keep text files LF in every checkout. Windows otherwise converts them to
+# CRLF, which changes the bytes bundled into the MSIX (the extension files are
+# packaged as-is) and makes the artifact differ by host for no functional gain.
+* text=auto eol=lf
+
+# Never touch binary content.
+*.png binary
+*.ico binary
+*.icns binary
+*.msix binary
+*.exe binary
+*.dmg binary
+*.dll binary

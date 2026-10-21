@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest template for the Microsoft Store build of VYSTRIQ.
+
+  scripts/package-msix.ps1 replaces every __TOKEN__ value. Identity Name,
+  Publisher and PublisherDisplayName are assigned by Partner Center after the
+  product name is reserved; they are NOT values this repository can invent.
+  See docs/STORE_SUBMISSION.md.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="__IDENTITY_NAME__"
+    Publisher="__PUBLISHER__"
+    Version="__VERSION__"
+    ProcessorArchitecture="__ARCHITECTURE__" />
+
+  <Properties>
+    <DisplayName>__DISPLAY_NAME__</DisplayName>
+    <PublisherDisplayName>__PUBLISHER_DISPLAY_NAME__</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <!-- Full-trust Win32 (Desktop Bridge) entry point. Tauri's WebView2 host
+         requires this trust level; see docs/STORE_SUBMISSION.md for the
+         runFullTrust justification text for Partner Center. -->
+    <Application
+      Id="VYSTRIQ"
+      Executable="VYSTRIQ.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="__DISPLAY_NAME__"
+        Description="__DESCRIPTION__"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png"
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          ShortName="VYSTRIQ" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- The only supported startup mechanism for a packaged desktop app.
+             Enabled="false" means Windows registers the task but never starts
+             VYSTRIQ at sign-in until the user turns it on in the app or in
+             Settings > Apps > Startup. The app never enables it implicitly. -->
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="VYSTRIQ.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="VYSTRIQ"
+            Enabled="false"
+            DisplayName="VYSTRIQ" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required by every packaged full-trust desktop app. Restricted
+         capability: Partner Center asks for a justification. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
