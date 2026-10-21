@@ -24,7 +24,7 @@ recorded.
 
 The existing macOS DMG and Windows NSIS release pipeline is untouched.
 
-## 2. What only you can supply
+## 2. Identity and owner-supplied information
 
 ### Identity supplied by the owner
 
@@ -339,14 +339,15 @@ Reviewer notes to include in the submission:
 
 ### Built package
 
-| Item | Value |
-| ------------- | ---------------------------------------------------------------------------------------- || Artifact | `VYSTRIQ_0.4.1_x64.msix` (5,147,134 bytes) |
-| SHA-256 | `4e2f9613660ecfc9551d68d7157bfebed0a030d23bd94ea79a04b72dfaf846ca` |
-| Identity | `Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`, version `1.4.1.0`, x64 |
-| Source commit | `b9939d4c095f9d6d52dac8e4289830cfb1c8147d` |
-| Toolchain | Windows SDK 10.0.26100.0 `makeappx.exe` on the free `windows-2022` runner |
-| CI run | https://github.com/Prashantpd7/VYSTRIQ/actions/runs/39628667964 |
-| Signature | Unsigned (expected; the Store re-signs accepted submissions) |
+| Item          | Value                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| Artifact      | `VYSTRIQ_0.4.1_x64.msix` (5,147,134 bytes)                                               |
+| SHA-256       | `4e2f9613660ecfc9551d68d7157bfebed0a030d23bd94ea79a04b72dfaf846ca`                       |
+| Identity      | `Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`, version `1.4.1.0`, x64 |
+| Source commit | `b9939d4c095f9d6d52dac8e4289830cfb1c8147d`                                               |
+| Toolchain     | Windows SDK 10.0.26100.0 `makeappx.exe` on the free `windows-2022` runner                |
+| CI run        | https://github.com/Prashantpd7/VYSTRIQ/actions/runs/39628667964                          |
+| Signature     | Unsigned (expected; the Store re-signs accepted submissions)                             |
 
 ### Executed checks
 
@@ -371,19 +372,20 @@ bundled resources match the repository byte for byte.
 
 ## 11. Known limitations and open items
 
-| Item | State |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- || Package built on Windows | **Done** on the free CI runner; artifact and checksum recorded above. |
-| Package uploaded to Partner Center | **No.** Deliberately not submitted; the owner performs this step. |
-| Install/launch/update/uninstall on Windows | **Not done.** Requires an interactive Windows machine. |
-| Windows App Certification Kit | Not run. Needs an installed package on Windows. |
-| Screenshots | Not captured. Take genuine Windows screenshots; do not fabricate. |
-| Partner Center identity | Supplied and baked into `windows/msix/identity.json`. Confirm against Partner Center before upload; no screenshot was provided for cross-checking. Package Family Name suffix looks one character long (see §2). |
-| Privacy policy URL and support contact | Owner must supply; the draft text is in `docs/PRIVACY_POLICY.md`. |
-| Windows camera presence | Not implemented, intentionally. Reported unavailable everywhere. |
-| Single instance at sign-in | Pre-existing gap: if the app is already running and the startup task launches it again, Windows starts a second process. Not changed by this work; test before submission. |
-| Automatic updates | None. Store updates replace the package; update compatibility relies on migrations and unchanged data paths. |
-| ARM64 | Not built. Only x64 is produced and tested. |
-| WebView2 on clean Windows 10 | See §7. |
+| Item                                       | State                                                                                                                                                                                                            |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package built on Windows                   | **Done** on the free CI runner; artifact and checksum recorded above.                                                                                                                                            |
+| Package uploaded to Partner Center         | **No.** Deliberately not submitted; the owner performs this step.                                                                                                                                                |
+| Install/launch/update/uninstall on Windows | **Not done.** Requires an interactive Windows machine.                                                                                                                                                           |
+| Windows App Certification Kit              | Not run. Needs an installed package on Windows.                                                                                                                                                                  |
+| Screenshots                                | Not captured. Take genuine Windows screenshots; do not fabricate.                                                                                                                                                |
+| Partner Center identity                    | Supplied and baked into `windows/msix/identity.json`. Confirm against Partner Center before upload; no screenshot was provided for cross-checking. Package Family Name suffix looks one character long (see §2). |
+| Privacy policy URL and support contact     | Owner must supply; the draft text is in `docs/PRIVACY_POLICY.md`.                                                                                                                                                |
+| Windows camera presence                    | Not implemented, intentionally. Reported unavailable everywhere.                                                                                                                                                 |
+| Single instance at sign-in                 | Pre-existing gap: if the app is already running and the startup task launches it again, Windows starts a second process. Not changed by this work; test before submission.                                       |
+| Automatic updates                          | None. Store updates replace the package; update compatibility relies on migrations and unchanged data paths.                                                                                                     |
+| ARM64                                      | Not built. Only x64 is produced and tested.                                                                                                                                                                      |
+| WebView2 on clean Windows 10               | See §7.                                                                                                                                                                                                          |
 
 ## 12. Steps to submit
 
