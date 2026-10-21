@@ -93,17 +93,13 @@ it('clears installed rules when acknowledgement is rejected', async () => {
   expect(session.applied_id).toBe('');
   expect(session.error).toContain('Connection code rejected');
 });
-it('releases rules on connection failure and supports deliberate emergency release', async () => {
+it('releases rules on connection failure', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => response(policy())),
   );
   await import('./worker.js');
   await send({ type: 'sync' });
-  await send({ type: 'release', confirmation: 'END FOCUS' });
-  expect(local.disabled).toBe(true);
-  expect(rules).toEqual([]);
-  local.disabled = false;
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => {

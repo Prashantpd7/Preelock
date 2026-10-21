@@ -45,11 +45,19 @@ On macOS, use **Request camera permission**, respond to the OS prompt, then retr
 
 ## Recovery and uninstall
 
-Use **Emergency exit**, type `END FOCUS`, and confirm. The session is recorded as interrupted; app redirection and camera capture stop. Browser rules clear when the extension syncs. Settings shows pending cleanup until it receives acknowledgement.
+Sessions release app and browser restrictions when they finish normally. If the
+desktop app is unavailable, force-quit it using the operating system and
+reopen it; the next startup performs recovery. Reopen hidden/minimized apps
+from the Dock/taskbar. No DNS, firewall, VPN, proxy or system account changes
+need undoing.
 
-If Desktop is unavailable: open the extension popup's emergency recovery, type `END FOCUS`, and release. Alternatively disable/remove the extension, or restart the browser (rules are session scoped). Quit/force-quit VYSTRIQ to stop native app redirection and camera capture. Reopen hidden/minimized apps from the Dock/taskbar. No DNS, firewall, VPN, proxy or system account changes need undoing.
-
-For uninstall, first recover/end the session, remove the extension and quit VYSTRIQ. Remove the application bundle or use the Windows uninstaller. Keeping the application data directory preserves your history; back it up before deleting it. The local SQLite database and browser pairing token are in the platform app-data directory documented in DEVELOPMENT.md. No scheduled task, launch agent, Windows service or background helper installation is created.
+For uninstall, first let the session finish, remove the extension and quit
+VYSTRIQ. Remove the application bundle or use the Windows uninstaller.
+Keeping the application data directory preserves your history; back it up
+before deleting it. The local SQLite database and browser pairing token are in
+the platform app-data directory documented in DEVELOPMENT.md. No scheduled
+task, launch agent, Windows service or background helper installation is
+created.
 
 ## Managed policy prerequisites, intentionally not applied
 

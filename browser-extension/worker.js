@@ -296,17 +296,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     );
     return true;
   }
-  if (message.type === 'release' && message.confirmation === 'END FOCUS') {
-    enqueue(async () => {
-      await chrome.storage.local.set({ disabled: true });
-      await removeRules();
-      await chrome.storage.session.set({
-        error:
-          'Emergency browser release. Desktop will detect lost enforcement.',
-      });
-    }).then(() => sendResponse({ ok: true }));
-    return true;
-  }
   return false;
 });
 // Debug feedback is available for unpacked installations only; store counts, never URLs.

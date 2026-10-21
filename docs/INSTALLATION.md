@@ -132,8 +132,8 @@ to paired browser profiles and is not impossible to bypass.
 
 ## Uninstall safely
 
-End the active focus session first (use **Emergency exit** if necessary), remove
-the Vystriq browser extension, and quit VYSTRIQ from its menu-bar/system-tray menu.
+Wait for the active focus session to finish, remove the Vystriq browser
+extension, and quit VYSTRIQ from its menu-bar/system-tray menu.
 On Mac, move VYSTRIQ from Applications to Trash. On Windows, open
 Settings → Apps → Installed apps (Apps & features on Windows 10), find VYSTRIQ,
 and choose **Uninstall**.
