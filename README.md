@@ -1,6 +1,6 @@
-# VYSTRIQ
+# Preelock — Free Focus & Productivity App for Windows and macOS
 
-VYSTRIQ is a local-first focus and productivity app for Mac and Windows. Create
+Preelock is a local-first focus and productivity app for Mac and Windows. Create
 focus sessions, manage tasks, track productive time, and optionally block
 distracting browser sites while you work.
 
@@ -8,22 +8,11 @@ There is no account and no cloud storage. Your sessions, tasks, settings, and
 activity stay on your own computer. Every new installation on another computer
 starts with empty data.
 
-## Download VYSTRIQ — Free for Windows and macOS
+## Download Preelock — Free for Windows and macOS
 
-**[Latest public beta: VYSTRIQ 0.4.1](https://github.com/Prashantpd7/VYSTRIQ/releases/tag/v0.4.1)**
-
-| Your computer                      | Download                                                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Mac — Apple Silicon (M1 and newer) | [Download Apple Silicon DMG](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_1-macOS-Apple-Silicon.dmg) |
-| Mac — Intel                        | [Download Intel DMG](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_2-macOS-Intel.dmg)                 |
-| Windows — Intel/AMD 64-bit         | [Download Windows installer](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_3-Windows-x64.exe)         |
-
-Mac: open the DMG, drag VYSTRIQ to Applications, eject the image, then open
-VYSTRIQ from Applications. Windows: run the installer, then open VYSTRIQ from Start.
-
-[All releases](https://github.com/Prashantpd7/VYSTRIQ/releases)
-
-**v0.4.1 supersedes the defective v0.4.0 Mac installer.** Use these new downloads.
+Version 0.5.0 installers are being validated. Downloads will be linked here after
+all release checks pass. [Earlier releases](https://github.com/Prashantpd7/Preelock/releases)
+retain their historical product names.
 
 Read the [installation and troubleshooting guide](docs/INSTALLATION.md), including
 [permission setup](docs/INSTALLATION.md#permissions-and-first-run) and
@@ -40,7 +29,7 @@ these builds. Never disable system protections.
 
 ## Your privacy
 
-VYSTRIQ does not require an account, API key, or subscription. It stores data
+Preelock does not require an account, API key, or subscription. It stores data
 locally in the operating-system application-data folder. The download does not
 contain the developer's sessions, tasks, or settings.
 

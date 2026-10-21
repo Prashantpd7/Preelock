@@ -39,7 +39,7 @@ On macOS, use **Request camera permission**, respond to the OS prompt, then retr
 - Only the paired browser profile's new matching network requests are filtered. Other profiles, incognito, browsers and network clients are not filtered. Strict redirection excludes known alternate browser apps from approval, but cannot identify every renamed/custom browser.
 - DNS changes, encrypted DNS, VPNs and OS proxies do not change the URL that browser rules match. However, an allowed remote proxy site, remote desktop, browser extension, embedded browser, local proxy, cached/offline page or existing connection can bypass the intended experience. This is not VPN-resistant or system-wide blocking.
 - Disconnecting or changing networks does not alter local browser rules. If the extension/bridge cannot communicate, rules are released on the next extension check and the desktop records lost enforcement. Restriction loss is not detected instantaneously.
-- The same-user administrator can quit VYSTRIQ, remove the extension, change files/clock, or use recovery tools. No anti-uninstall mechanism, service, kernel hook, security-tool termination or hidden persistence is installed.
+- The same-user administrator can quit Preelock, remove the extension, change files/clock, or use recovery tools. No anti-uninstall mechanism, service, kernel hook, security-tool termination or hidden persistence is installed.
 - Browser alarms can be delayed. Lease expiry is checked when the extension wakes; it is not an OS-enforced exact cleanup deadline.
 - System clock changes during a running process do not move the native timer. Productive targets never receive offline time. Restart and monitoring gaps are recorded as unknown/recovering; changing the clock cannot earn productive credit.
 
@@ -52,7 +52,7 @@ from the Dock/taskbar. No DNS, firewall, VPN, proxy or system account changes
 need undoing.
 
 For uninstall, first let the session finish, remove the extension and quit
-VYSTRIQ. Remove the application bundle or use the Windows uninstaller.
+Preelock. Remove the application bundle or use the Windows uninstaller.
 Keeping the application data directory preserves your history; back it up
 before deleting it. The local SQLite database and browser pairing token are in
 the platform app-data directory documented in DEVELOPMENT.md. No scheduled
@@ -79,6 +79,6 @@ Presence uses a real Apple Vision upper-body model (confidence threshold 0.6, ab
 
 ## v0.3.1 quick connection
 
-Open Settings → Browser extension → Set up. Comet is now detected alongside supported Chromium browsers. Open Extensions, enable Developer mode, then Load unpacked from the folder shown by VYSTRIQ. Use Copy folder path and ⌘⇧G in the Mac folder picker. Open the extension popup, paste Copy connection code, click Connect, then Test blocking. Keep the desktop app open. The extension is exported outside the app bundle so its folder stays stable across rebuilds. Reload it after updates.
+Open Settings → Browser extension → Set up. Comet is now detected alongside supported Chromium browsers. Open Extensions, enable Developer mode, then Load unpacked from the folder shown by Preelock. Use Copy folder path and ⌘⇧G in the Mac folder picker. Open the extension popup, paste Copy connection code, click Connect, then Test blocking. Keep the desktop app open. The extension is exported outside the app bundle so its folder stays stable across rebuilds. Reload it after updates.
 
-Strict sessions using only desktop apps can run without a browser connection. Website sessions must connect before continuing. Camera is optional: Allow camera → approve macOS prompt → Check again. If no prompt appears, use Open camera settings and enable VYSTRIQ.
+Strict sessions using only desktop apps can run without a browser connection. Website sessions must connect before continuing. Camera is optional: Allow camera → approve macOS prompt → Check again. If no prompt appears, use Open camera settings and enable Preelock.

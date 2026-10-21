@@ -173,7 +173,7 @@ export function Settings() {
                 title="Open at login"
                 hint={
                   info.login === 2
-                    ? 'Approve VYSTRIQ in Login Items.'
+                    ? 'Approve Preelock in Login Items.'
                     : info.login === -1
                       ? 'Unavailable on this system.'
                       : 'Open the app when you sign in.'
@@ -388,7 +388,7 @@ export function Settings() {
                     </div>
                   </SettingRow>
                   <p className="settings-footnote">
-                    Reminders work while VYSTRIQ is running.
+                    Reminders work while Preelock is running.
                   </p>
                 </>
               )}
@@ -476,8 +476,8 @@ export function Settings() {
                 <article>
                   <h3>Focus checks</h3>
                   <p>
-                    During a session, VYSTRIQ checks your current app, idle time
-                    and connected website name.
+                    During a session, Preelock checks your current app, idle
+                    time and connected website name.
                   </p>
                 </article>
                 <article>
@@ -505,7 +505,7 @@ export function Settings() {
                   <h3>Session completion</h3>
                   <p>
                     Restrictions are released when the session finishes. You can
-                    quit VYSTRIQ from the menu bar when no session is active.
+                    quit Preelock from the menu bar when no session is active.
                   </p>
                 </article>
               </div>
@@ -525,7 +525,7 @@ export function Settings() {
                 </p>
               </div>
               <p className="settings-footnote">
-                VYSTRIQ {info.version ?? '0.4.0'} ·{' '}
+                Preelock {info.version ?? '0.4.0'} ·{' '}
                 {info.platform === 'windows'
                   ? 'Windows'
                   : info.platform === 'macos'

@@ -12,17 +12,20 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
     } else if cfg!(debug_assertions) {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
     } else {
-        return Err("Extension files are missing. Reinstall VYSTRIQ.".into());
+        return Err("Extension files are missing. Reinstall Preelock.".into());
     };
     // Store (MSIX) packages virtualise AppData into a private per-package
     // store. The browser and Explorer are separate processes, so they cannot
     // read a copy kept there. Packaged builds therefore deploy the extension
     // to a normal user-writable folder outside AppData.
     let base = if crate::platform::packaged() {
-        app.path()
-            .home_dir()
-            .map_err(|e| e.to_string())?
-            .join("VYSTRIQ")
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        let legacy = home.join("VYSTRIQ");
+        if legacy.join("browser-extension").exists() {
+            legacy // Preserve the path Chromium already registered and paired.
+        } else {
+            home.join("Preelock")
+        }
     } else {
         app.path().app_data_dir().map_err(|e| e.to_string())?
     };

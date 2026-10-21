@@ -174,7 +174,7 @@ export function Sessions() {
   const apps =
     setup?.applications.filter(
       (a) =>
-        !/(vystriq|finder|activitymonitor|systempreferences|explorer\.exe|taskmgr\.exe|systemsettings\.exe)/i.test(
+        !/(vystriq|preelock|finder|activitymonitor|systempreferences|explorer\.exe|taskmgr\.exe|systemsettings\.exe)/i.test(
           a.id,
         ),
     ) ?? [];
@@ -730,7 +730,7 @@ export function Sessions() {
                                   try {
                                     await api.openSetup('camera_settings');
                                     setProblem(
-                                      'Turn on VYSTRIQ in System Settings → Privacy & Security → Camera, then come back here.',
+                                      'Turn on Preelock in System Settings → Privacy & Security → Camera, then come back here.',
                                     );
                                   } catch (e) {
                                     setProblem(String(e));

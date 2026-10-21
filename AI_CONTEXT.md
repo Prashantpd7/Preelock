@@ -1,12 +1,12 @@
-# VYSTRIQ project context for AI agents
+# Preelock project context for AI agents
 
-This document is the repository-level handoff for an AI agent working on VYSTRIQ.
+This document is the repository-level handoff for an AI agent working on Preelock.
 Read it before changing code. Prefer the existing architecture and patterns over
 introducing new frameworks or storage systems.
 
 ## Product purpose
 
-VYSTRIQ is a local-first focus and productivity desktop application for macOS
+Preelock is a local-first focus and productivity desktop application for macOS
 and Windows. Users create focus sessions, tasks, and optional focus policies.
 During a session the app can track productive time, monitor attention signals,
 hide or minimize distracting applications, and pair with a Chromium extension
@@ -25,28 +25,13 @@ impossible to stop.
 
 ## Current release and downloads
 
-**Free distribution policy (20 October 2026):** the owner accepts OS warnings
-and does not want paid signing services. v0.4.0's Mac installer has an invalid
-bundle signature. v0.4.1 repairs the bundle seal using ad-hoc signing; it is not
-Apple-notarized. Windows remains unsigned. See [RELEASING.md](docs/RELEASING.md)
-and [INSTALLATION.md](docs/INSTALLATION.md). Do not require paid credentials or
-claim that every security policy permits manual approval.
-
-- Product version: `0.4.1`
-- Extension manifest version: `0.4.1`
-- Extension/bridge behavior protocol: `3`
-- Repository: `Prashantpd7/VYSTRIQ`
-- Release: https://github.com/Prashantpd7/VYSTRIQ/releases/tag/v0.4.1
-- Apple Silicon macOS DMG:
-  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_1-macOS-Apple-Silicon.dmg
-- Intel macOS DMG:
-  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_2-macOS-Intel.dmg
-- Windows x64 installer:
-  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_3-Windows-x64.exe
-
-Separate macOS artifacts support Apple Silicon and Intel. The
-Windows artifact is a 64-bit NSIS installer. The release assets contain the
-application and bundled extension program files, not the developer's database.
+Product and extension version: `0.5.0`. Public name: **Preelock**; extension:
+**Preelock Focus**. Repository: `Prashantpd7/Preelock`. Release builds are gated by
+`.github/workflows/release.yml`; do not claim artifacts exist before the run succeeds.
+See [REBRANDING.md](docs/REBRANDING.md) for stable identities, installer migration
+and the full audit. MSIX version is `1.5.0.0`; Store identity and publisher are
+unchanged. Mac builds are ad-hoc signed, not notarized; Windows NSIS is unsigned.
+The existing V artwork is approved for temporary reuse.
 
 ## Technology stack
 
@@ -218,7 +203,7 @@ restarts cannot resurrect them. The database is not packaged into the DMG or
 Windows installer.
 
 Removing only the application does not necessarily remove the per-user data
-directory. For a completely fresh local test, quit VYSTRIQ and delete only
+directory. For a completely fresh local test, quit Preelock and delete only
 `com.vystriq.desktop` in the platform-specific application-data directory.
 This permanently deletes that user's local sessions, tasks, settings, pairing,
 and history.
@@ -343,7 +328,7 @@ Automated CI does not replace these manual checks:
 3. On Windows, test installer installation, permissions, browser pairing,
    camera behavior, application minimization, and uninstall/reinstall.
 
-## Local recovery and session-control update (21 October 2026)
+## Historical: local recovery and session-control update (21 October 2026)
 
 OS restart/logoff recovery and camera retries are implemented; see
 `docs/RESTART_RECOVERY.md`. Same-boot Force Quit keeps its existing warning.
@@ -355,7 +340,7 @@ Historical emergency-exit records still load. OS termination remains possible.
 Windows runtime verification remains separate work. Publishing source code does
 not replace existing release installers.
 
-## Microsoft Store MSIX prep (21 October 2026)
+## Historical: Microsoft Store MSIX prep (21 October 2026)
 
 An unsigned x64 MSIX has been built on the free Windows CI runner (commit
 `b9939d4`, version `1.4.1.0`, SHA-256

@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           bundle="src-tauri/target/$TARGET/release/bundle"
-          bash scripts/verify-macos-bundle.sh "$bundle/macos/VYSTRIQ.app" "$EXPECTED_ARCH"
+          bash scripts/verify-macos-bundle.sh "$bundle/macos/Preelock.app" "$EXPECTED_ARCH"
           images=("$bundle"/dmg/*.dmg)
           [[ "${#images[@]}" -eq 1 ]]
           hdiutil verify "${images[0]}"
@@ -74,11 +74,11 @@ jobs:
           mkdir -p "$mount"
           hdiutil attach "${images[0]}" -readonly -nobrowse -mountpoint "$mount"
           trap 'hdiutil detach "$mount"' EXIT
-          bash scripts/verify-macos-bundle.sh "$mount/VYSTRIQ.app" "$EXPECTED_ARCH"
+          bash scripts/verify-macos-bundle.sh "$mount/Preelock.app" "$EXPECTED_ARCH"
           mkdir -p "$RUNNER_TEMP/installed"
-          ditto "$mount/VYSTRIQ.app" "$RUNNER_TEMP/installed/VYSTRIQ.app"
-          bash scripts/verify-macos-bundle.sh "$RUNNER_TEMP/installed/VYSTRIQ.app" "$EXPECTED_ARCH"
-          python3 scripts/smoke-macos.py "$RUNNER_TEMP/installed/VYSTRIQ.app"
+          ditto "$mount/Preelock.app" "$RUNNER_TEMP/installed/Preelock.app"
+          bash scripts/verify-macos-bundle.sh "$RUNNER_TEMP/installed/Preelock.app" "$EXPECTED_ARCH"
+          python3 scripts/smoke-macos.py "$RUNNER_TEMP/installed/Preelock.app"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.target }}
@@ -106,12 +106,28 @@ jobs:
       - run: npm run rust:check
       - run: npm run rust:test
       - run: npm run desktop:build -- --bundles nsis
-      - name: Install, verify resources, start, and uninstall on runner
+      - name: Package Store MSIX using the same compiled executable
+        run: ./scripts/package-msix.ps1
+      - name: Record Windows certification tooling availability
+        shell: pwsh
+        run: |
+          $kit = "${env:ProgramFiles(x86)}/Windows Kits/10/App Certification Kit/appcert.exe"
+          if (Test-Path $kit) {
+            "WACK tool is installed; interactive signed-package certification remains a separate Windows validation step." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "WACK is not installed on this runner. MSIX structural validation ran; certification remains unverified." >> $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Install, upgrade, verify resources, start, and uninstall on runner
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./scripts/smoke-windows.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows-x64
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/msix/*.msix
+            src-tauri/target/msix/msix-build-info.json
           if-no-files-found: error
   publish:
     needs: [validate, macos, windows]
@@ -137,31 +153,28 @@ jobs:
           git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" && exit 1 || status=$?
           [[ "$status" -eq 2 ]] || exit 1
           cd installers
-          mv "VYSTRIQ_${VERSION}_aarch64.dmg" "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg"
-          mv "VYSTRIQ_${VERSION}_x64.dmg" "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg"
-          mv "VYSTRIQ_${VERSION}_x64-setup.exe" "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
-          test -f "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg"
-          test -f "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg"
-          test -f "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
-          sha256sum "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg" \
-            "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg" \
-            "VYSTRIQ_${VERSION}_3-Windows-x64.exe" > SHA256SUMS.txt
+          test -f "Preelock_${VERSION}_aarch64.dmg"
+          test -f "Preelock_${VERSION}_x64.dmg"
+          test -f "Preelock_${VERSION}_x64-setup.exe"
+          test -f "Preelock_${VERSION}_x64.msix"
+          sha256sum *.dmg *.exe *.msix > SHA256SUMS.txt
           cp ../docs/RELEASE_NOTES.md RELEASE_NOTES.md
           {
             printf '\n## Installation\n\n'
-            sed '1{/^# Install VYSTRIQ/d;}' ../docs/INSTALLATION.md
+            sed '1{/^# Install Preelock/d;}' ../docs/INSTALLATION.md
             printf '\n## Published installer checksums\n\n```text\n'
             cat SHA256SUMS.txt
             printf '```\n\nSource commit: %s\nActions run: https://github.com/%s/actions/runs/%s\n' \
               "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } >> RELEASE_NOTES.md
           gh release create "v$VERSION" --target "$GITHUB_SHA" --draft --prerelease \
-            --title "VYSTRIQ $VERSION — Free public beta" --notes-file RELEASE_NOTES.md \
-            "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg" \
-            "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg" \
-            "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
+            --title "Preelock $VERSION — Free public beta" --notes-file RELEASE_NOTES.md \
+            "Preelock_${VERSION}_aarch64.dmg" \
+            "Preelock_${VERSION}_x64.dmg" \
+            "Preelock_${VERSION}_x64-setup.exe" \
+            "Preelock_${VERSION}_x64.msix" SHA256SUMS.txt msix-build-info.json
           mkdir downloaded
-          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe'
+          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe' --pattern '*.msix'
           cp SHA256SUMS.txt downloaded/
           (cd downloaded && sha256sum --check SHA256SUMS.txt)
           gh release edit "v$VERSION" --draft=false --prerelease

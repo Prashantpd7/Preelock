@@ -25,7 +25,7 @@ async function show() {
   if (!connected) {
     pairStatus.textContent =
       data.error ||
-      'Paste the connection code from VYSTRIQ Settings, then connect.';
+      'Paste the connection code from Preelock Settings, then connect.';
     return;
   }
   // Already paired but the browser was never identified (e.g. paired
@@ -47,7 +47,7 @@ async function show() {
       blocking
         ? 'Working — blocking sites exactly as the desktop app instructs.'
         : fresh
-          ? 'Connected — start a session in VYSTRIQ to begin blocking.'
+          ? 'Connected — start a session in Preelock to begin blocking.'
           : 'Connected — waiting for the desktop app…',
     ),
   );
@@ -59,7 +59,7 @@ async function show() {
       const warn = document.createElement('p');
       warn.className = 'incognito-warn';
       warn.textContent =
-        'Blocking does not apply in Incognito windows. Enable "Allow in Incognito" for Vystriq in chrome://extensions.';
+        'Blocking does not apply in Incognito windows. Enable "Allow in Incognito" for Preelock in chrome://extensions.';
       health.appendChild(warn);
     }
   } catch {}
@@ -75,7 +75,7 @@ document.getElementById('pair').addEventListener('submit', async (event) => {
   const token = field.value.trim();
   if (!/^[a-f0-9]{64}$/i.test(token)) {
     pairStatus.textContent =
-      'Copy the full connection code from VYSTRIQ Settings.';
+      'Copy the full connection code from Preelock Settings.';
     return;
   }
   const { client = crypto.randomUUID() } =

@@ -45,7 +45,7 @@ export function AppLayout() {
     <div className="app-shell">
       <aside className="sidebar">
         <NavLink to="/" className="brand">
-          <span className="brand-icon">V</span>VYSTRIQ
+          <span className="brand-icon">V</span>Preelock
           <span className="brand-dot">.</span>
         </NavLink>
         <nav aria-label="Main navigation">

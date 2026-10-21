@@ -1,10 +1,10 @@
-# Settings in VYSTRIQ 0.4.0
+# Settings in Preelock 0.4.0
 
 Settings uses six sections: General, Focus, Alerts, Breaks, Connections, and Data & help. Segmented buttons, switches and numeric fields replace dropdowns. Preference edits apply with Save changes; system actions apply immediately.
 
 - Appearance, text size, menu-bar countdown, default duration and daily goal are persisted in SQLite. Daily goal uses focus from sessions started on the local day, matching existing dashboard attribution.
 - Open at login uses macOS SMAppService (macOS 13+). macOS may require approval in Login Items. It opens the app, not a focus session. Keep the app bundle at a stable location.
-- Native notifications require the user's Mac permission. Session completion, break completion and selected weekday/time reminders use UserNotifications. Reminders run while VYSTRIQ is open and suppress alerts during an active session or break. Sound uses the Mac Glass sound at the chosen volume; Preview plays it explicitly.
+- Native notifications require the user's Mac permission. Session completion, break completion and selected weekday/time reminders use UserNotifications. Reminders run while Preelock is open and suppress alerts during an active session or break. Sound uses the Mac Glass sound at the chosen volume; Preview plays it explicitly.
 - Breaks are between sessions, never during Strict focus. They use the native worker and continue when the window is hidden. A new focus session cancels a break. Quitting ends the break; it is not restored as focus time.
 - Saved setups copy an existing session's time, app and website choices. Applying one requires activity consent again and checks camera permission again. Up to 30 setups are supported. Reset preferences preserves saved setups, tasks and history; login registration and OS permissions are unchanged.
 - Browser has one Connect/Connected control. The dialog guides unpacked extension setup. Test blocking runs eight installed Chromium matcher checks on a dummy tab without visiting a website. Reload the bundled extension after updating to 0.4.0 so it can answer desktop test requests. Only the connected browser profile is covered.

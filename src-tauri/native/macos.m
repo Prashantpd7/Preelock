@@ -160,7 +160,7 @@ void vy_notify(const char *title, const char *body) {
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
     content.title = [NSString stringWithUTF8String:title]; content.body = [NSString stringWithUTF8String:body];
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil];
-    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"VYSTRIQ notification unavailable: %@", error.localizedDescription); }];
+    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"Preelock notification unavailable: %@", error.localizedDescription); }];
 }
 void vy_sound(float volume) {
     onMain(^{ NSSound *sound = [NSSound soundNamed:@"Glass"]; sound.volume = volume; [sound play]; });
@@ -179,7 +179,7 @@ char *vy_file_panel(int save, const char *filename) {
             } else {
                 NSOpenPanel *panel = NSOpenPanel.openPanel;
                 panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
-                panel.message = @"Choose a VYSTRIQ backup (.json).";
+                panel.message = @"Choose a Preelock backup (.json).";
                 if ([panel runModal] == NSModalResponseOK) path = panel.URL.path;
             }
         });

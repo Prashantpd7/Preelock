@@ -1,15 +1,14 @@
 # Microsoft Store (MSIX) submission preparation
 
-Prepared 21 October 2026 against the 0.4.1 source tree. This document covers the
-free MSIX route: a packaged full-trust Win32 app, submitted to Partner Center,
-signed by Microsoft after certification. Nothing here has been submitted,
-uploaded, or published.
+Updated 22 October 2026 for Preelock 0.5.0 / MSIX 1.5.0.0. The existing
+Store identity, publisher, Application Id and startup TaskId are retained.
+The owner has reserved the new public name. No Partner Center submission is
+performed by these scripts or workflows.
 
-**Status in one line:** packaging automation, the manifest, verification tooling,
-the free CI build, and this documentation exist; the package has **not** been
-built, installed, or exercised on Windows from this repository yet, so the
-product is **not ready to submit** until the Windows steps below are run and
-recorded.
+The new package must pass the release pipeline's structural checks. Real-device
+Store upgrade, Windows permissions/browser pairing and WACK certification are
+separate validation steps; do not infer certification from a successful build.
+The historical build record at the end describes the previous package only.
 
 ## 1. What is in the repository now
 
@@ -22,7 +21,7 @@ recorded.
 | CI build           | `.github/workflows/msix.yml`             | Free `windows-2022` runner: Windows compile, Rust tests, MSIX build, structural validation, artifact upload                                |
 | Privacy draft      | `docs/PRIVACY_POLICY.md`                 | Text to publish at a URL you own                                                                                                           |
 
-The existing macOS DMG and Windows NSIS release pipeline is untouched.
+The release pipeline also builds the MSIX from the same Windows executable.
 
 ## 2. Identity and owner-supplied information
 
@@ -35,7 +34,7 @@ local and CI builds cannot drift. Explicit script parameters still override it.
 
 | Value                  | Supplied                                  | Used as                                     |
 | ---------------------- | ----------------------------------------- | ------------------------------------------- |
-| Product name           | VYSTRIQ                                   | Display name, listing                       |
+| Product name           | Preelock                                  | Display name, listing                       |
 | Identity Name          | `Prashantpd7.VYSTRIQ`                     | `Identity/@Name`                            |
 | Publisher              | `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A` | `Identity/@Publisher`                       |
 | Publisher display name | `Prashantpd7`                             | `Properties/PublisherDisplayName`           |
@@ -121,7 +120,8 @@ inside a package: Windows at sign-in never sees it.
 A package's AppData writes are private: "Files in the virtualized location are
 visible only to the app." The bundled extension must be readable by Chrome/Edge
 (a separate process) and by Explorer, so a packaged build deploys it to
-`%USERPROFILE%\VYSTRIQ\browser-extension` instead of AppData. Unpackaged builds
+`%USERPROFILE%\Preelock\browser-extension` (existing installations retain
+`%USERPROFILE%\VYSTRIQ\browser-extension` to preserve browser registration) instead of AppData. Unpackaged builds
 and macOS keep the existing per-user AppData path. The app shows the real folder
 path in **Permissions & setup**.
 
@@ -192,7 +192,7 @@ build:
 
 ```powershell
 powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
-  -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=VYSTRIQ Local Test"
+  -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=Preelock Local Test"
 powershell -File scripts/sign-msix-dev.ps1 `
   -Package src-tauri/target/msix/VYSTRIQ_0.4.1_x64-validation.msix `
   -TrustCertificate
@@ -200,7 +200,7 @@ Add-AppxPackage -Path src-tauri/target/msix/VYSTRIQ_0.4.1_x64-validation.msix
 Get-AppxPackage VYSTRIQ.LocalTest | Select-Object PackageFullName, InstallLocation
 ```
 
-Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!VYSTRIQ`.
+Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!Preelock`.
 Uninstall with `Remove-AppxPackage -Package <PackageFullName>`.
 
 Signing is for local testing only. Never distribute or upload a self-signed
@@ -219,7 +219,7 @@ Center, or publishes.
 
 Record actual results; do not infer them from CI.
 
-1. Clean Windows 10 1809+ and Windows 11 x64 machines, no VYSTRIQ data. Install
+1. Clean Windows 10 1809+ and Windows 11 x64 machines, no Preelock data. Install
    the MSIX. Confirm no administrator prompt and no UAC elevation.
 2. Launch from Start. Confirm the window renders (WebView2 present) and a fresh
    `vystriq.sqlite` is created with schema version 4.
@@ -229,7 +229,7 @@ Record actual results; do not infer them from CI.
    Try tray Quit and the app's Quit while live: blocked with the existing
    warning. Finish or pause the session normally.
 5. **Startup:** Settings → Open at login off by default. Turn on; check
-   `Settings > Apps > Startup` shows VYSTRIQ enabled. Sign out/in: the app opens.
+   `Settings > Apps > Startup` shows Preelock enabled. Sign out/in: the app opens.
    Turn off; sign out/in: it must not open. Disable it in Windows Settings
    instead; the app must show it as off and must not silently re-enable it.
 6. **Restart recovery:** during a running session, restart Windows normally.
@@ -272,7 +272,7 @@ need to know the failure mode.
 
 ## 8. Capability justification (paste into Partner Center)
 
-> VYSTRIQ is a Tauri-based desktop productivity app. The packaged app runs as a
+> Preelock is a Tauri-based desktop productivity app. The packaged app runs as a
 > full-trust Win32 process because it needs to read the foreground application
 > and idle time through Win32 APIs during a focus session the user starts, show a
 > notification-area icon, open Explorer and the user's browser for extension
@@ -292,8 +292,8 @@ Short description:
 
 Description:
 
-> VYSTRIQ helps you protect deep work. Create a focus session, choose how long
-> you want to work, and let VYSTRIQ track the time you actually spend on the
+> Preelock helps you protect deep work. Create a focus session, choose how long
+> you want to work, and let Preelock track the time you actually spend on the
 > task. Tasks, sessions and settings stay on your own PC. There is no account,
 > no subscription and no cloud storage.
 >
@@ -305,7 +305,7 @@ Description:
 > You stay in control: sessions can be paused or ended where the session type
 > allows it, the app never hides that it is starting, and quitting during a
 > session is guarded with a clear warning. If Windows restarts during a session,
-> VYSTRIQ reopens the unfinished session without crediting the time you were
+> Preelock reopens the unfinished session without crediting the time you were
 > away.
 
 Feature list (verified in this source tree):
@@ -332,7 +332,8 @@ Reviewer notes to include in the submission:
 > not needed for sessions, tasks or time tracking. All focus features in the
 > listing work without it. The app writes to `%APPDATA%\com.vystriq.desktop`
 > (or the package's private AppData when freshly installed) and to
-> `%USERPROFILE%\VYSTRIQ\browser-extension`; it installs no service and requests
+> `%USERPROFILE%\Preelock\browser-extension` (existing installations retain
+> `%USERPROFILE%\VYSTRIQ\browser-extension` to preserve browser registration); it installs no service and requests
 > no elevation.
 
 ## 10. Validation record
@@ -346,7 +347,7 @@ Reviewer notes to include in the submission:
 | Identity      | `Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`, version `1.4.1.0`, x64 |
 | Source commit | `b9939d4c095f9d6d52dac8e4289830cfb1c8147d`                                               |
 | Toolchain     | Windows SDK 10.0.26100.0 `makeappx.exe` on the free `windows-2022` runner                |
-| CI run        | https://github.com/Prashantpd7/VYSTRIQ/actions/runs/39628667964                          |
+| CI run        | https://github.com/Prashantpd7/Preelock/actions/runs/39628667964                         |
 | Signature     | Unsigned (expected; the Store re-signs accepted submissions)                             |
 
 ### Executed checks

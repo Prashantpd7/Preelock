@@ -8,13 +8,41 @@ $signature = Get-AuthenticodeSignature $installer.FullName
 if ($signature.Status -notin @("NotSigned", "Valid")) {
     throw "Unexpected installer signature failure: $($signature.Status)"
 }
-$installDir = Join-Path $env:RUNNER_TEMP "VYSTRIQ-installed"
+$installDir = Join-Path $env:RUNNER_TEMP "Preelock-installed"
 if (Test-Path $installDir) { throw "Test destination already exists" }
 $database = Join-Path $env:APPDATA "com.vystriq.desktop/vystriq.sqlite"
 if (Test-Path $database) { throw "Refusing to use existing app data" }
+# Exercise a real previous installer, then upgrade in place with seeded state.
+$legacyDir = Join-Path $env:RUNNER_TEMP "legacy-installer"
+gh release download v0.4.2 --repo Prashantpd7/Preelock --pattern '*Windows-x64.exe' --dir $legacyDir
+if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
+$legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
+$legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
+if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "Legacy installation failed" }
+$legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") -PassThru
+try {
+    Start-Sleep -Seconds 15
+    if ($legacyApp.HasExited -or !(Test-Path $database)) { throw "Legacy startup failed" }
+} finally {
+    if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
+}
+python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); p=json.loads(c.execute('select payload from preferences where id=1').fetchone()[0]); p['theme']='light'; c.execute('update preferences set payload=? where id=1',(json.dumps(p),)); c.commit()" $database
+if ($LASTEXITCODE -ne 0) { throw "Could not seed upgrade preference" }
+$token = Join-Path (Split-Path $database -Parent) "browser-token"
+$tokenHash = (Get-FileHash $token).Hash
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+New-Item $runKey -Force | Out-Null
+Set-ItemProperty $runKey -Name VYSTRIQ -Value ('"' + (Join-Path $installDir 'vystriq.exe') + '"')
+$approvalKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+New-Item $approvalKey -Force | Out-Null
+$disabledState = [byte[]](3,0,0,0,0,0,0,0,0,0,0,0)
+New-ItemProperty $approvalKey -Name VYSTRIQ -PropertyType Binary -Value $disabledState -Force | Out-Null
 $setup = Start-Process $installer.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$setup.WaitForExit(120000)) { throw "Installer timed out" }
 if ($setup.ExitCode -ne 0) { throw "NSIS failed: $($setup.ExitCode)" }
+$newRegistration = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Preelock'
+if ($newRegistration.DisplayName -ne 'Preelock') { throw "Wrong installed display name" }
+if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\VYSTRIQ') { throw "Duplicate legacy uninstall record" }
 $executable = Join-Path $installDir "vystriq.exe"
 if (!(Test-Path $executable)) { throw "Installed executable missing" }
 python scripts/verify-windows-payload.py "src-tauri/target/release/vystriq.exe" $executable
@@ -41,6 +69,12 @@ try {
 }
 python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==4; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
 if ($LASTEXITCODE -ne 0) { throw "Database validation failed" }
+python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.loads(c.execute('select payload from preferences where id=1').fetchone()[0])['theme']=='light'" $database
+if ($LASTEXITCODE -ne 0) { throw "Upgrade lost the saved preference" }
+if ((Get-FileHash $token).Hash -ne $tokenHash) { throw "Upgrade changed the pairing token" }
+if ((Get-ItemProperty $runKey).Preelock -notlike '*vystriq.exe*') { throw "Startup registration was not retained" }
+if ((Get-ItemProperty $approvalKey).Preelock[0] -ne 3) { throw "Upgrade lost the disabled startup state" }
+Write-Output "Legacy 0.4.2 upgrade preserved the database, preference, pairing token and disabled startup state."
 $uninstallers = @(Get-ChildItem $installDir -Filter "*uninstall*.exe")
 if ($uninstallers.Count -ne 1) { throw "Expected one uninstaller" }
 $uninstall = Start-Process $uninstallers[0].FullName -ArgumentList "/S" -PassThru

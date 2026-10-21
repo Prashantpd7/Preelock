@@ -9,6 +9,8 @@ if [[ -n "${2:-}" ]]; then
 fi
 identifier=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")
 [[ "$identifier" == "com.vystriq.desktop" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$app/Contents/Info.plist")" == "Preelock" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$app/Contents/Info.plist")" == "Preelock" ]]
 version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
 [[ "$version" == "$(node -p "require('./package.json').version")" ]]
 /usr/libexec/PlistBuddy -c 'Print NSCameraUsageDescription' "$app/Contents/Info.plist"

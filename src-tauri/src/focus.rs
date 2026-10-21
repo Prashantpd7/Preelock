@@ -286,7 +286,7 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
             .iter()
             .any(|id| known_browser(id) && !supported_browser(id))
     {
-        return Err("Strict mode cannot approve a browser the Vystriq extension doesn't support. Remove it from approved apps.".into());
+        return Err("Strict mode cannot approve a browser the Preelock extension doesn't support. Remove it from approved apps.".into());
     }
     Ok(config)
 }

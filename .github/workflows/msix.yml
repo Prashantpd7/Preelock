@@ -4,7 +4,7 @@ name: Build and validate Store MSIX
 # Nothing here contacts Partner Center.
 # The package identity comes from windows/msix/identity.json (Partner Center
 # reserved product). The inputs below are optional overrides for a different
-# identity; leave them empty for the VYSTRIQ package. See
+# identity; leave them empty for the Preelock package. See
 # docs/STORE_SUBMISSION.md.
 on:
   push:
@@ -89,7 +89,7 @@ jobs:
           Get-Content src-tauri/target/msix/SHA256SUMS.txt >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: vystriq-msix-x64
+          name: preelock-msix-x64
           path: |
             src-tauri/target/msix/*.msix
             src-tauri/target/msix/SHA256SUMS.txt

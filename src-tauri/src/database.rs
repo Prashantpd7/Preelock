@@ -15,7 +15,7 @@ impl Database {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         if version > 4 {
-            return Err("Database was created by a newer version of VYSTRIQ.".into());
+            return Err("Database was created by a newer version of Preelock.".into());
         }
         if version == 0 {
             conn.execute_batch(concat!(

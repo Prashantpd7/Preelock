@@ -23,7 +23,7 @@ param(
     [string]$IdentityName = "",
     [string]$Publisher = "",
     [string]$PublisherDisplayName = "",
-    [string]$DisplayName = "VYSTRIQ",
+    [string]$DisplayName = "Preelock",
     [string]$Description = "Local-first focus sessions, tasks and browser focus rules.",
     [string]$BuiltExecutable = "",
     [string]$OutputDirectory = "",
@@ -208,7 +208,7 @@ function Find-MakeAppx {
 $makeappx = Find-MakeAppx
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $suffix = if ($placeholder) { "-validation" } else { "" }
-$packagePath = Join-Path $OutputDirectory "VYSTRIQ_${Version}_${Architecture}${suffix}.msix"
+$packagePath = Join-Path $OutputDirectory "Preelock_${Version}_${Architecture}${suffix}.msix"
 if (Test-Path $packagePath) { Remove-Item $packagePath -Force }
 & $makeappx pack /o /d $staging /p $packagePath
 if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }

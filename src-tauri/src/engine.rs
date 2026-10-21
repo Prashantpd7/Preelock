@@ -93,7 +93,7 @@ impl Engine {
                 s.report.event(
                     clock::now(),
                     "force_quit",
-                    "VYSTRIQ was closed during this session; the session was ended.",
+                    "Preelock was closed during this session; the session was ended.",
                 );
                 continue;
             }
@@ -155,7 +155,7 @@ impl Engine {
                 s.report.event(
                     clock::now(),
                     "user_quit",
-                    "User quit VYSTRIQ; temporary restrictions released.",
+                    "User quit Preelock; temporary restrictions released.",
                 );
             }
         }
@@ -272,7 +272,7 @@ impl Engine {
                     || !browser::same_browser(&browser_id, &b.client_browser);
                 if !b.connected || !b.error.is_empty() || wrong_browser {
                     return Err(format!(
-                        "Pair the Vystriq extension in {} before starting. No session has started.",
+                        "Pair the Preelock extension in {} before starting. No session has started.",
                         browser_display_name(&browser_id)
                     ));
                 }
@@ -405,7 +405,7 @@ impl Engine {
     }
     fn commit(&mut self, action: Option<Action>) -> Result<Snapshot, String> {
         if let Some(error) = &self.failed {
-            return Err(format!("Restrictions released after a storage error. Restart VYSTRIQ after resolving: {error}"));
+            return Err(format!("Restrictions released after a storage error. Restart Preelock after resolving: {error}"));
         }
         let tick = clock::continuous_ms();
         let now = clock::now();

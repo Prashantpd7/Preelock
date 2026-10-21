@@ -72,7 +72,7 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
               !mac
                 ? 'Not available on Windows. Use Apps only.'
                 : cameraDenied
-                  ? 'Denied — System Settings → Privacy & Security → Camera → turn on VYSTRIQ.'
+                  ? 'Denied — System Settings → Privacy & Security → Camera → turn on Preelock.'
                   : 'Optional. Permission is remembered by the system. Camera runs only in sessions where you select it (or during a camera test). No video is saved.'
             }
           >
@@ -100,7 +100,7 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
             title="Open at login"
             hint={
               info.login === 2
-                ? 'Approve VYSTRIQ in System Settings → General → Login Items.'
+                ? 'Approve Preelock in System Settings → General → Login Items.'
                 : 'Allow automatic reopening after you sign in. Unfinished sessions recover after shutdown or restart.'
             }
           >
@@ -117,8 +117,8 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
             title="Notifications"
             hint={
               mac
-                ? 'System Settings → Notifications → VYSTRIQ → Allow notifications.'
-                : 'Settings → System → Notifications → turn on VYSTRIQ. Install the app first; Do not disturb may silence alerts.'
+                ? 'System Settings → Notifications → Preelock → Allow notifications.'
+                : 'Settings → System → Notifications → turn on Preelock. Install the app first; Do not disturb may silence alerts.'
             }
           >
             <button
@@ -147,12 +147,12 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
           </SettingRow>
           <section className="setup-guide">
             <h3>Opening a downloaded app</h3>
-            <p>Continue only if you trust where you downloaded VYSTRIQ.</p>
+            <p>Continue only if you trust where you downloaded Preelock.</p>
             {mac ? (
               <ol>
                 <li>
-                  Drag VYSTRIQ from the downloaded disk image into Applications,
-                  then open the installed app from Finder.
+                  Drag Preelock from the downloaded disk image into
+                  Applications, then open the installed app from Finder.
                 </li>
                 <li>
                   If blocked, open System Settings → Privacy & Security → Open

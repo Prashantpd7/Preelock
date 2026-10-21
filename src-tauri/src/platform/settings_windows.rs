@@ -50,20 +50,23 @@ fn set_packaged_login(on: bool) -> Result<(), String> {
     }
     Err(match state {
         StartupState::PolicyOff => {
-            "Windows policy prevents VYSTRIQ from opening when you sign in.".into()
+            "Windows policy prevents Preelock from opening when you sign in.".into()
         }
         StartupState::PolicyOn => {
-            "Windows policy keeps VYSTRIQ opening when you sign in; change it in your organization's policy.".into()
+            "Windows policy keeps Preelock opening when you sign in; change it in your organization's policy.".into()
         }
         _ if on => {
-            "Windows did not enable VYSTRIQ at sign-in. Enable it in Settings > Apps > Startup."
+            "Windows did not enable Preelock at sign-in. Enable it in Settings > Apps > Startup."
                 .into()
         }
-        _ => "Windows did not disable VYSTRIQ at sign-in.".into(),
+        _ => "Windows did not disable Preelock at sign-in.".into(),
     })
 }
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
+    if let Err(error) = migrate_login_label() {
+        log::warn!("Startup label migration deferred: {error}");
+    }
     APP.set(app.clone())
         .map_err(|_| "Settings already initialized.".to_string())?;
     let window = app
@@ -107,6 +110,40 @@ fn enabled(key: &str, value: &str) -> bool {
         .unwrap_or(1)
         != 0
 }
+// Rename only an existing opt-in registration. Preserve Windows' disabled state
+// before creating the new value; never enable startup for a user without one.
+fn migrate_login_label() -> Result<(), String> {
+    if is_packaged() {
+        return Ok(());
+    }
+    let Ok(key) =
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_READ | KEY_WRITE)
+    else {
+        return Ok(());
+    };
+    let Ok(legacy) = key.get_value::<String, _>("VYSTRIQ") else {
+        return Ok(());
+    };
+    if key.get_value::<String, _>("Preelock").is_err() {
+        let approval = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+        match RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(approval, KEY_READ | KEY_WRITE)
+        {
+            Ok(state) => match state.get_raw_value("VYSTRIQ") {
+                Ok(value) => state
+                    .set_raw_value("Preelock", &value)
+                    .map_err(|e| e.to_string())?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        key.set_value("Preelock", &legacy)
+            .map_err(|e| e.to_string())?;
+    }
+    key.delete_value("VYSTRIQ").map_err(|e| e.to_string())
+}
 pub fn info() -> Result<serde_json::Value, String> {
     use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
     let mut time: SYSTEMTIME = unsafe { std::mem::zeroed() };
@@ -119,7 +156,7 @@ pub fn info() -> Result<serde_json::Value, String> {
     } else if RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(RUN)
         .ok()
-        .and_then(|k| k.get_value::<String, _>("VYSTRIQ").ok())
+        .and_then(|k| k.get_value::<String, _>("Preelock").ok())
         .is_some()
     {
         1
@@ -154,10 +191,10 @@ pub fn login(on: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        key.set_value("VYSTRIQ", &format!("\"{}\"", exe.display()))
+        key.set_value("Preelock", &format!("\"{}\"", exe.display()))
             .map_err(|e| e.to_string())
     } else {
-        match key.delete_value("VYSTRIQ") {
+        match key.delete_value("Preelock") {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.to_string()),
@@ -221,7 +258,7 @@ pub fn file(save: bool, name: &str) -> Result<String, String> {
     };
     let dialog = rfd::FileDialog::new()
         .set_file_name(name)
-        .add_filter("VYSTRIQ files", &[extension]);
+        .add_filter("Preelock files", &[extension]);
     let path = if save {
         dialog.save_file()
     } else {

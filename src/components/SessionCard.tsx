@@ -480,7 +480,7 @@ export function SessionCard({
           )}
           {session.status === 'preparing' && (
             <p role="status" className="notice">
-              Connecting to your browser… Open its VYSTRIQ extension and click
+              Connecting to your browser… Open its Preelock extension and click
               Reconnect.
             </p>
           )}
@@ -586,11 +586,11 @@ export function SessionCard({
                 ) : cameraState === 'blocked' ? (
                   <>
                     <p>
-                      Camera access is blocked for VYSTRIQ, so this session
+                      Camera access is blocked for Preelock, so this session
                       can't start its camera check.
                     </p>
                     <p className="muted small">
-                      Turn on VYSTRIQ in System Settings → Privacy & Security →
+                      Turn on Preelock in System Settings → Privacy & Security →
                       Camera, then check again.
                     </p>
                     <div className="row controls">

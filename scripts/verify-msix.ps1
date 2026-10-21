@@ -78,6 +78,15 @@ try {
     $manifestPath = Join-Path $extract "AppxManifest.xml"
     [xml]$manifest = Get-Content $manifestPath -Raw
     $identity = $manifest.Package.Identity
+    $reserved = Get-Content (Join-Path $repo "windows/msix/identity.json") -Raw | ConvertFrom-Json
+    if ($identity.Name -eq "VYSTRIQ.Validation" -or $identity.Name -eq "VYSTRIQ.LocalTest") {
+        Write-Output "  info test identity: this package is not suitable for Store upload"
+    } else {
+        Check ($identity.Name -ceq $reserved.identityName) "Store identity is unchanged"
+        Check ($identity.Publisher -ceq $reserved.publisher) "Store publisher is unchanged"
+    }
+    Check ([version]$identity.Version -gt [version]"1.4.1.0") "Package version advances the previous Store version"
+    Check ($manifest.Package.Properties.DisplayName -ceq "Preelock") "Package display name is Preelock"
     $architecture = $manifest.Package.Identity.ProcessorArchitecture
 
     if ($ExpectedIdentity) { Check ($identity.Name -ceq $ExpectedIdentity) "Identity Name is '$ExpectedIdentity'" }
@@ -94,6 +103,9 @@ try {
     Check ($applications.Count -eq 1) "Exactly one Application entry"
     $application = $applications[0]
     Check ($application.EntryPoint -eq "Windows.FullTrustApplication") "Entry point is Windows.FullTrustApplication"
+    Check ($application.Id -ceq "VYSTRIQ") "Application registration identity is unchanged"
+    Check ($application.VisualElements.DisplayName -ceq "Preelock") "Application display name is Preelock"
+    Check ($application.VisualElements.DefaultTile.ShortName -ceq "Preelock") "Tile name is Preelock"
     $executable = Join-Path $extract $application.Executable
     Check (Test-Path $executable) "Declared executable $($application.Executable) exists"
 
@@ -108,6 +120,7 @@ try {
     Check ($startup.Count -eq 1) "Exactly one startupTask is declared"
     if ($startup.Count -eq 1) {
         Check ($startup[0].TaskId -eq "VYSTRIQ") "startupTask TaskId matches the app's startup task id"
+        Check ($startup[0].DisplayName -ceq "Preelock") "Startup display name is Preelock"
         Check ($startup[0].Enabled -eq "false") "startupTask is disabled by default (opt-in only)"
     }
 

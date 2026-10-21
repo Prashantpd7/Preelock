@@ -66,7 +66,7 @@ struct Backup {
 }
 fn restore_backup(content: &str) -> Result<Snapshot, String> {
     let backup: Backup =
-        serde_json::from_str(content).map_err(|_| "This is not a valid VYSTRIQ backup.")?;
+        serde_json::from_str(content).map_err(|_| "This is not a valid Preelock backup.")?;
     if backup.format != "vystriq-backup" || backup.version != 1 {
         return Err("This backup version is not supported.".into());
     }
@@ -256,9 +256,9 @@ impl Runtime {
             if let Some(tray) = app.tray_by_id("focus-controller") {
                 #[cfg(target_os = "windows")]
                 let _ = tray.set_tooltip(Some(if title.is_empty() {
-                    "VYSTRIQ".to_string()
+                    "Preelock".to_string()
                 } else {
-                    format!("VYSTRIQ · {title} left")
+                    format!("Preelock · {title} left")
                 }));
                 #[cfg(not(target_os = "windows"))]
                 let _ = tray.set_title(if title.is_empty() {
@@ -338,11 +338,11 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
         SettingsAction::AllowNotifications => {
             if !native::permission() {
                 return Err(
-                    "Notifications are blocked. Open notification settings in the Permissions guide to enable VYSTRIQ."
+                    "Notifications are blocked. Open notification settings in the Permissions guide to enable Preelock."
                         .into(),
                 );
             }
-            native::notify("Notifications ready", "VYSTRIQ can now send focus alerts.");
+            native::notify("Notifications ready", "Preelock can now send focus alerts.");
             Ok(json!(null))
         }
         SettingsAction::PreviewSound { volume } => {
@@ -411,9 +411,9 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             let path = native::file(
                 true,
                 if export {
-                    "VYSTRIQ-history.csv"
+                    "Preelock-history.csv"
                 } else {
-                    "VYSTRIQ-backup.json"
+                    "Preelock-backup.json"
                 },
             )?;
             if path.is_empty() {

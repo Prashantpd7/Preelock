@@ -38,7 +38,7 @@ export function PermissionsPanel() {
     try {
       if (camera === 'denied' || camera === 'restricted') {
         await api.openSetup('camera_settings');
-        setNotice('Turn on VYSTRIQ under Camera, then return here.');
+        setNotice('Turn on Preelock under Camera, then return here.');
       } else {
         await api.requestCamera();
         setNotice('Choose Allow in the Mac permission window.');
@@ -171,7 +171,7 @@ export function PermissionsPanel() {
                   <p role="status">{status.browser_test}</p>
                 )}
                 <p className="small muted">
-                  After an app update, reload Vystriq on each browser's
+                  After an app update, reload Preelock on each browser's
                   Extensions page.
                 </p>
                 <button

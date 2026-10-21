@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  MSIX manifest template for the Microsoft Store build of VYSTRIQ.
+  MSIX manifest template for the Microsoft Store build of Preelock.
 
   scripts/package-msix.ps1 replaces every __TOKEN__ value. Identity Name,
   Publisher and PublisherDisplayName are assigned by Partner Center after the
@@ -55,12 +55,12 @@
           Square71x71Logo="Assets\Square71x71Logo.png"
           Square310x310Logo="Assets\Square310x310Logo.png"
           Wide310x150Logo="Assets\Wide310x150Logo.png"
-          ShortName="VYSTRIQ" />
+          ShortName="__DISPLAY_NAME__" />
       </uap:VisualElements>
       <Extensions>
         <!-- The only supported startup mechanism for a packaged desktop app.
              Enabled="false" means Windows registers the task but never starts
-             VYSTRIQ at sign-in until the user turns it on in the app or in
+             Preelock at sign-in until the user turns it on in the app or in
              Settings > Apps > Startup. The app never enables it implicitly. -->
         <desktop:Extension
           Category="windows.startupTask"
@@ -69,7 +69,7 @@
           <desktop:StartupTask
             TaskId="VYSTRIQ"
             Enabled="false"
-            DisplayName="VYSTRIQ" />
+            DisplayName="__DISPLAY_NAME__" />
         </desktop:Extension>
       </Extensions>
     </Application>

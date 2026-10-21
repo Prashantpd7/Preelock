@@ -1,23 +1,23 @@
-# VYSTRIQ privacy policy (draft)
+# Preelock privacy policy (draft)
 
 > **Draft for the Microsoft Store listing.** Publish this text at a public URL
 > you control and replace the bracketed placeholders before submitting. Do not
 > invent a URL, support address, or company details.
 
 Effective date: [EFFECTIVE DATE]
-Applies to: the VYSTRIQ desktop application for Windows and macOS, including the
+Applies to: the Preelock desktop application for Windows and macOS, including the
 bundled browser extension.
 Contact: [SUPPORT EMAIL OR SUPPORT URL]
 
 ## Summary
 
-VYSTRIQ is local-first. It has no account system, no cloud backend, no analytics
+Preelock is local-first. It has no account system, no cloud backend, no analytics
 or telemetry service, and no advertising. The developer does not receive your
 sessions, tasks, settings, activity data, camera data, or browser activity. Data
 is stored on your own computer and is only shared if you export it or send it
 yourself.
 
-## What VYSTRIQ stores on your computer
+## What Preelock stores on your computer
 
 - Focus sessions: title, duration, status, remaining and focused time, reports
   and event history.
@@ -35,7 +35,8 @@ Location: the per-user application-data folder for `com.vystriq.desktop`
 `~/Library/Application Support/com.vystriq.desktop` on macOS). In a Microsoft
 Store install, Windows may keep newly created files in the package's private
 application-data store. The bundled browser extension is copied to a folder the
-browser can read: `%USERPROFILE%\VYSTRIQ\browser-extension` for a packaged
+browser can read: `%USERPROFILE%\Preelock\browser-extension` (existing installations retain
+`%USERPROFILE%\VYSTRIQ\browser-extension` to preserve browser registration) for a packaged
 Windows build, otherwise the application-data folder.
 
 The database is not included in the installer or Store package, and a new
@@ -46,13 +47,13 @@ computer or new OS user starts with empty data.
 Camera presence checking is available on macOS only. It is off by default, is
 enabled per session or for an explicit camera test, and requires the operating
 system camera permission. Frames are analysed in memory on your device to decide
-whether a person is present. VYSTRIQ does not record, save, or upload images or
+whether a person is present. Preelock does not record, save, or upload images or
 video. Windows builds report camera presence as unavailable and do not open the
 camera.
 
 ## Browser extension
 
-The bundled browser extension communicates only with the VYSTRIQ app on your
+The bundled browser extension communicates only with the Preelock app on your
 computer over an authenticated loopback connection (`127.0.0.1`). It sends
 heartbeats containing a local client identifier, the browser name, the applied
 policy identifier, and block/error status. Website allow/block lists and pairing
@@ -64,9 +65,9 @@ the browser profile where you installed and paired it.
 
 Notifications and sounds are produced locally by the operating system.
 "Open at login" / "Open at sign-in" is controlled by you and by operating-system
-settings; VYSTRIQ never enables it on its own.
+settings; Preelock never enables it on its own.
 
-## What VYSTRIQ does not do
+## What Preelock does not do
 
 - No account, login, cloud database, or data sync.
 - No telemetry, crash reporting, usage analytics, or advertising identifiers.
@@ -89,7 +90,7 @@ browser extension removes its stored pairing and policy state.
 
 ## Children
 
-VYSTRIQ is a general productivity tool and is not directed at children. It does
+Preelock is a general productivity tool and is not directed at children. It does
 not knowingly collect personal information from anyone, because it does not
 collect data centrally at all.
 

@@ -9,9 +9,9 @@ provide.
 
 | Field           | Value                                                                              |
 | --------------- | ---------------------------------------------------------------------------------- |
-| Package file    | `VYSTRIQ_0.4.1_x64.msix`                                                           |
-| SHA-256         | `4e2f9613660ecfc9551d68d7157bfebed0a030d23bd94ea79a04b72dfaf846ca`                 |
-| Package version | `1.4.1.0` (the fourth segment is reserved by the Store and left at 0)              |
+| Package file    | `Preelock_0.5.0_x64.msix`                                                          |
+| SHA-256         | See the release SHA256SUMS.txt after validation                                    |
+| Package version | `1.5.0.0` (the fourth segment is reserved by the Store and left at 0)              |
 | Architecture    | x64 only                                                                           |
 | Signature       | Unsigned. The Store re-signs accepted packages; do not upload a self-signed build. |
 | Identity        | `Prashantpd7.VYSTRIQ` / `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`                  |
@@ -21,7 +21,7 @@ provide.
 
 | Partner Center field | What to enter                                                                                                                                         |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Display name         | `VYSTRIQ`                                                                                                                                             |
+| Display name         | `Preelock`                                                                                                                                            |
 | Short description    | Copy the "Short description" block in [§9](STORE_SUBMISSION.md#9-store-listing-copy-only-verified-functionality).                                     |
 | Description          | Copy the "Description" block in §9.                                                                                                                   |
 | Product features     | Copy the feature bullets in §9. Do not add camera-on-Windows, system-wide blocking, or automatic-update claims.                                       |

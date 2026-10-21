@@ -253,11 +253,11 @@ async function sync() {
     await removeRules();
     const detail = String(error);
     const message = detail.includes('(403)')
-      ? 'Connection code rejected. Copy it again from VYSTRIQ Settings.'
+      ? 'Connection code rejected. Copy it again from Preelock Settings.'
       : detail.includes('(409)')
-        ? 'Another browser profile is connected. Reset the connection in VYSTRIQ Settings.'
+        ? 'Another browser profile is connected. Reset the connection in Preelock Settings.'
         : /fetch|timeout|abort|network/i.test(detail)
-          ? 'Cannot reach VYSTRIQ. Open the desktop app, then reconnect.'
+          ? 'Cannot reach Preelock. Open the desktop app, then reconnect.'
           : detail.slice(0, 200);
     await chrome.storage.session.set({ error: message });
   }

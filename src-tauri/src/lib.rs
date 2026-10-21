@@ -117,7 +117,7 @@ fn blocked_quit(app: &tauri::AppHandle) {
     show_window(app);
     desktop_settings::notify(
         "Session in progress",
-        "Finish your focus session before closing VYSTRIQ.",
+        "Finish your focus session before closing Preelock.",
     );
 }
 fn quit(app: &tauri::AppHandle) {
@@ -181,7 +181,7 @@ fn build_tray_menu(
         }
         None => {
             let quit =
-                tauri::menu::MenuItem::with_id(app, "quit", "Quit VYSTRIQ", true, None::<&str>)?;
+                tauri::menu::MenuItem::with_id(app, "quit", "Quit Preelock", true, None::<&str>)?;
             tauri::menu::Menu::with_items(app, &[&quit])
         }
     }
@@ -210,7 +210,7 @@ pub fn run() {
                 (build_tray_menu(app_handle, live)?, live.is_some())
             };
             let mut tray = tauri::tray::TrayIconBuilder::with_id("focus-controller")
-                .tooltip("VYSTRIQ focus controller")
+                .tooltip("Preelock focus controller")
                 .menu(&initial_menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "timer" => show_window(app),
@@ -310,8 +310,8 @@ pub fn run() {
             _ => {}
         }),
         Err(error) => {
-            log::error!("VYSTRIQ startup failed: {error}");
-            panic!("VYSTRIQ could not start. See DEVELOPMENT.md recovery steps.");
+            log::error!("Preelock startup failed: {error}");
+            panic!("Preelock could not start. See DEVELOPMENT.md recovery steps.");
         }
     }
 }

@@ -43,7 +43,7 @@ from the intended source revision. It pins action commits, Node 24.13.1, Rust
 GitHub-hosted runners; no larger/paid runners or external services are requested.
 
 The workflow validates versions and app tests, builds native Apple Silicon and
-Intel DMGs and a Windows x64 NSIS installer, then verifies the final artifacts.
+Intel DMGs, a Windows x64 NSIS installer and a Store MSIX, then verifies the final artifacts.
 Mac checks cover the bundle seal, architecture, identifier, version, camera
 usage declaration/entitlement, and byte-for-byte extension resources. The app
 is copied outside the checkout and started twice on each disposable runner;
@@ -56,7 +56,7 @@ fresh SQLite database, uninstall, and ensure user data is preserved. The runner'
 existing WebView2 runtime does not prove installation on a machine missing it.
 Interactive installer/security dialogs remain a manual check.
 
-Only after every job succeeds does the workflow stage all three installers in
+Only after every job succeeds does the workflow stage all four packages in
 a draft, generate SHA256SUMS.txt, attach the installation guide, download the
 uploaded files again, check their hashes, and publish a prerelease. Existing
 tags/releases are never overwritten. A failed upload/check leaves a draft for
@@ -122,7 +122,7 @@ when rebuilt and installed; published DMG/EXE files do not change automatically.
    to Partner Center. MSIX packaging, validation, owner-supplied identity values
    and the manual Windows test plan are documented in
    [STORE_SUBMISSION.md](STORE_SUBMISSION.md). The MSIX package is built by
-   `.github/workflows/msix.yml`, not by the DMG/EXE release workflow. Keep the
+   the release workflow and can also be built independently by `.github/workflows/msix.yml`. Keep the
    DMG/EXE downloads available after a Store release.
 
 Recheck this checklist if a later agent changes workflow names or behavior.

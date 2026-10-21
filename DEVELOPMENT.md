@@ -64,7 +64,7 @@ Install Rust normally using the prerequisite commands for a durable setup; tempo
 macOS: `~/Library/Application Support/com.vystriq.desktop/vystriq.sqlite`.
 Windows: `%APPDATA%\com.vystriq.desktop\vystriq.sqlite`.
 
-Quit VYSTRIQ before backing up the database and any `-wal`/`-shm` sidecars. If startup reports a corrupted or newer database, preserve those files, verify the matching application version and restore a known-good backup. Do not delete user data automatically. To deliberately start fresh, move the closed application's entire data directory to a backup location and relaunch. Ordinary restarts restore session timing; browser-dependent sessions re-enter preparation and must receive fresh extension acknowledgement. Paused sessions remain paused. Phase 2 app redirection stops when VYSTRIQ quits. Browser recovery is independently available in the extension; see docs/FOCUS_MODE.md. Reopen hidden/minimized apps normally.
+Quit Preelock before backing up the database and any `-wal`/`-shm` sidecars. If startup reports a corrupted or newer database, preserve those files, verify the matching application version and restore a known-good backup. Do not delete user data automatically. To deliberately start fresh, move the closed application's entire data directory to a backup location and relaunch. Ordinary restarts restore session timing; browser-dependent sessions re-enter preparation and must receive fresh extension acknowledgement. Paused sessions remain paused. Phase 2 app redirection stops when Preelock quits. Browser recovery is independently available in the extension; see docs/FOCUS_MODE.md. Reopen hidden/minimized apps normally.
 
 ## Builds and CI
 

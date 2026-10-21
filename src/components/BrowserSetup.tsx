@@ -128,7 +128,7 @@ export function BrowserSetup({
         </div>
       </label>
       <p className="muted small code-hint">
-        Copy the code and paste it in the Vystriq extension in your browser
+        Copy the code and paste it in the Preelock extension in your browser
         toolbar, choose {browserName}, then click Connect there.
       </p>
       <p className="muted small">
@@ -155,7 +155,7 @@ export function BrowserSetup({
       )}
       {installGuide && (
         <Modal
-          title={`Add Vystriq to ${browserName}`}
+          title={`Add Preelock to ${browserName}`}
           onClose={() => setInstallGuide(false)}
         >
           <ol className="install-steps">
@@ -227,7 +227,7 @@ export function BrowserSetup({
               <strong className="step-title">Connect the extension</strong>
               <span className="muted">
                 Copy the <strong>connection code</strong> from the setup guide,
-                click the Vystriq icon in {browserName}'s toolbar, paste the
+                click the Preelock icon in {browserName}'s toolbar, paste the
                 code, choose {browserName}, and click <strong>Connect</strong>{' '}
                 there. Keep {browserName} open.
               </span>
