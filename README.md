@@ -16,6 +16,7 @@ Download the [Preelock v0.5.0 release](https://github.com/Prashantpd7/Preelock/r
 - [Intel DMG](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.0/Preelock_0.5.0_x64.dmg)
 - [Windows installer](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.0/Preelock_0.5.0_x64-setup.exe)
 - [Microsoft Store MSIX](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.0/Preelock_0.5.0_x64.msix)
+- [SHA-256 checksums](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.0/SHA256SUMS.txt)
 
 [Earlier releases](https://github.com/Prashantpd7/Preelock/releases) retain their
 historical product names.
