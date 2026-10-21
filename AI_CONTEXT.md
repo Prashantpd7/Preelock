@@ -36,13 +36,15 @@ claim that every security policy permits manual approval.
 - Extension manifest version: `0.4.1`
 - Extension/bridge behavior protocol: `3`
 - Repository: `Prashantpd7/VYSTRIQ`
-- Release: https://github.com/Prashantpd7/VYSTRIQ/releases/tag/v0.4.0
+- Release: https://github.com/Prashantpd7/VYSTRIQ/releases/tag/v0.4.1
 - Apple Silicon macOS DMG:
-  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.0/VYSTRIQ_0.4.0_aarch64.dmg
+  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_1-macOS-Apple-Silicon.dmg
+- Intel macOS DMG:
+  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_2-macOS-Intel.dmg
 - Windows x64 installer:
-  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.0/VYSTRIQ_0.4.0_x64-setup.exe
+  https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_3-Windows-x64.exe
 
-The macOS artifact is for Apple Silicon Macs (M1/M2/M3/M4 and newer). The
+Separate macOS artifacts support Apple Silicon and Intel. The
 Windows artifact is a 64-bit NSIS installer. The release assets contain the
 application and bundled extension program files, not the developer's database.
 
@@ -297,8 +299,9 @@ GitHub Actions is defined in `.github/workflows/ci.yml` and validates:
 
 Build artifacts are uploaded under the target-specific artifact names. A
 successful Windows CI build can be attached to a GitHub release as the `.exe`.
-The public `v0.4.0` release already contains both the Mac DMG and Windows
-installer.
+The public `v0.4.1` beta contains both Mac architectures and the Windows installer.
+All packaging and automated runner installation checks passed; see
+[the validation record](docs/VALIDATION_0.4.1.md) for scope and limitations.
 
 Presence on a release is not distribution verification. CI checks the Mac
 bundle seal. `.github/workflows/release.yml` builds free installers, verifies

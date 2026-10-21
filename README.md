@@ -10,10 +10,20 @@ starts with empty data.
 
 ## Download VYSTRIQ — Free for Windows and macOS
 
-The corrected **v0.4.1 public beta** is being prepared. See
-[GitHub Releases](https://github.com/Prashantpd7/VYSTRIQ/releases) for published
-assets. Do not use the v0.4.0 Mac installer: its bundle signature is defective.
-Direct links will be added after all replacement installers pass validation.
+**[Latest public beta: VYSTRIQ 0.4.1](https://github.com/Prashantpd7/VYSTRIQ/releases/tag/v0.4.1)**
+
+| Your computer                      | Download                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Mac — Apple Silicon (M1 and newer) | [Download Apple Silicon DMG](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_1-macOS-Apple-Silicon.dmg) |
+| Mac — Intel                        | [Download Intel DMG](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_2-macOS-Intel.dmg)                 |
+| Windows — Intel/AMD 64-bit         | [Download Windows installer](https://github.com/Prashantpd7/VYSTRIQ/releases/download/v0.4.1/VYSTRIQ_0.4.1_3-Windows-x64.exe)         |
+
+Mac: open the DMG, drag VYSTRIQ to Applications, eject the image, then open
+VYSTRIQ from Applications. Windows: run the installer, then open VYSTRIQ from Start.
+
+[All releases](https://github.com/Prashantpd7/VYSTRIQ/releases)
+
+**v0.4.1 supersedes the defective v0.4.0 Mac installer.** Use these new downloads.
 
 Read the [installation and troubleshooting guide](docs/INSTALLATION.md), including
 [permission setup](docs/INSTALLATION.md#permissions-and-first-run) and
@@ -49,3 +59,5 @@ Chromium extension; Safari and Firefox are unsupported. Restrictions are not
 system-wide or administrator-proof. No screen recording is performed.
 
 Maintainers: [release procedure](docs/RELEASING.md).
+
+See the [0.4.1 validation record](docs/VALIDATION_0.4.1.md) for tested and untested flows.

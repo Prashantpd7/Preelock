@@ -137,17 +137,31 @@ jobs:
           git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" && exit 1 || status=$?
           [[ "$status" -eq 2 ]] || exit 1
           cd installers
-          test -f "VYSTRIQ_${VERSION}_aarch64.dmg"
-          test -f "VYSTRIQ_${VERSION}_x64.dmg"
-          test -f "VYSTRIQ_${VERSION}_x64-setup.exe"
-          sha256sum *.dmg *.exe > SHA256SUMS.txt
-          cp ../docs/INSTALLATION.md INSTALLATION.md
+          mv "VYSTRIQ_${VERSION}_aarch64.dmg" "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg"
+          mv "VYSTRIQ_${VERSION}_x64.dmg" "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg"
+          mv "VYSTRIQ_${VERSION}_x64-setup.exe" "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
+          test -f "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg"
+          test -f "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg"
+          test -f "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
+          sha256sum "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg" \
+            "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg" \
+            "VYSTRIQ_${VERSION}_3-Windows-x64.exe" > SHA256SUMS.txt
           cp ../docs/RELEASE_NOTES.md RELEASE_NOTES.md
-          printf '\nSource commit: %s\nActions run: https://github.com/%s/actions/runs/%s\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> RELEASE_NOTES.md
+          {
+            printf '\n## Installation\n\n'
+            sed '1{/^# Install VYSTRIQ/d;}' ../docs/INSTALLATION.md
+            printf '\n## Published installer checksums\n\n```text\n'
+            cat SHA256SUMS.txt
+            printf '```\n\nSource commit: %s\nActions run: https://github.com/%s/actions/runs/%s\n' \
+              "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } >> RELEASE_NOTES.md
           gh release create "v$VERSION" --target "$GITHUB_SHA" --draft --prerelease \
             --title "VYSTRIQ $VERSION — Free public beta" --notes-file RELEASE_NOTES.md \
-            *.dmg *.exe SHA256SUMS.txt INSTALLATION.md
+            "VYSTRIQ_${VERSION}_1-macOS-Apple-Silicon.dmg" \
+            "VYSTRIQ_${VERSION}_2-macOS-Intel.dmg" \
+            "VYSTRIQ_${VERSION}_3-Windows-x64.exe"
           mkdir downloaded
-          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe' --pattern SHA256SUMS.txt
+          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe'
+          cp SHA256SUMS.txt downloaded/
           (cd downloaded && sha256sum --check SHA256SUMS.txt)
           gh release edit "v$VERSION" --draft=false --prerelease

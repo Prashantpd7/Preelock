@@ -28,12 +28,30 @@ unnotarized ad-hoc build. No Gatekeeper settings or quarantine metadata were
 changed. Successful local launch is **not** evidence that all downloaded-app
 approval policies will permit it.
 
-## Automated checks
+## Automated release checks — 21 October 2026
 
-Local type checking, ESLint, all 60 frontend tests, frontend build, formatting,
-workflow YAML parsing, shell/Python syntax checks, and release-version consistency
-passed. The public release workflow must independently pass its final installer
-checks; its linked job logs are the evidence for runner results.
+Release source: `2a923f9bab0f6ae75770f197b178b009dce5d470`.
+[Successful GitHub Actions run](https://github.com/Prashantpd7/VYSTRIQ/actions/runs/39554443355).
+
+- 60 frontend tests, type checking, lint, build and formatting passed.
+- 45 Rust tests passed on each of Apple Silicon, Intel Mac, and Windows runners;
+  Clippy and Rust formatting passed on all platforms.
+- Both Mac DMGs passed checksum, contained bundle/architecture/permission and
+  resource verification, copy/install outside the checkout, startup, and
+  persisted-preference restart checks on native macOS 15 runners.
+- Windows x64 NSIS installed on a Windows Server 2022 runner. Installed binary
+  integrity (including Tauri's documented NSIS marker patch), bundled resources,
+  process startup, fresh SQLite integrity/schema, and uninstall checks passed.
+  Uninstallation preserved the test profile's database.
+- All three uploaded release installers were downloaded and their SHA-256
+  checksums verified before the beta was made public.
+- All three public installers were also downloaded on the maintainer's Mac and
+  compared with the published checksum file successfully.
+
+The first release attempt correctly withheld publication when its Windows
+comparison rejected Tauri's expected bundle-type marker change. The check was
+corrected to allow exactly that patch and reject every other byte difference.
+No installer integrity gate was skipped.
 
 ## Manual testing still needed
 
