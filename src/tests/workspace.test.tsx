@@ -76,6 +76,9 @@ it('navigates all six routes and submits a task to the native boundary', async (
     ).toBeInTheDocument();
   }
   await user.click(screen.getByRole('link', { name: 'Tasks' }));
+  vi.mocked(api.snapshot).mockImplementation(async () =>
+    structuredClone(useAppStore.getState().data),
+  );
   vi.mocked(api.execute).mockResolvedValue({
     ...emptySnapshot,
     tasks: [
