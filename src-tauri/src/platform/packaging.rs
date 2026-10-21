@@ -7,7 +7,7 @@
 //! development machine; the Windows adapter supplies the real inputs.
 
 /// TaskId declared by `desktop:StartupTask` in the MSIX manifest.
-pub const STARTUP_TASK_ID: &str = "VYSTRIQ";
+pub const STARTUP_TASK_ID: &str = "Preelock";
 
 /// `State` values reported by `Windows.ApplicationModel.StartupTask`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,14 +86,14 @@ mod tests {
     #[test]
     fn only_windowsapps_installations_are_treated_as_packaged() {
         assert!(is_packaged_exe(
-            r"C:\Program Files\WindowsApps\VYSTRIQ_1.0.0.0_x64__abc\VYSTRIQ.exe"
+            r"C:\Program Files\WindowsApps\Preelock_1.0.0.0_x64__abc\Preelock.exe"
         ));
         assert!(is_packaged_exe(
-            r"d:\WINDOWSAPPS\VYSTRIQ_1.0.0.0_x64__abc\VYSTRIQ.exe"
+            r"d:\WINDOWSAPPS\Preelock_1.0.0.0_x64__abc\Preelock.exe"
         ));
         assert!(!is_packaged_exe(
-            r"C:\Users\me\AppData\Local\VYSTRIQ\vystriq.exe"
+            r"C:\Users\me\AppData\Local\Preelock\preelock.exe"
         ));
-        assert!(!is_packaged_exe(r"C:\Program Files\VYSTRIQ\vystriq.exe"));
+        assert!(!is_packaged_exe(r"C:\Program Files\Preelock\preelock.exe"));
     }
 }

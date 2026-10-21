@@ -3,12 +3,12 @@ set -euo pipefail
 
 app="${1:?Usage: verify-macos-bundle.sh APP [arm64|x86_64]}"
 codesign --verify --deep --strict --verbose=2 "$app"
-test -x "$app/Contents/MacOS/vystriq"
+test -x "$app/Contents/MacOS/preelock"
 if [[ -n "${2:-}" ]]; then
-  [[ "$(lipo -archs "$app/Contents/MacOS/vystriq")" == "$2" ]]
+  [[ "$(lipo -archs "$app/Contents/MacOS/preelock")" == "$2" ]]
 fi
 identifier=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")
-[[ "$identifier" == "com.vystriq.desktop" ]]
+[[ "$identifier" == "com.preelock.desktop" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$app/Contents/Info.plist")" == "Preelock" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$app/Contents/Info.plist")" == "Preelock" ]]
 version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")

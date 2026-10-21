@@ -79,7 +79,7 @@ try {
     [xml]$manifest = Get-Content $manifestPath -Raw
     $identity = $manifest.Package.Identity
     $reserved = Get-Content (Join-Path $repo "windows/msix/identity.json") -Raw | ConvertFrom-Json
-    if ($identity.Name -eq "VYSTRIQ.Validation" -or $identity.Name -eq "VYSTRIQ.LocalTest") {
+    if ($identity.Name -eq "Preelock.Validation" -or $identity.Name -eq "Preelock.LocalTest") {
         Write-Output "  info test identity: this package is not suitable for Store upload"
     } else {
         Check ($identity.Name -ceq $reserved.identityName) "Store identity is unchanged"
@@ -94,7 +94,7 @@ try {
     if ($ExpectedVersion) { Check ($identity.Version -ceq $ExpectedVersion) "Identity Version is '$ExpectedVersion'" }
     if ($ExpectedArchitecture) { Check ($architecture -ceq $ExpectedArchitecture) "ProcessorArchitecture is '$ExpectedArchitecture'" }
     Check ($identity.Version -match '^\d+\.\d+\.\d+\.0$') "Version leaves the fourth Store-reserved segment at 0"
-    if ($ExpectedIdentity -and $ExpectedIdentity -ne "VYSTRIQ.Validation") {
+    if ($ExpectedIdentity -and $ExpectedIdentity -ne "Preelock.Validation") {
         Check ($identity.Name -notmatch 'Validation') "Identity is not the validation placeholder"
         Check ($identity.Publisher -notmatch 'Validation Build') "Publisher is not the validation placeholder"
     }

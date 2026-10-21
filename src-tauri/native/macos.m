@@ -13,7 +13,7 @@ static char *json(id object) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
     return strdup([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String ?: "null");
 }
-char *vy_apps(void) {
+char *preelock_apps(void) {
     @autoreleasepool {
         __block char *result;
         onMain(^{
@@ -27,7 +27,7 @@ char *vy_apps(void) {
         return result;
     }
 }
-char *vy_sample(void) {
+char *preelock_sample(void) {
     @autoreleasepool {
         __block char *result;
         onMain(^{
@@ -37,13 +37,13 @@ char *vy_sample(void) {
         return result;
     }
 }
-int vy_hide(int pid) {
+int preelock_hide(int pid) {
     __block BOOL result = NO;
     onMain(^{ NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid]; if (app.activationPolicy == NSApplicationActivationPolicyRegular) result = [app hide]; });
     return result;
 }
-int vy_camera_permission(void) { return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]; }
-void vy_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) { (void)granted; }]; }
+int preelock_camera_permission(void) { return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]; }
+void preelock_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) { (void)granted; }]; }
 
 @interface VYCamera : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property AVCaptureSession *session;
@@ -53,7 +53,7 @@ void vy_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMedi
 @property double lastSeen;
 @end
 @implementation VYCamera
-- (instancetype)init { if ((self=[super init])) { _queue=dispatch_queue_create("com.vystriq.camera", DISPATCH_QUEUE_SERIAL); _status=@"off"; } return self; }
+- (instancetype)init { if ((self=[super init])) { _queue=dispatch_queue_create("com.preelock.camera", DISPATCH_QUEUE_SERIAL); _status=@"off"; } return self; }
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)buffer fromConnection:(AVCaptureConnection *)connection {
     (void)output; (void)connection;
     double now = NSProcessInfo.processInfo.systemUptime;
@@ -74,8 +74,8 @@ void vy_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMedi
 @end
 static VYCamera *camera;
 static VYCamera *getCamera(void) { static dispatch_once_t once; dispatch_once(&once, ^{ camera=[VYCamera new]; }); return camera; }
-int vy_camera_start(void) {
-    if (vy_camera_permission()!=AVAuthorizationStatusAuthorized) return 0;
+int preelock_camera_start(void) {
+    if (preelock_camera_permission()!=AVAuthorizationStatusAuthorized) return 0;
     VYCamera *c=getCamera(); __block BOOL ok=NO;
     dispatch_sync(c.queue, ^{
         if (c.session.isRunning) { ok=YES; return; }
@@ -91,10 +91,10 @@ int vy_camera_start(void) {
         if (!ok) c.status=@"camera_unavailable";
     }); return ok;
 }
-void vy_camera_stop(void) {
+void preelock_camera_stop(void) {
     VYCamera *c=getCamera(); dispatch_sync(c.queue, ^{ [c.session stopRunning]; c.session=nil; c.status=@"off"; });
 }
-char *vy_camera_status(void) {
+char *preelock_camera_status(void) {
     VYCamera *c=getCamera(); __block char *result;
     dispatch_sync(c.queue, ^{
         NSString *status=c.status;
@@ -103,14 +103,18 @@ char *vy_camera_status(void) {
         result=strdup(status.UTF8String);
     }); return result;
 }
-void vy_free(char *data) { free(data); }
+void preelock_free(char *data) { free(data); }
 
 // Settings integrations. All panels and AppKit work stay on the main thread.
 #import <UserNotifications/UserNotifications.h>
 #import <ServiceManagement/ServiceManagement.h>
-char *vy_settings_info(void) {
+char *preelock_settings_info(void) {
     @autoreleasepool {
         __block NSInteger auth = 0;
+        if (!NSBundle.mainBundle.bundleIdentifier ||
+            ![NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
+            return json(@{@"notifications":@(-1), @"login":@(-1)});
+        }
         dispatch_semaphore_t wait = dispatch_semaphore_create(0);
         [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
             auth = settings.authorizationStatus; dispatch_semaphore_signal(wait);
@@ -122,7 +126,7 @@ char *vy_settings_info(void) {
         return json(@{@"notifications":@(auth), @"login":@(login), @"day":@((parts.weekday+6)%7), @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day], @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]});
     }
 }
-char *vy_login(int enabled) {
+char *preelock_login(int enabled) {
     @autoreleasepool {
         __block NSString *message = @"";
         onMain(^{
@@ -136,7 +140,11 @@ char *vy_login(int enabled) {
         return strdup(message.UTF8String);
     }
 }
-int vy_notification_permission(void) {
+int preelock_notification_permission(void) {
+    if (!NSBundle.mainBundle.bundleIdentifier ||
+        ![NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
+        return 0;
+    }
     __block BOOL granted = NO;
     dispatch_semaphore_t wait = dispatch_semaphore_create(0);
     [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed, NSError *error) {
@@ -153,7 +161,7 @@ int vy_notification_permission(void) {
     completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList);
 }
 @end
-void vy_notify(const char *title, const char *body) {
+void preelock_notify(const char *title, const char *body) {
     static VYAlerts *delegate;
     static dispatch_once_t once;
     dispatch_once(&once, ^{delegate=[VYAlerts new]; UNUserNotificationCenter.currentNotificationCenter.delegate=delegate;});
@@ -162,10 +170,10 @@ void vy_notify(const char *title, const char *body) {
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil];
     [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"Preelock notification unavailable: %@", error.localizedDescription); }];
 }
-void vy_sound(float volume) {
+void preelock_sound(float volume) {
     onMain(^{ NSSound *sound = [NSSound soundNamed:@"Glass"]; sound.volume = volume; [sound play]; });
 }
-char *vy_file_panel(int save, const char *filename) {
+char *preelock_file_panel(int save, const char *filename) {
     @autoreleasepool {
         __block NSString *path = @"";
         NSString *name = [NSString stringWithUTF8String:filename];
@@ -202,7 +210,7 @@ static NSApplicationTerminateReply vyShouldTerminate(id self, SEL selector, NSAp
     if (vyQuitRequest) vyQuitRequest();
     return NSTerminateCancel;
 }
-int vy_install_quit_guard(void (*callback)(void), void (*shutdown)(void)) {
+int preelock_install_quit_guard(void (*callback)(void), void (*shutdown)(void)) {
     __block BOOL installed = NO;
     onMain(^{
         Class delegateClass = [NSApp.delegate class];

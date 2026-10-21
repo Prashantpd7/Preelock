@@ -1,13 +1,13 @@
 [package]
-name = "vystriq"
+name = "preelock"
 version = "0.5.0"
 description = "Local-first focus and productivity desktop application"
-authors = ["VYSTRIQ"]
+authors = ["Preelock"]
 edition = "2021"
 rust-version = "1.90"
 
 [lib]
-name = "vystriq_lib"
+name = "preelock_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

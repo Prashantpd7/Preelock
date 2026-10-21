@@ -9,7 +9,7 @@ Var PreelockLegacyInstall
     ${If} $R0 == '$\"'
       StrCpy $PreelockLegacyInstall $PreelockLegacyInstall -1 1
     ${EndIf}
-    ${If} ${FileExists} "$PreelockLegacyInstall\vystriq.exe"
+    ${If} ${FileExists} "$PreelockLegacyInstall\preelock.exe"
       StrCpy $INSTDIR $PreelockLegacyInstall
     ${Else}
       StrCpy $PreelockLegacyInstall ""
@@ -20,12 +20,12 @@ Var PreelockLegacyInstall
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $PreelockLegacyInstall != ""
     ; Remove only known shortcuts whose target belongs to this installation.
-    !insertmacro IsShortcutTarget "$SMPROGRAMS\VYSTRIQ.lnk" "$INSTDIR\vystriq.exe"
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\VYSTRIQ.lnk" "$INSTDIR\preelock.exe"
     Pop $R0
     ${If} $R0 == 1
       Delete "$SMPROGRAMS\VYSTRIQ.lnk"
     ${EndIf}
-    !insertmacro IsShortcutTarget "$DESKTOP\VYSTRIQ.lnk" "$INSTDIR\vystriq.exe"
+    !insertmacro IsShortcutTarget "$DESKTOP\VYSTRIQ.lnk" "$INSTDIR\preelock.exe"
     Pop $R0
     ${If} $R0 == 1
       Delete "$DESKTOP\VYSTRIQ.lnk"

@@ -6,7 +6,7 @@
 #
 # Example (run on Windows, after `npm ci`):
 #   powershell -ExecutionPolicy Bypass -File scripts/package-msix.ps1 `
-#     -IdentityName "12345Publisher.VYSTRIQ" `
+#     -IdentityName "12345Publisher.Preelock" `
 #     -Publisher "CN=1A2B3C4D-0000-0000-0000-000000000000" `
 #     -PublisherDisplayName "Prashant" -Build
 #
@@ -93,7 +93,7 @@ if (!$IdentityName -or !$Publisher -or !$PublisherDisplayName) {
 Partner Center identity is required. Reserve the product name in Partner Center
 (Product management > App identity) and pass the exact values:
 
-  -IdentityName         (for example 12345Publisher.VYSTRIQ)
+  -IdentityName         (for example 12345Publisher.Preelock)
   -Publisher            (CN=... GUID assigned by the Store)
   -PublisherDisplayName (the name shown to customers)
 
@@ -102,9 +102,9 @@ See docs/STORE_SUBMISSION.md. For a local, non-submittable validation build add
 "@
     }
     $placeholder = $true
-    if (!$IdentityName) { $IdentityName = "VYSTRIQ.Validation" }
-    if (!$Publisher) { $Publisher = "CN=VYSTRIQ Validation Build" }
-    if (!$PublisherDisplayName) { $PublisherDisplayName = "VYSTRIQ validation build" }
+    if (!$IdentityName) { $IdentityName = "Preelock.Validation" }
+    if (!$Publisher) { $Publisher = "CN=Preelock Validation Build" }
+    if (!$PublisherDisplayName) { $PublisherDisplayName = "Preelock validation build" }
 }
 if ($Publisher -notmatch '^CN=') {
     throw "Publisher must be the exact distinguished name from Partner Center and start with CN= (a bare name is rejected by the Store)."
@@ -126,13 +126,13 @@ if ($Build) {
 if (!$BuiltExecutable) {
     $targetDir = if ($Architecture -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
     $candidates = @(
-        (Join-Path $repo "src-tauri/target/$targetDir/release/vystriq.exe"),
-        (Join-Path $repo "src-tauri/target/release/vystriq.exe")
+        (Join-Path $repo "src-tauri/target/$targetDir/release/preelock.exe"),
+        (Join-Path $repo "src-tauri/target/release/preelock.exe")
     )
     $BuiltExecutable = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (!$BuiltExecutable -or !(Test-Path $BuiltExecutable)) {
-    throw "Build output vystriq.exe was not found. Build the Windows app first (npm run desktop:build -- --no-bundle) or pass -BuiltExecutable."
+    throw "Build output preelock.exe was not found. Build the Windows app first (npm run desktop:build -- --no-bundle) or pass -BuiltExecutable."
 }
 $BuiltExecutable = (Resolve-Path $BuiltExecutable).Path
 
@@ -143,7 +143,7 @@ $assets = Join-Path $staging "Assets"
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $assets -Force | Out-Null
 
-Copy-Item $BuiltExecutable (Join-Path $staging "VYSTRIQ.exe")
+Copy-Item $BuiltExecutable (Join-Path $staging "Preelock.exe")
 
 # Bundled web resources, at the same relative paths used by the NSIS build.
 foreach ($entry in $config.bundle.resources.PSObject.Properties) {

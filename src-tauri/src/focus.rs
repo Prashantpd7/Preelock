@@ -94,7 +94,7 @@ pub fn protected(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
     let leaf = id.rsplit(['/', '\\']).next().unwrap_or(&id);
     [
-        "com.vystriq.desktop",
+        "com.preelock.desktop",
         "com.apple.finder",
         "com.apple.systempreferences",
         "com.apple.activitymonitor",
@@ -105,7 +105,7 @@ pub fn protected(id: &str) -> bool {
     ]
     .contains(&id.as_str())
         || [
-            "vystriq.exe",
+            "preelock.exe",
             "explorer.exe",
             "taskmgr.exe",
             "systemsettings.exe",

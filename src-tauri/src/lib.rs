@@ -186,6 +186,48 @@ fn build_tray_menu(
         }
     }
 }
+
+fn migrate_legacy_data(new_dir: &std::path::Path) -> std::io::Result<()> {
+    if new_dir.exists() {
+        return Ok(());
+    }
+    let Some(parent) = new_dir.parent() else {
+        return Ok(());
+    };
+    let legacy_dir = parent.join("com.vystriq.desktop");
+    if !legacy_dir.is_dir() {
+        return Ok(());
+    }
+    log::info!(
+        "Migrating Preelock data from {} to {}",
+        legacy_dir.display(),
+        new_dir.display()
+    );
+    copy_directory(&legacy_dir, new_dir)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let old = new_dir.join(format!("vystriq.sqlite{suffix}"));
+        if old.exists() {
+            std::fs::rename(old, new_dir.join(format!("preelock.sqlite{suffix}")))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_directory(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else {
+            std::fs::copy(source_path, destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let builder = tauri::Builder::default();
@@ -194,9 +236,10 @@ pub fn run() {
     let result = builder
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
+            migrate_legacy_data(&dir)?;
             std::fs::create_dir_all(&dir)?;
             app.manage(Mutex::new(
-                Engine::open_native(&dir.join("vystriq.sqlite")).map_err(std::io::Error::other)?,
+                Engine::open_native(&dir.join("preelock.sqlite")).map_err(std::io::Error::other)?,
             ));
             app.manage(Mutex::new(settings::Runtime::default()));
             app.manage(ExitApproved::default());
@@ -220,6 +263,7 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
+
             tray.build(app)?;
             let handle = app.handle().clone();
             let mut tray_menu = initial_menu;

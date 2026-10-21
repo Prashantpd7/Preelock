@@ -13,12 +13,12 @@ import time
 
 assert os.environ.get("GITHUB_ACTIONS") == "true", "Only run on disposable CI runners"
 app = Path(sys.argv[1]).resolve()
-database = Path.home() / "Library/Application Support/com.vystriq.desktop/vystriq.sqlite"
+database = Path.home() / "Library/Application Support/com.preelock.desktop/preelock.sqlite"
 assert not database.exists(), "Refusing to test against existing app data"
 
 
 def launch():
-    process = subprocess.Popen([str(app / "Contents/MacOS/vystriq")])
+    process = subprocess.Popen([str(app / "Contents/MacOS/preelock")])
     try:
         for _ in range(30):
             assert process.poll() is None, "Installed app exited during startup"

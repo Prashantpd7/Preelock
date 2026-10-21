@@ -19,6 +19,7 @@ import { Tasks } from '../pages/Tasks';
 import { Activity as ActivityPage } from '../pages/Activity';
 import { Analytics } from '../pages/Analytics';
 import { Settings as SettingsPage } from '../pages/Settings';
+import logo from '../assets/preelock-logo.png';
 const navigation = [
   ['/', 'Dashboard', LayoutDashboard],
   ['/sessions', 'Focus Sessions', Timer],
@@ -45,8 +46,8 @@ export function AppLayout() {
     <div className="app-shell">
       <aside className="sidebar">
         <NavLink to="/" className="brand">
-          <span className="brand-icon">V</span>Preelock
-          <span className="brand-dot">.</span>
+          <img className="brand-icon" src={logo} alt="" />
+          Preelock
         </NavLink>
         <nav aria-label="Main navigation">
           {navigation.map(([to, label, Icon]) => (

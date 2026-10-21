@@ -178,18 +178,11 @@ small {
   letter-spacing: 1.5px;
 }
 .brand-icon {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 30px;
   height: 32px;
-  background: var(--accent);
-  color: #172213;
+  object-fit: cover;
   border-radius: 8px;
-  font-style: italic;
-}
-.brand-dot {
-  color: var(--accent);
-  margin-left: -10px;
 }
 nav {
   display: flex;

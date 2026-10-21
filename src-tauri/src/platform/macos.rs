@@ -1,15 +1,15 @@
 use super::{Application, Sample};
 use std::ffi::{c_char, CStr};
 unsafe extern "C" {
-    fn vy_apps() -> *mut c_char;
-    fn vy_sample() -> *mut c_char;
-    fn vy_hide(pid: i32) -> i32;
-    fn vy_free(p: *mut c_char);
-    fn vy_camera_permission() -> i32;
-    fn vy_request_camera();
-    fn vy_camera_start() -> i32;
-    fn vy_camera_stop();
-    fn vy_camera_status() -> *mut c_char;
+    fn preelock_apps() -> *mut c_char;
+    fn preelock_sample() -> *mut c_char;
+    fn preelock_hide(pid: i32) -> i32;
+    fn preelock_free(p: *mut c_char);
+    fn preelock_camera_permission() -> i32;
+    fn preelock_request_camera();
+    fn preelock_camera_start() -> i32;
+    fn preelock_camera_stop();
+    fn preelock_camera_status() -> *mut c_char;
 }
 fn text(ptr: *mut c_char) -> Result<String, String> {
     if ptr.is_null() {
@@ -18,20 +18,20 @@ fn text(ptr: *mut c_char) -> Result<String, String> {
     let value = unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned();
-    unsafe { vy_free(ptr) };
+    unsafe { preelock_free(ptr) };
     Ok(value)
 }
 pub fn applications() -> Result<Vec<Application>, String> {
-    serde_json::from_str(&text(unsafe { vy_apps() })?).map_err(|e| e.to_string())
+    serde_json::from_str(&text(unsafe { preelock_apps() })?).map_err(|e| e.to_string())
 }
 pub fn sample() -> Result<Sample, String> {
-    serde_json::from_str(&text(unsafe { vy_sample() })?).map_err(|e| e.to_string())
+    serde_json::from_str(&text(unsafe { preelock_sample() })?).map_err(|e| e.to_string())
 }
 pub fn hide(sample: &Sample) -> bool {
-    unsafe { vy_hide(sample.pid as i32) != 0 }
+    unsafe { preelock_hide(sample.pid as i32) != 0 }
 }
 pub fn camera_permission() -> &'static str {
-    match unsafe { vy_camera_permission() } {
+    match unsafe { preelock_camera_permission() } {
         0 => "not_requested",
         1 => "restricted",
         2 => "denied",
@@ -40,17 +40,17 @@ pub fn camera_permission() -> &'static str {
     }
 }
 pub fn request_camera() -> Result<(), String> {
-    unsafe { vy_request_camera() };
+    unsafe { preelock_request_camera() };
     Ok(())
 }
 pub fn camera_start() -> bool {
-    unsafe { vy_camera_start() != 0 }
+    unsafe { preelock_camera_start() != 0 }
 }
 pub fn camera_stop() {
-    unsafe { vy_camera_stop() };
+    unsafe { preelock_camera_stop() };
 }
 pub fn camera_status() -> String {
-    text(unsafe { vy_camera_status() }).unwrap_or_else(|_| "camera_error".into())
+    text(unsafe { preelock_camera_status() }).unwrap_or_else(|_| "camera_error".into())
 }
 /// Browsers installed on this Mac (whether running or not), so the user can
 /// pick their browser without having to open it first.

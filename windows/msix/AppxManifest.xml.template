@@ -43,7 +43,7 @@
          runFullTrust justification text for Partner Center. -->
     <Application
       Id="VYSTRIQ"
-      Executable="VYSTRIQ.exe"
+      Executable="Preelock.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="__DISPLAY_NAME__"
@@ -64,7 +64,7 @@
              Settings > Apps > Startup. The app never enables it implicitly. -->
         <desktop:Extension
           Category="windows.startupTask"
-          Executable="VYSTRIQ.exe"
+          Executable="Preelock.exe"
           EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask
             TaskId="VYSTRIQ"

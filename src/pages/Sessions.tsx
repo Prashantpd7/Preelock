@@ -174,7 +174,7 @@ export function Sessions() {
   const apps =
     setup?.applications.filter(
       (a) =>
-        !/(vystriq|preelock|finder|activitymonitor|systempreferences|explorer\.exe|taskmgr\.exe|systemsettings\.exe)/i.test(
+        !/(preelock|finder|activitymonitor|systempreferences|explorer\.exe|taskmgr\.exe|systemsettings\.exe)/i.test(
           a.id,
         ),
     ) ?? [];

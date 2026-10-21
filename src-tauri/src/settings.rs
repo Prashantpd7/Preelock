@@ -67,7 +67,9 @@ struct Backup {
 fn restore_backup(content: &str) -> Result<Snapshot, String> {
     let backup: Backup =
         serde_json::from_str(content).map_err(|_| "This is not a valid Preelock backup.")?;
-    if backup.format != "vystriq-backup" || backup.version != 1 {
+    if !["preelock-backup", "vystriq-backup"].contains(&backup.format.as_str())
+        || backup.version != 1
+    {
         return Err("This backup version is not supported.".into());
     }
     let mut data = backup.data;
@@ -125,7 +127,7 @@ fn restore_backup(content: &str) -> Result<Snapshot, String> {
 }
 fn backup_json(data: Snapshot) -> Result<String, String> {
     serde_json::to_string_pretty(&Backup {
-        format: "vystriq-backup".into(),
+        format: "preelock-backup".into(),
         version: 1,
         data,
     })

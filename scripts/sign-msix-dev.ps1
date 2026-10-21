@@ -8,20 +8,20 @@
 # build:
 #
 #   powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
-#     -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=VYSTRIQ Local Test"
+#     -IdentityName "Preelock.LocalTest" -Publisher "CN=Preelock Local Test"
 #   powershell -File scripts/sign-msix-dev.ps1 `
-#     -Package src-tauri/target/msix/VYSTRIQ_0.4.1_x64-validation.msix
+#     -Package src-tauri/target/msix/Preelock_0.5.0_x64-validation.msix
 #
 # Then, in a normal (non-elevated) PowerShell window:
 #   Add-AppxPackage -Path <package>
-#   Get-AppxPackage VYSTRIQ.LocalTest | Select PackageFullName, InstallLocation
+#   Get-AppxPackage Preelock.LocalTest | Select PackageFullName, InstallLocation
 #   Remove-AppxPackage -Package <PackageFullName>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$Package,
-    [string]$Subject = "CN=VYSTRIQ Local Test",
+    [string]$Subject = "CN=Preelock Local Test",
     [switch]$TrustCertificate
 )
 
@@ -30,7 +30,7 @@ if (!(Test-Path $Package)) { throw "Package not found: $Package" }
 $Package = (Resolve-Path $Package).Path
 
 # The MSIX publisher must equal the signing certificate subject.
-$extract = Join-Path ([System.IO.Path]::GetTempPath()) ("vystriq-sign-" + [guid]::NewGuid().ToString("N"))
+$extract = Join-Path ([System.IO.Path]::GetTempPath()) ("preelock-sign-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $extract -Force | Out-Null
 try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -61,14 +61,14 @@ if (!$certificate) {
     $certificate = New-SelfSignedCertificate `
         -Type Custom `
         -Subject $Subject `
-        -FriendlyName "VYSTRIQ local test signing" `
+        -FriendlyName "Preelock local test signing" `
         -KeyUsage DigitalSignature `
         -KeyAlgorithm RSA `
         -KeyLength 2048 `
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
 }
-$cerPath = Join-Path (Split-Path $Package -Parent) "vystriq-local-test.cer"
+$cerPath = Join-Path (Split-Path $Package -Parent) "preelock-local-test.cer"
 Export-Certificate -Cert $certificate -FilePath $cerPath -Force | Out-Null
 
 if ($TrustCertificate) {

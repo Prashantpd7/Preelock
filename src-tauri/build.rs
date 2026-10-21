@@ -4,7 +4,7 @@ fn main() {
             .file("native/macos.m")
             .flag("-fobjc-arc")
             .flag("-fblocks")
-            .compile("vystriq_native");
+            .compile("preelock_native");
         for framework in [
             "AppKit",
             "AVFoundation",

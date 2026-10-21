@@ -206,7 +206,9 @@ export function FirstRunPermissions() {
   const [open, setOpen] = useState(() => {
     try {
       return (
-        desktop && localStorage.getItem('vystriq-permissions-v2') !== 'seen'
+        desktop &&
+        localStorage.getItem('preelock-permissions-v2') !== 'seen' &&
+        localStorage.getItem('vystriq-permissions-v2') !== 'seen'
       );
     } catch {
       return desktop;
@@ -217,7 +219,7 @@ export function FirstRunPermissions() {
     <PermissionsGuide
       onClose={() => {
         try {
-          localStorage.setItem('vystriq-permissions-v2', 'seen');
+          localStorage.setItem('preelock-permissions-v2', 'seen');
         } catch {
           /* Still dismiss for this run. */
         }

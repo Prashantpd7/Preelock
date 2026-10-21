@@ -10,7 +10,7 @@ const versions = [
   read('package-lock.json').packages[''].version,
   read('src-tauri/tauri.conf.json').version,
   cargo.match(/^version = "([^"]+)"/m)?.[1],
-  lock.match(/name = "vystriq"\nversion = "([^"]+)"/)?.[1],
+  lock.match(/name = "preelock"\nversion = "([^"]+)"/)?.[1],
 ];
 if (!/^\d+\.\d+\.\d+$/.test(version) || versions.some((v) => v !== version)) {
   throw new Error('App and lockfile versions must match before release');

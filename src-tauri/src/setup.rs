@@ -20,7 +20,7 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
     // to a normal user-writable folder outside AppData.
     let base = if crate::platform::packaged() {
         let home = app.path().home_dir().map_err(|e| e.to_string())?;
-        let legacy = home.join("VYSTRIQ");
+        let legacy = home.join("VYSTRIQ"); // Existing packaged extension path; preserve pairing.
         if legacy.join("browser-extension").exists() {
             legacy // Preserve the path Chromium already registered and paired.
         } else {

@@ -23,7 +23,7 @@
     "rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
-    "native:probe": "clang -fobjc-arc -fblocks src-tauri/native/macos.m src-tauri/native/probe.m -framework AppKit -framework AVFoundation -framework Vision -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework UserNotifications -framework ServiceManagement -o /tmp/vystriq-native-probe && /tmp/vystriq-native-probe"
+    "native:probe": "clang -fobjc-arc -fblocks src-tauri/native/macos.m src-tauri/native/probe.m -framework AppKit -framework AVFoundation -framework Vision -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework UserNotifications -framework ServiceManagement -o /tmp/preelock-native-probe && /tmp/preelock-native-probe"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

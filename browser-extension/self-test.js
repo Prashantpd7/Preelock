@@ -34,8 +34,8 @@ export async function selfTest() {
   try {
     await check(
       'blocklist',
-      ['vystriq-test.invalid'],
-      'https://vystriq-test.invalid/',
+      ['preelock-test.invalid'],
+      'https://preelock-test.invalid/',
       true,
     );
     await check(
@@ -53,11 +53,11 @@ export async function selfTest() {
     await check(
       'allowlist',
       ['allowed.invalid'],
-      'https://vystriq-test.invalid/',
+      'https://preelock-test.invalid/',
       true,
     );
     await check('offline', [], 'http://127.0.0.1:47832/sync', false);
-    await check('offline', [], 'https://vystriq-test.invalid/', true);
+    await check('offline', [], 'https://preelock-test.invalid/', true);
     await check(
       'allowlist',
       ['github.com', 'whatsapp.com'],
