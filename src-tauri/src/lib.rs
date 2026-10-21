@@ -1,11 +1,13 @@
 pub mod attention;
 mod browser;
+mod camera;
 pub mod capabilities;
 mod clock;
 mod database;
 mod desktop_settings;
 mod engine;
 pub mod focus;
+mod lifecycle;
 pub mod models;
 pub mod platform;
 mod sessions;
@@ -262,6 +264,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if lifecycle::ending() {
+                    return;
+                }
                 // Covers the Mac close button/Cmd+W and Windows X/Alt+F4/
                 // taskbar close. A busy/poisoned engine fails closed.
                 api.prevent_close();
@@ -294,7 +299,8 @@ pub fn run() {
             // Covers Cmd+Q, application-menu Quit, Dock Quit and app.exit(code).
             // Only the checked shutdown helper can approve the final exit.
             tauri::RunEvent::ExitRequested { api, .. }
-                if !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
+                if !lifecycle::ending()
+                    && !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
             {
                 api.prevent_exit();
                 quit(app);

@@ -19,7 +19,7 @@ pub struct Engine {
     bridge: Option<Bridge>,
     bridge_error: String,
     native: bool,
-    camera_on: bool,
+    camera: crate::camera::Capture,
     camera_test_until: u64,
     failed: Option<String>,
 }
@@ -32,6 +32,14 @@ impl Engine {
         Self::open_inner(path, true)
     }
     fn open_inner(path: &Path, native: bool) -> Result<Self, String> {
+        let resume = if native {
+            crate::lifecycle::initialize(path)?
+        } else {
+            false
+        };
+        Self::open_recovery(path, native, resume)
+    }
+    fn open_recovery(path: &Path, native: bool, resume: bool) -> Result<Self, String> {
         let mut db = Database::open(path)?;
         let mut data = db.load()?;
         // Manual check-ins were removed; sessions saved with that
@@ -56,15 +64,27 @@ impl Engine {
             }
         }
         for s in &mut data.sessions {
-            // A clean shutdown always settles live sessions via shutdown(),
-            // so a session still live at startup means the app was killed
-            // mid-session (force quit, crash, power loss). Flag it and end
-            // it: a killed session cannot reconnect its restrictions
-            // cleanly and would be left stuck with no way out.
+            // Only a confirmed OS shutdown or a different boot restores work.
+            // Same-boot process loss keeps the existing Force Quit warning.
             if matches!(
                 s.status,
                 Status::Running | Status::Preparing | Status::Paused
             ) {
+                if resume {
+                    attention::recover(s, clock::now());
+                    if s.status != Status::Paused {
+                        s.status = if s.focus.network_required() {
+                            Status::Preparing
+                        } else {
+                            Status::Running
+                        };
+                    }
+                    s.ended_at = None;
+                    s.deadline_ms = None;
+                    s.report.camera_status = "off".into();
+                    s.report.event(clock::now(), "system_restart", "Session restored after system shutdown/restart; offline time does not count.");
+                    continue;
+                }
                 s.force_quit = true;
                 s.status = Status::Interrupted;
                 s.ended_at = Some(clock::now());
@@ -99,7 +119,7 @@ impl Engine {
             bridge,
             bridge_error,
             native,
-            camera_on: false,
+            camera: Default::default(),
             camera_test_until: 0,
             failed: None,
         };
@@ -213,28 +233,6 @@ impl Engine {
                 .map(|b| b.name)
                 .unwrap_or_else(|| id.to_string())
         }
-        // The camera may have been stopped mid-run; if permission is granted,
-        // turn it back on for this run instead of failing below.
-        {
-            let s = self
-                .data
-                .sessions
-                .iter_mut()
-                .find(|s| s.id == id)
-                .ok_or("Session not found.")?;
-            if s.focus.attention.verification == "camera_and_activity"
-                && !s.focus.camera
-                && self.native
-                && platform::camera_permission() == "granted"
-            {
-                s.focus.camera = true;
-                s.report.event(
-                    clock::now(),
-                    "camera_enabled",
-                    "Camera turned back on for this run.",
-                );
-            }
-        }
         let s = self
             .data
             .sessions
@@ -339,6 +337,9 @@ impl Engine {
             self.stop_test();
             self.preflight(id)?;
         }
+        if matches!(&action, Action::EnableCamera { .. }) {
+            self.stop_camera();
+        }
         let result = self.commit(Some(action));
         // Consent revocation or terminal transitions stop camera synchronously.
         if !self
@@ -379,10 +380,7 @@ impl Engine {
         }
     }
     fn stop_camera(&mut self) {
-        if self.camera_on {
-            platform::camera_stop();
-            self.camera_on = false;
-        }
+        self.camera.stop();
     }
     fn fail_open(&mut self, message: &str) {
         self.failed = Some(message.into());
@@ -668,29 +666,11 @@ impl Engine {
                 0
             };
             if s.status == Status::Running && s.focus.camera && self.native {
-                if !self.camera_on {
-                    self.camera_on = platform::camera_start();
-                }
-                let status = if self.camera_on {
-                    platform::camera_status()
-                } else {
-                    "camera_unavailable".into()
-                };
+                let status = self.camera.poll(tick);
                 signals.camera_status = status.clone();
                 if status != s.report.camera_status {
                     s.report.event(now, "camera_status", &status);
                     s.report.camera_status = status.clone();
-                }
-                if matches!(
-                    status.as_str(),
-                    "camera_unavailable"
-                        | "camera_interrupted"
-                        | "camera_stalled"
-                        | "analysis_error"
-                ) || platform::camera_permission() != "granted"
-                {
-                    s.focus.camera = false;
-                    s.report.event(now,"camera_disabled","Camera or analysis became unavailable; capture stopped. Session continues without camera.");
                 }
             }
         }
@@ -797,7 +777,77 @@ mod tests {
         assert!(!engine.data.sessions[1].force_quit);
     }
     #[test]
-    fn productive_engine_checkpoints_recovery_and_emergency_cleanup() {
+    fn os_restart_preserves_time_consent_and_user_pause() {
+        for (status, camera) in [
+            (Status::Running, true),
+            (Status::Running, false),
+            (Status::Paused, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("resume.sqlite");
+            let mut e = Engine::open(&path).unwrap();
+            e.execute(Action::CreateSession {
+                title: "Resume".into(),
+                minutes: 1,
+                allow_pause: true,
+                focus: Default::default(),
+            })
+            .unwrap();
+            let s = &mut e.data.sessions[0];
+            s.status = status.clone();
+            s.focus.camera = camera;
+            s.focus.attention.verification = if camera {
+                "camera_and_activity"
+            } else {
+                "activity_only"
+            }
+            .into();
+            s.focused_ms = 12000;
+            s.remaining_ms = 48000;
+            s.attention.checkpoint_at = Some(clock::now() - 60000);
+            e.db.save(&e.data).unwrap();
+            drop(e);
+            let mut e = Engine::open_recovery(&path, false, true).unwrap();
+            let s = &e.data.sessions[0];
+            assert_eq!(s.status, status);
+            assert_eq!(s.focus.camera, camera);
+            assert_eq!(s.focused_ms, 12000);
+            assert_eq!(s.remaining_ms, 48000);
+            assert!(!s.force_quit);
+            e.tick().unwrap();
+            assert_eq!(e.data.sessions[0].focused_ms, 12000);
+            assert_ne!(e.data.sessions[0].status, Status::Interrupted);
+        }
+    }
+    #[test]
+    fn os_restart_republishes_browser_rules_before_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut e, id) = network_engine(dir.path());
+        e.execute(Action::StartSession { id: id.clone() }).unwrap();
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
+        e.tick().unwrap();
+        e.db.save(&e.data).unwrap();
+        drop(e);
+        let mut e = Engine::open_recovery(&dir.path().join("test.sqlite"), false, true).unwrap();
+        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert!(!e.data.sessions[0].force_quit);
+        e.bridge = Some(Bridge::test_bridge(dir.path()));
+        e.publish();
+        e.tick().unwrap();
+        assert_eq!(e.data.sessions[0].focused_ms, 0);
+        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
+        e.tick().unwrap();
+        assert_eq!(e.data.sessions[0].status, Status::Running);
+    }
+    #[test]
+    fn productive_engine_checkpoints_recovery_and_normal_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("productive.sqlite");
         let mut e = Engine::open(&path).unwrap();
@@ -824,25 +874,18 @@ mod tests {
         assert_eq!(e.data.sessions[0].focused_ms, accepted);
         assert_eq!(e.data.sessions[0].attention.state, State::Recovering);
         // One more quiet tick: the attention state settles back and records
-        // another interval, so the emergency cleanup below has intervals
+        // another interval, so the normal cleanup below has intervals
         // spanning the whole session to preserve.
         e.sample_anchor = clock::continuous_ms().saturating_sub(1100);
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].focused_ms, accepted);
-        // Emergency exit while the engine is still alive; a later reopen
-        // must preserve the emergency state and the checkpoints. (Reopening
-        // a still-Running session instead would mean the app was killed,
-        // which now ends the session as Interrupted.)
-        e.execute(Action::EmergencyExit {
-            id,
-            confirmation: "END FOCUS".into(),
-        })
-        .unwrap();
+        // A flexible session ends normally; reopening preserves its history.
+        e.execute(Action::EndSession { id }).unwrap();
         drop(e);
         let mut e = Engine::open(&path).unwrap();
         let state = e.snapshot().unwrap();
-        assert_eq!(state.sessions[0].attention.state, State::EmergencyExit);
-        assert_eq!(state.sessions[0].status, Status::Interrupted);
+        assert_eq!(state.sessions[0].attention.state, State::Idle);
+        assert_eq!(state.sessions[0].status, Status::Ended);
         assert_eq!(state.sessions[0].focused_ms, accepted);
         let conn = rusqlite::Connection::open(path).unwrap();
         let count: i64 = conn
@@ -1032,12 +1075,7 @@ mod tests {
         e.tick().unwrap();
         let conn = rusqlite::Connection::open(dir.path().join("test.sqlite")).unwrap();
         conn.execute_batch("CREATE TRIGGER fail_save BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END;").unwrap();
-        assert!(e
-            .execute(Action::EmergencyExit {
-                id,
-                confirmation: "END FOCUS".into()
-            })
-            .is_err());
+        assert!(e.execute(Action::DisableCamera { id }).is_err());
         assert!(e.failed.is_some());
         assert_eq!(e.data.sessions[0].status, Status::Interrupted);
         assert!(e.browser_status().cleanup_pending);

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
 import { useFocusSetup } from '../hooks/useFocusSetup';
-import { Modal, SettingRow } from './SettingsControls';
+import { Modal, SettingRow, Toggle } from './SettingsControls';
 
 export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   const { setup, refresh } = useFocusSetup();
@@ -73,7 +73,7 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
                 ? 'Not available on Windows. Use Apps only.'
                 : cameraDenied
                   ? 'Denied — System Settings → Privacy & Security → Camera → turn on VYSTRIQ.'
-                  : 'Optional. Checks if you are at your desk. No video is saved.'
+                  : 'Optional. Permission is remembered by the system. Camera runs only in sessions where you select it (or during a camera test). No video is saved.'
             }
           >
             <button
@@ -95,6 +95,23 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
                     ? 'Open settings'
                     : 'Allow camera'}
             </button>
+          </SettingRow>
+          <SettingRow
+            title="Open at login"
+            hint={
+              info.login === 2
+                ? 'Approve VYSTRIQ in System Settings → General → Login Items.'
+                : 'Allow automatic reopening after you sign in. Unfinished sessions recover after shutdown or restart.'
+            }
+          >
+            <Toggle
+              label="Open at login"
+              checked={info.login === 1 || info.login === 2}
+              disabled={busy || info.login === undefined || info.login === -1}
+              onChange={(enabled) =>
+                void act(() => settingsAction({ type: 'login', enabled }))
+              }
+            />
           </SettingRow>
           <SettingRow
             title="Notifications"
@@ -179,15 +196,6 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
         </p>
       )}
       <div className="dialog-footer">
-        {setup && (
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() => void act(async () => {})}
-          >
-            Check again
-          </button>
-        )}
         <button onClick={onClose}>Done</button>
       </div>
     </Modal>
@@ -198,7 +206,7 @@ export function FirstRunPermissions() {
   const [open, setOpen] = useState(() => {
     try {
       return (
-        desktop && localStorage.getItem('vystriq-permissions-v1') !== 'seen'
+        desktop && localStorage.getItem('vystriq-permissions-v2') !== 'seen'
       );
     } catch {
       return desktop;
@@ -209,7 +217,7 @@ export function FirstRunPermissions() {
     <PermissionsGuide
       onClose={() => {
         try {
-          localStorage.setItem('vystriq-permissions-v1', 'seen');
+          localStorage.setItem('vystriq-permissions-v2', 'seen');
         } catch {
           /* Still dismiss for this run. */
         }

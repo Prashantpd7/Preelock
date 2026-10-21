@@ -502,10 +502,10 @@ export function Settings() {
                   </p>
                 </article>
                 <article>
-                  <h3>Stop safely</h3>
+                  <h3>Session completion</h3>
                   <p>
-                    Use Emergency exit during a session, or Quit from the menu
-                    bar icon, to release restrictions.
+                    Restrictions are released when the session finishes. You can
+                    quit VYSTRIQ from the menu bar when no session is active.
                   </p>
                 </article>
               </div>

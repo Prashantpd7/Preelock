@@ -51,8 +51,6 @@ export function SessionCard({
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [recovery, setRecovery] = useState(false);
-  const [confirmation, setConfirmation] = useState('');
   const [readyOpen, setReadyOpen] = useState(false);
   const [cameraWaiting, setCameraWaiting] = useState(false);
   const [allowingCamera, setAllowingCamera] = useState(false);
@@ -139,9 +137,6 @@ export function SessionCard({
   const cameraBlocked =
     cameraPermission === 'denied' || cameraPermission === 'restricted';
   const cameraReady = !needsCamera || cameraPermission === 'granted';
-  const cameraStopped = (report?.events ?? []).some(
-    (e) => e.kind === 'camera_disabled',
-  );
   // The paired extension must report that it lives in this session's
   // browser — a connection from any other browser does not count.
   // Prefers the per-session status fetched for the popup; falls back to
@@ -209,7 +204,7 @@ export function SessionCard({
       ? "Checks your apps and that you're at your desk."
       : 'Checks which app you are using.';
   const styleText = strictMode
-    ? 'Strict — no pausing. Use Emergency exit to stop early.'
+    ? 'Strict — no pausing or ending early.'
     : session.allow_pause
       ? 'Flexible — you can pause anytime.'
       : 'Pausing is turned off for this session.';
@@ -258,7 +253,7 @@ export function SessionCard({
             {session.duration_minutes} minutes ·{' '}
             {session.focus?.mode ?? 'standard'} ·{' '}
             {committed
-              ? 'Emergency exit available'
+              ? 'No early exit'
               : session.allow_pause
                 ? 'Flexible'
                 : 'No pause'}
@@ -509,14 +504,6 @@ export function SessionCard({
                   End session
                 </button>
               )}
-              {live && (
-                <button
-                  className="secondary"
-                  onClick={() => setRecovery(!recovery)}
-                >
-                  Emergency exit
-                </button>
-              )}
               {session.focus?.camera && live && (
                 <button
                   className="secondary"
@@ -528,55 +515,45 @@ export function SessionCard({
                   Stop camera
                 </button>
               )}
-              {!session.focus?.camera &&
-                live &&
-                cameraStopped &&
-                !cameraBlocked && (
-                  <button
-                    className="secondary"
-                    disabled={busy}
-                    onClick={() =>
-                      void execute({ type: 'enable_camera', id: session.id })
-                    }
-                  >
-                    Start camera
-                  </button>
+              {live &&
+                needsCamera &&
+                report?.camera_status !== 'person_detected' && (
+                  <>
+                    <p className="muted">
+                      {session.status === 'paused'
+                        ? 'Resume the session to restart camera checks.'
+                        : session.focus?.camera
+                          ? 'Camera checks retry automatically. Time resumes when you return and verification succeeds.'
+                          : 'Camera is stopped. Start it to resume camera verification.'}
+                    </p>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => {
+                        if (cameraBlocked)
+                          void api.openSetup('camera_settings');
+                        else if (cameraPermission !== 'granted')
+                          void api
+                            .requestCamera()
+                            .then(() => onSetupRefresh?.());
+                        else
+                          void execute({
+                            type: 'enable_camera',
+                            id: session.id,
+                          });
+                      }}
+                    >
+                      {cameraBlocked
+                        ? 'Open camera settings'
+                        : cameraPermission !== 'granted'
+                          ? 'Allow camera'
+                          : session.focus?.camera
+                            ? 'Retry camera'
+                            : 'Start camera'}
+                    </button>
+                  </>
                 )}
             </div>
-          )}
-          {recovery && live && (
-            <form
-              className="recovery"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (
-                  await execute({
-                    type: 'emergency_exit',
-                    id: session.id,
-                    confirmation,
-                  })
-                ) {
-                  setRecovery(false);
-                  setConfirmation('');
-                }
-              }}
-            >
-              <p>
-                Stop this session and release its blocks. If websites stay
-                blocked, disconnect Vystriq in the browser extension.
-              </p>
-              <label>
-                Type END FOCUS
-                <input
-                  value={confirmation}
-                  onChange={(e) => setConfirmation(e.target.value)}
-                  autoComplete="off"
-                />
-              </label>
-              <button disabled={busy || confirmation !== 'END FOCUS'}>
-                Confirm emergency exit
-              </button>
-            </form>
           )}
         </div>
       )}

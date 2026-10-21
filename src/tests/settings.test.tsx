@@ -169,3 +169,14 @@ it('does not report success when a native action fails', async () => {
   expect(await screen.findByRole('status')).toHaveTextContent('Disk is full');
   expect(screen.queryByText('Backup saved.')).not.toBeInTheDocument();
 });
+
+it('offers startup on first run and does not request camera again when granted', async () => {
+  const user = userEvent.setup();
+  render(<PermissionsGuide onClose={() => {}} />);
+  const startup = await screen.findByRole('switch', { name: 'Open at login' });
+  await waitFor(() => expect(startup).toBeEnabled());
+  await user.click(startup);
+  expect(settingsAction).toHaveBeenCalledWith({ type: 'login', enabled: true });
+  expect(screen.getByRole('button', { name: 'Allowed' })).toBeDisabled();
+  expect(api.requestCamera).not.toHaveBeenCalled();
+});

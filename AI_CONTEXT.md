@@ -18,7 +18,7 @@ state belong to the local operating-system user. A new computer/user profile
 starts with an empty local database.
 
 The app is designed to make a deliberate focus commitment strong, but it is
-not an administrator-proof lock. Users can use emergency exit controls, force
+not an administrator-proof lock. Users can force
 quit the process, disable permissions, or bypass browser restrictions outside
 the supported extension path. Do not describe enforcement as technically
 impossible to stop.
@@ -176,7 +176,7 @@ unknown intervals do not earn productive credit. A session can include:
 - optional attention tracking
 - optional local camera presence checks
 - pause policy
-- deliberate emergency exit
+- strict sessions reject in-app early-exit commands
 
 When a live session is active, closing the window and application quit requests
 are guarded. The tray shows the live timer instead of a normal Quit item.
@@ -337,3 +337,15 @@ Automated CI does not replace these manual checks:
    verify the configured distracting sites are blocked in an Incognito window.
 3. On Windows, test installer installation, permissions, browser pairing,
    camera behavior, application minimization, and uninstall/reinstall.
+
+## Local recovery and session-control update (21 October 2026)
+
+OS restart/logoff recovery and camera retries are implemented; see
+`docs/RESTART_RECOVERY.md`. Same-boot Force Quit keeps its existing warning.
+First-run setup includes Open at login. The Check again button was removed.
+The emergency-exit button, form, and availability text were removed and the old
+IPC command now rejects requests. Strict sessions cannot be paused, ended early,
+or deleted while active. Flexible-session controls retain their existing policy.
+Historical emergency-exit records still load. OS termination remains possible.
+Windows runtime verification and MSIX Store packaging remain separate work.
+Publishing source code does not replace existing release installers.

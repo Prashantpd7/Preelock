@@ -85,7 +85,6 @@ export type Action =
         | 'restart_session';
       id: string;
     }
-  | { type: 'emergency_exit'; id: string; confirmation: string }
   | { type: 'disable_camera' | 'enable_camera'; id: string }
   | { type: 'correct_interval'; id: string; interval_id: string; note: string }
   | { type: 'create_task'; title: string }

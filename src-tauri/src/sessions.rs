@@ -75,31 +75,10 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 force_quit: false,
             });
         }
-        Action::EmergencyExit { id, confirmation } => {
-            if confirmation != "END FOCUS" {
-                return Err("Type END FOCUS to confirm emergency recovery.".into());
-            }
-            let s = data
-                .sessions
-                .iter_mut()
-                .find(|s| s.id == id)
-                .ok_or("Session not found.")?;
-            if !matches!(
-                s.status,
-                Status::Running | Status::Paused | Status::Preparing
-            ) {
-                return Err("Session is not active.".into());
-            }
-            s.status = Status::Interrupted;
-            s.attention.state = crate::attention::State::EmergencyExit;
-            s.attention.reason = "Emergency recovery requested".into();
-            s.ended_at = Some(now);
-            s.deadline_ms = None;
-            s.report.event(
-                now,
-                "emergency_exit",
-                "Deliberate emergency exit; restrictions released.",
-            );
+        // Reject the old IPC command as well as removing its UI. Keep the
+        // variant readable for compatibility with an older running frontend.
+        Action::EmergencyExit { .. } => {
+            return Err("Early exit is unavailable.".into());
         }
         Action::CorrectInterval {
             id,
@@ -120,6 +99,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 .find(|s| s.id == id)
                 .ok_or("Session not found.")?;
             s.focus.camera = false;
+            s.report.camera_status = "off".into();
             s.report
                 .event(now, "camera_disabled", "Camera consent withdrawn.");
         }
@@ -129,7 +109,10 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 .iter_mut()
                 .find(|s| s.id == id)
                 .ok_or("Session not found.")?;
-            if !matches!(s.status, Status::Running | Status::Paused) {
+            if !matches!(
+                s.status,
+                Status::Running | Status::Paused | Status::Preparing
+            ) {
                 return Err("The camera can only be restarted during an active session.".into());
             }
             s.focus.camera = true;
@@ -189,7 +172,10 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 Status::Running | Status::Paused | Status::Preparing
             ) && data.sessions[index].focus.mode != crate::focus::Mode::Standard
             {
-                return Err("Committed sessions require the deliberate emergency exit.".into());
+                return Err(
+                    "Committed sessions cannot be paused, ended early, or deleted while active."
+                        .into(),
+                );
             }
             data.sessions.remove(index);
         }
@@ -261,7 +247,10 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 && s.status != Status::Ready
                 && matches!(target, Status::Paused | Status::Ended)
             {
-                return Err("Committed sessions require the deliberate emergency exit.".into());
+                return Err(
+                    "Committed sessions cannot be paused, ended early, or deleted while active."
+                        .into(),
+                );
             }
             let valid = match target {
                 Status::Running => matches!(s.status, Status::Ready | Status::Paused),
@@ -416,7 +405,7 @@ mod tests {
         assert_eq!(d.sessions[0].focused_ms, 10_000);
     }
     #[test]
-    fn strict_commitment_requires_deliberate_emergency_exit() {
+    fn strict_commitment_rejects_all_early_exit_commands() {
         let mut d = data(true);
         d.sessions[0].focus.mode = crate::focus::Mode::Strict;
         let id = d.sessions[0].id.clone();
@@ -431,21 +420,17 @@ mod tests {
             2000
         )
         .is_err());
-        apply(
+        assert!(apply(
             &mut d,
             Action::EmergencyExit {
-                id,
-                confirmation: "END FOCUS".into(),
+                id: id.clone(),
+                confirmation: "END FOCUS".into()
             },
             2000,
         )
-        .unwrap();
-        assert_eq!(d.sessions[0].status, Status::Interrupted);
-        assert!(d.sessions[0].deadline_ms.is_none());
-        assert_eq!(
-            d.sessions[0].report.events.last().unwrap().kind,
-            "emergency_exit"
-        );
+        .is_err());
+        assert!(apply(&mut d, Action::DeleteSession { id }, 2000).is_err());
+        assert_eq!(d.sessions[0].status, Status::Running);
     }
     #[test]
     fn legacy_records_get_safe_defaults() {

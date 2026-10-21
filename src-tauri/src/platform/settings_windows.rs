@@ -5,8 +5,41 @@ use winreg::{enums::*, RegKey};
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
     APP.set(app.clone())
-        .map_err(|_| "Settings already initialized.".into())
+        .map_err(|_| "Settings already initialized.".to_string())?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window unavailable")?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    if unsafe {
+        windows_sys::Win32::UI::Shell::SetWindowSubclass(hwnd.0.cast(), Some(shutdown_proc), 1, 0)
+    } == 0
+    {
+        return Err("Could not install Windows shutdown handler".into());
+    }
+    Ok(())
+}
+// Observe the OS's confirmed shutdown, not a query that can be cancelled.
+unsafe extern "system" fn shutdown_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::{
+        Shell::DefSubclassProc,
+        WindowsAndMessaging::{WM_ENDSESSION, WM_QUERYENDSESSION},
+    };
+    if message == WM_QUERYENDSESSION {
+        return 1;
+    }
+    if message == WM_ENDSESSION && wparam != 0 {
+        crate::lifecycle::system_shutdown();
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 fn enabled(key: &str, value: &str) -> bool {
     RegKey::predef(HKEY_CURRENT_USER)

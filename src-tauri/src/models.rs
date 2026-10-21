@@ -30,9 +30,8 @@ pub struct Session {
     pub report: crate::focus::FocusReport,
     #[serde(default)]
     pub attention: crate::attention::Tracking,
-    /// Set at startup when this session was still live: a clean shutdown
-    /// always settles live sessions first, so this means the app was
-    /// killed mid-session (force quit, crash, power loss).
+    /// Set when a live session is reopened without evidence of an OS restart
+    /// or orderly logout/shutdown (for example, same-boot Force Quit).
     #[serde(default)]
     pub force_quit: bool,
 }

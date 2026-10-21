@@ -29,7 +29,7 @@ vi.mock('../services/api', () => ({
   },
 }));
 beforeEach(() => {
-  localStorage.setItem('vystriq-permissions-v1', 'seen');
+  localStorage.setItem('vystriq-permissions-v2', 'seen');
   window.location.hash = '#/';
   vi.clearAllMocks();
   useAppStore.setState({

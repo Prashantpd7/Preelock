@@ -435,8 +435,8 @@ export function Sessions() {
                 </fieldset>
                 {strict && (
                   <p className="small muted">
-                    Emergency exit is always available. App blocking hides
-                    windows; it is not a device lock.
+                    Strict sessions cannot be paused or ended early in the app.
+                    App blocking hides windows; it is not a device lock.
                   </p>
                 )}
               </>

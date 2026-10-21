@@ -3,7 +3,7 @@
 mod mac {
     use std::ffi::{c_char, CStr, CString};
     unsafe extern "C" {
-        fn vy_install_quit_guard(callback: extern "C" fn()) -> i32;
+        fn vy_install_quit_guard(callback: extern "C" fn(), shutdown: extern "C" fn()) -> i32;
         fn vy_settings_info() -> *mut c_char;
         fn vy_login(enabled: i32) -> *mut c_char;
         fn vy_notification_permission() -> i32;
@@ -30,7 +30,10 @@ mod mac {
         QUIT_APP
             .set(app.clone())
             .map_err(|_| "Quit guard already installed.")?;
-        if unsafe { vy_install_quit_guard(native_quit_requested) } == 0 {
+        if unsafe {
+            vy_install_quit_guard(native_quit_requested, crate::lifecycle::system_shutdown)
+        } == 0
+        {
             return Err("Could not install the Mac quit guard.".into());
         }
         Ok(())

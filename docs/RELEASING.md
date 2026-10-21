@@ -95,3 +95,31 @@ use a new version if an existing release/tag has already been created.
 
 See [INSTALLATION.md](INSTALLATION.md) for beginner-facing instructions and
 [RELEASE_NOTES.md](RELEASE_NOTES.md) for the public beta's verification limits.
+
+## Owner checklist after further development
+
+Pushing commits updates source code only. The installed local app changes only
+when rebuilt and installed; published DMG/EXE files do not change automatically.
+
+1. Finish development and Windows verification. Commit and push to `main`.
+2. Choose an unused higher version (for example, `0.4.2` if still unused).
+   Update `package.json`, both root versions in `package-lock.json`,
+   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and only the `vystriq`
+   package version in `src-tauri/Cargo.lock`. Run
+   `node scripts/release-version.mjs` to verify consistency.
+3. Update `docs/RELEASE_NOTES.md`, then commit and push the version and notes.
+4. On GitHub open the repository → Actions → **Free public beta release** →
+   **Run workflow** → select `main` → **Run workflow**. This workflow publishes
+   automatically after successful checks; it is not merely a build preview.
+5. Wait for all jobs to succeed. Inspect failures rather than bypassing checks.
+   The existing workflow creates two Mac DMGs (Apple Silicon and Intel) and
+   one Windows x64 EXE, then publishes them as a new beta release.
+6. Open the repository's Releases page. Download and test the new installers,
+   then update website/README download links to those actual new assets.
+   Existing installations must install the new version; this app currently has
+   no automatic updater.
+7. Microsoft Store submission is separate. Once MSIX support is implemented,
+   follow that packaging workflow and upload its package through Partner Center.
+   The current DMG/EXE release workflow does not build or submit MSIX packages.
+
+Recheck this checklist if a later agent changes workflow names or behavior.
