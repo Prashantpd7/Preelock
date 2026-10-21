@@ -12,7 +12,7 @@ It is supplied for owner upload and is not claimed to be Store-certified.
 Mac builds are ad-hoc signed, not notarized. Windows direct installers are unsigned.
 Windows camera presence monitoring remains unavailable. See the
 [installation guide](https://github.com/Prashantpd7/Preelock/blob/main/docs/INSTALLATION.md)
-and [compatibility audit](REBRANDING.md).
+and [compatibility audit](https://github.com/Prashantpd7/Preelock/blob/main/docs/REBRANDING.md).
 
 Release publication requires automated tests, Mac bundle and DMG checks, Windows
 NSIS install/start/uninstall checks, MSIX structural checks and uploaded checksums.

@@ -153,6 +153,10 @@ jobs:
           git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" && exit 1 || status=$?
           [[ "$status" -eq 2 ]] || exit 1
           cd installers
+          # Multiple Windows upload paths retain their common target/ hierarchy.
+          # Normalize it before checking names and hashing the public assets.
+          mv release/bundle/nsis/*.exe .
+          mv msix/*.msix msix/msix-build-info.json .
           test -f "Preelock_${VERSION}_aarch64.dmg"
           test -f "Preelock_${VERSION}_x64.dmg"
           test -f "Preelock_${VERSION}_x64-setup.exe"

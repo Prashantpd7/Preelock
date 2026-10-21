@@ -86,3 +86,28 @@ Unverified until separately exercised: real-device Store update/install/uninstal
 WACK certification, browser UI pairing/blocking, interactive camera/notification
 permissions and OS download approval prompts. Windows camera presence remains
 unavailable. No package is submitted to Partner Center automatically.
+
+## Verified release build
+
+Source commit: `0e9f35572df1770afd887cc87d6b0f1f793a1081`.
+[Release workflow](https://github.com/Prashantpd7/Preelock/actions/runs/39657491335).
+Windows: 53 Rust tests, MSIX structure and NSIS upgrade/start/uninstall passed.
+Independent downloaded-MSIX inspection confirmed x64 PE architecture, matching
+source-executable hash, identity, publisher, startup consent defaults, extension
+name/version and absence of private data. MSIX SHA-256:
+
+```text
+e9385c23dc5b45f4b48f5cd1d26a7e2853f7e531b411cd85b3cdb49407e9c6e8
+```
+
+WACK has not been run. It requires an active Windows client user session; this
+workspace is macOS and the hosted packaging runner is Windows Server 2022.
+Run certification and actual Store upgrade testing on a Windows device before
+submission, following [Microsoft's WACK instructions](https://learn.microsoft.com/en-us/windows/uwp/debug-test-perf/windows-app-certification-kit).
+
+Both Mac architecture jobs also passed, including bundle seals, DMG integrity
+and disposable-profile startup/persistence. The release job encountered the
+Windows artifact's nested directory layout before uploading anything. The
+workflow now normalizes those paths. This release uses the same validated
+artifacts, published through a draft with post-upload SHA-256 verification; no
+installer rebuild or failed integrity check was bypassed.

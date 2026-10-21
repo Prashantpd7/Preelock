@@ -181,7 +181,7 @@ To re-check an artifact later, including one downloaded from CI:
 powershell -File scripts/verify-msix.ps1 -Package <path> `
   -ExpectedIdentity "Prashantpd7.VYSTRIQ" `
   -ExpectedPublisher "CN=2A3BE073-2A0A-47AA-958D-9543D60D234A" `
-  -ExpectedVersion 1.4.1.0 -ExpectedArchitecture x64
+  -ExpectedVersion 1.5.0.0 -ExpectedArchitecture x64
 ```
 
 ### Install and test the packaged app without paying for a certificate
@@ -194,13 +194,13 @@ build:
 powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
   -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=Preelock Local Test"
 powershell -File scripts/sign-msix-dev.ps1 `
-  -Package src-tauri/target/msix/VYSTRIQ_0.4.1_x64-validation.msix `
-  -TrustCertificate
-Add-AppxPackage -Path src-tauri/target/msix/VYSTRIQ_0.4.1_x64-validation.msix
+  -Package src-tauri/target/msix/Preelock_0.5.0_x64.msix `
+  -Subject "CN=Preelock Local Test" -TrustCertificate
+Add-AppxPackage -Path src-tauri/target/msix/Preelock_0.5.0_x64.msix
 Get-AppxPackage VYSTRIQ.LocalTest | Select-Object PackageFullName, InstallLocation
 ```
 
-Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!Preelock`.
+Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!VYSTRIQ`.
 Uninstall with `Remove-AppxPackage -Package <PackageFullName>`.
 
 Signing is for local testing only. Never distribute or upload a self-signed
@@ -393,11 +393,10 @@ bundled resources match the repository byte for byte.
 Account registration and name reservation are already done. Fill in
 [PARTNER_CENTER_SHEET.md](PARTNER_CENTER_SHEET.md) field by field. What remains:
 
-1. Merge this branch to `main` so the workflow can also be run on demand
-   (workflow_dispatch requires the default branch). A push touching
+1. The packaging workflow is available on `main`. A push touching
    `windows/msix/**`, the packaging scripts, or the workflow already builds it
    from any branch.
-2. Download the `vystriq-msix-x64` artifact, compare its SHA-256 with
+2. Download the `preelock-msix-x64` artifact, compare its SHA-256 with
    `SHA256SUMS.txt`, and re-run `scripts/verify-msix.ps1` against it.
 3. On a Windows machine install the package (sign a validation copy first, §5),
    run the §6 test plan and the WACK. Fix anything that fails before uploading.

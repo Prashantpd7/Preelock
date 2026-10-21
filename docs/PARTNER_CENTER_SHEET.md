@@ -10,7 +10,7 @@ provide.
 | Field           | Value                                                                              |
 | --------------- | ---------------------------------------------------------------------------------- |
 | Package file    | `Preelock_0.5.0_x64.msix`                                                          |
-| SHA-256         | See the release SHA256SUMS.txt after validation                                    |
+| SHA-256         | `e9385c23dc5b45f4b48f5cd1d26a7e2853f7e531b411cd85b3cdb49407e9c6e8`                 |
 | Package version | `1.5.0.0` (the fourth segment is reserved by the Store and left at 0)              |
 | Architecture    | x64 only                                                                           |
 | Signature       | Unsigned. The Store re-signs accepted packages; do not upload a self-signed build. |
