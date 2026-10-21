@@ -54,6 +54,7 @@
         <uap:DefaultTile
           Square71x71Logo="Assets\Square71x71Logo.png"
           Square310x310Logo="Assets\Square310x310Logo.png"
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
           ShortName="VYSTRIQ" />
       </uap:VisualElements>
       <Extensions>

@@ -118,6 +118,7 @@ try {
         "Assets/Square71x71Logo.png"  = @(71, 71)
         "Assets/Square150x150Logo.png" = @(150, 150)
         "Assets/Square310x310Logo.png" = @(310, 310)
+        "Assets/Wide310x150Logo.png"  = @(310, 150)
     }
     foreach ($asset in $sizes.Keys) {
         $path = Join-Path $extract $asset

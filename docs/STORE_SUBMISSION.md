@@ -33,14 +33,14 @@ were supplied on 21 October 2026 and are stored in
 `windows/msix/identity.json`, which `scripts/package-msix.ps1` uses by default so
 local and CI builds cannot drift. Explicit script parameters still override it.
 
-| Value                   | Supplied                                       | Used as                                      |
-| ----------------------- | ---------------------------------------------- | -------------------------------------------- |
-| Product name            | VYSTRIQ                                        | Display name, listing                        |
-| Identity Name           | `Prashantpd7.VYSTRIQ`                          | `Identity/@Name`                             |
-| Publisher               | `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`      | `Identity/@Publisher`                        |
-| Publisher display name  | `Prashantpd7`                                  | `Properties/PublisherDisplayName`            |
-| Package Family Name     | `Prashantpd7.VYSTRIQ_jkzj39eszd2zgp`           | Informational; printed by `Get-AppxPackage`  |
-| Store ID                | `9NCZGZM843N5`                                 | Store listing link                           |
+| Value                  | Supplied                                  | Used as                                     |
+| ---------------------- | ----------------------------------------- | ------------------------------------------- |
+| Product name           | VYSTRIQ                                   | Display name, listing                       |
+| Identity Name          | `Prashantpd7.VYSTRIQ`                     | `Identity/@Name`                            |
+| Publisher              | `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A` | `Identity/@Publisher`                       |
+| Publisher display name | `Prashantpd7`                             | `Properties/PublisherDisplayName`           |
+| Package Family Name    | `Prashantpd7.VYSTRIQ_jkzj39eszd2zgp`      | Informational; printed by `Get-AppxPackage` |
+| Store ID               | `9NCZGZM843N5`                            | Store listing link                          |
 
 The Identity Name and Publisher must match Partner Center **character for
 character**, including case and punctuation. The packager writes both into the
@@ -347,7 +347,7 @@ Run on macOS 21 October 2026. Nothing below was executed on Windows.
 | `cargo test`                                                                                            | Pass, 53 tests (51 existing + 2 new packaging tests)                                                 |
 | macOS app bundle build (`tauri build --bundles app`)                                                    | Pass                                                                                                 |
 | `scripts/verify-macos-bundle.sh` on the built bundle                                                    | Pass: signature valid on disk, designated requirement satisfied, camera usage string present         |
-| Manifest template render + XML parse + referenced asset sizes                                           | Pass (all five Store assets exist at the declared sizes)                                             |
+| Manifest template render + XML parse + referenced asset sizes                                           | Pass (all six Store assets exist at the declared sizes)                                              |
 | `Windows.ApplicationModel.StartupTask` calls type-checked for `x86_64-pc-windows-msvc` (isolated crate) | Pass                                                                                                 |
 | Full `cargo check --target x86_64-pc-windows-msvc` from macOS                                           | Failed at bundled SQLite C compilation (no MSVC toolchain); CI runs this on Windows instead          |
 | Packaging scripts parsed by PowerShell 7.6                                                              | Pass                                                                                                 |
@@ -375,19 +375,40 @@ repository; the script writes them next to the build output when it runs.
 | ARM64                                     | Not built. Only x64 is produced and tested.                                                                                                                                |
 | WebView2 on clean Windows 10              | See §7.                                                                                                                                                                    |
 
-## 12. Steps to submit (once §5 and §6 pass)
+## 12. Steps to submit
 
-1. Create the free Partner Center developer account and verify your identity.
-2. Reserve the product name; copy Identity Name, Publisher and Publisher display
-   name.
-3. Run the MSIX workflow with those three values (or build locally), download the
-   artifact, and compare its SHA-256 with `SHA256SUMS.txt`.
-4. Run the Windows test plan in §6 and the WACK; fix anything that fails.
-5. Publish `docs/PRIVACY_POLICY.md` at a URL you control; add the support contact.
-6. Create the submission: packages, listing copy from §9, screenshots, category
-   Productivity, pricing Free, markets, age rating, privacy policy URL, and the
-   `runFullTrust` justification from §8.
-7. Submit for certification. Microsoft re-signs the package and publishes it
+Account registration and name reservation are already done. What remains:
+
+1. Merge this branch to `main` so the workflow can also be run on demand
+   (workflow_dispatch requires the default branch). A push touching
+   `windows/msix/**`, the packaging scripts, or the workflow already builds it
+   from any branch.
+2. Download the `vystriq-msix-x64` artifact, compare its SHA-256 with
+   `SHA256SUMS.txt`, and re-run `scripts/verify-msix.ps1` against it.
+3. On a Windows machine install the package (sign a validation copy first, §5),
+   run the §6 test plan and the WACK. Fix anything that fails before uploading.
+4. Publish `docs/PRIVACY_POLICY.md` at a URL you control and choose a support
+   contact. Both are required listing fields.
+5. Capture genuine Windows screenshots of the app (at least one; 1366×768 or
+   larger). Do not reuse macOS screenshots or fabricate UI.
+6. In Partner Center open the reserved product → Submission:
+   - **Packages:** upload the `.msix` (unsigned is expected; the Store re-signs).
+   - **Store listing:** description and features from §9, category Productivity,
+     screenshots, support contact, privacy policy URL, copyright.
+   - **Pricing and availability:** Free, markets, release date.
+   - **Age ratings:** complete the questionnaire honestly (no user-generated
+     content, no data collection).
+   - **Properties:** declare the app accesses the camera on macOS only if the
+     listing covers both platforms; Windows builds do not.
+   - **Submission options / restricted capability:** paste the `runFullTrust`
+     justification from §8 when prompted.
+   - **Notes for certification:** paste the reviewer notes from §9, including how
+     browser filtering is enabled and that it is optional.
+7. Submit for certification. Microsoft validates and re-signs the package; then
+   it is published. Upload is not approval, and approval is not guaranteed.
+8. After publication, update `README.md`/`docs/INSTALLATION.md` with the Store
+   link while keeping the DMG and NSIS downloads working.
+9. Submit for certification. Microsoft re-signs the package and publishes it
    after review. Uploading is not the same as approval.
-8. Only after publication, update README/`docs/INSTALLATION.md` download links to
-   point at the Store listing. Keep the DMG/NSIS downloads working.
+10. Only after publication, update README/`docs/INSTALLATION.md` download links to
+    point at the Store listing. Keep the DMG/NSIS downloads working.

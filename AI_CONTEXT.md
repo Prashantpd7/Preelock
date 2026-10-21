@@ -361,10 +361,14 @@ MSIX packaging exists but has not been built, installed or tested on Windows
 from this checkout. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for
 the exact status, owner-supplied values, listing copy and manual test plan.
 
-- `windows/msix/AppxManifest.xml.template` holds Partner Center placeholders
-  (`Identity Name`, `Publisher`, `PublisherDisplayName`). `scripts/package-msix.ps1`
-  refuses to build a package without them unless `-AllowPlaceholderIdentity` is
-  used, which marks output `-validation`.
+- `windows/msix/identity.json` holds the reserved Partner Center identity
+  (`Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`,
+  display name `Prashantpd7`). `scripts/package-msix.ps1` uses it by default and
+  `windows/msix/AppxManifest.xml.template` receives the rendered values. The
+  script refuses to build without a real identity unless
+  `-AllowPlaceholderIdentity` is used, which marks output `-validation`.
+  The MSIX package version is independent of the app version: `0.4.1` maps to
+  `1.4.1.0` because the Store rejects a zero first segment; keep it increasing.
 - `scripts/verify-msix.ps1` checks an artifact structurally.
   `scripts/sign-msix-dev.ps1` makes a free self-signed certificate for local
   sideload testing only. The Store re-signs accepted packages.
