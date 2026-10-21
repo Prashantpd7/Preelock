@@ -17,9 +17,8 @@ if (!$setup.WaitForExit(120000)) { throw "Installer timed out" }
 if ($setup.ExitCode -ne 0) { throw "NSIS failed: $($setup.ExitCode)" }
 $executable = Join-Path $installDir "vystriq.exe"
 if (!(Test-Path $executable)) { throw "Installed executable missing" }
-if ((Get-FileHash $executable).Hash -ne (Get-FileHash "src-tauri/target/release/vystriq.exe").Hash) {
-    throw "Installed executable differs from built executable"
-}
+python scripts/verify-windows-payload.py "src-tauri/target/release/vystriq.exe" $executable
+if ($LASTEXITCODE -ne 0) { throw "Installed executable integrity validation failed" }
 $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
 foreach ($entry in $config.bundle.resources.PSObject.Properties) {
     $source = Join-Path "src-tauri" $entry.Name
