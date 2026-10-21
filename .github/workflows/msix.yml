@@ -1,0 +1,95 @@
+name: Build and validate Store MSIX
+# Builds the Microsoft Store package on a standard free windows-2022 runner and
+# validates its structure. It does not sign, install, upload or publish.
+# Nothing here contacts Partner Center.
+# The package identity comes from windows/msix/identity.json (Partner Center
+# reserved product). The inputs below are optional overrides for a different
+# identity; leave them empty for the VYSTRIQ package. See
+# docs/STORE_SUBMISSION.md.
+on:
+  push:
+    # Rebuild the package whenever packaging inputs change, on any branch, so a
+    # branch can be validated before it lands on main.
+    paths:
+      - 'windows/msix/**'
+      - 'scripts/package-msix.ps1'
+      - 'scripts/verify-msix.ps1'
+      - '.github/workflows/msix.yml'
+  workflow_dispatch:
+    inputs:
+      identity_name:
+        description: 'Optional override for windows/msix/identity.json'
+        required: false
+        default: ''
+      publisher:
+        description: 'Optional override (CN=...); defaults to identity.json'
+        required: false
+        default: ''
+      publisher_display_name:
+        description: 'Optional override; defaults to identity.json'
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  msix:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.13.1
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable action
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Compile Windows code and run Rust tests
+        run: |
+          npm run rust:check
+          npm run rust:test
+      - name: Build the Windows binary and MSIX
+        shell: pwsh
+        env:
+          IDENTITY_NAME: ${{ inputs.identity_name }}
+          PUBLISHER: ${{ inputs.publisher }}
+          PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+        run: |
+          $scriptArgs = @("-ExecutionPolicy", "Bypass", "-File", "scripts/package-msix.ps1", "-Build")
+          if ($env:IDENTITY_NAME) {
+            if (!$env:PUBLISHER -or !$env:PUBLISHER_DISPLAY_NAME) {
+              throw "Publisher and publisher display name are required with an identity name."
+            }
+            $scriptArgs += @("-IdentityName", $env:IDENTITY_NAME, "-Publisher", $env:PUBLISHER, "-PublisherDisplayName", $env:PUBLISHER_DISPLAY_NAME)
+          }
+          # Without overrides the script uses windows/msix/identity.json and fails
+          # if no real Partner Center identity is available.
+          powershell @scriptArgs
+          if ($LASTEXITCODE -ne 0) { throw "MSIX packaging failed ($LASTEXITCODE)" }
+      - name: Re-verify the produced package independently
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem src-tauri/target/msix/*.msix)
+          if ($packages.Count -ne 1) { throw "Expected exactly one MSIX, found $($packages.Count)" }
+          powershell -ExecutionPolicy Bypass -File scripts/verify-msix.ps1 -Package $packages[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "MSIX verification failed ($LASTEXITCODE)" }
+      - name: Summarise artifacts
+        shell: pwsh
+        run: |
+          Get-Content src-tauri/target/msix/SHA256SUMS.txt
+          Get-Content src-tauri/target/msix/msix-build-info.json
+          Get-Content src-tauri/target/msix/SHA256SUMS.txt >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vystriq-msix-x64
+          path: |
+            src-tauri/target/msix/*.msix
+            src-tauri/target/msix/SHA256SUMS.txt
+            src-tauri/target/msix/msix-build-info.json
+          if-no-files-found: error

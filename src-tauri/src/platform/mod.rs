@@ -59,5 +59,16 @@ pub use unsupported::*;
 
 #[cfg(any(target_os = "windows", test))]
 mod browser_paths;
+pub mod packaging;
 #[cfg(target_os = "windows")]
 pub mod settings_windows;
+
+/// True only for an installed MSIX package (Microsoft Store or sideload).
+#[cfg(target_os = "windows")]
+pub fn packaged() -> bool {
+    settings_windows::is_packaged()
+}
+#[cfg(not(target_os = "windows"))]
+pub fn packaged() -> bool {
+    false
+}

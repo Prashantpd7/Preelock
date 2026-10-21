@@ -118,8 +118,11 @@ when rebuilt and installed; published DMG/EXE files do not change automatically.
    then update website/README download links to those actual new assets.
    Existing installations must install the new version; this app currently has
    no automatic updater.
-7. Microsoft Store submission is separate. Once MSIX support is implemented,
-   follow that packaging workflow and upload its package through Partner Center.
-   The current DMG/EXE release workflow does not build or submit MSIX packages.
+7. Microsoft Store submission is separate and none of the workflows above upload
+   to Partner Center. MSIX packaging, validation, owner-supplied identity values
+   and the manual Windows test plan are documented in
+   [STORE_SUBMISSION.md](STORE_SUBMISSION.md). The MSIX package is built by
+   `.github/workflows/msix.yml`, not by the DMG/EXE release workflow. Keep the
+   DMG/EXE downloads available after a Store release.
 
 Recheck this checklist if a later agent changes workflow names or behavior.

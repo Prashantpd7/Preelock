@@ -1,9 +1,67 @@
 //! Windows settings use native dialogs, per-user startup registration and OS alerts.
+use crate::platform::packaging::{self, StartupState};
 use std::sync::OnceLock;
 use tauri_plugin_notification::NotificationExt;
 use winreg::{enums::*, RegKey};
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+/// An MSIX package installs under `WindowsApps` and virtualises HKCU writes,
+/// so a registry Run entry is invisible at sign-in. Installed packages use the
+/// manifest `startupTask` extension through the Windows API instead.
+pub fn is_packaged() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(packaging::is_packaged_exe))
+        .unwrap_or(false)
+}
+fn startup_task() -> Result<windows::ApplicationModel::StartupTask, String> {
+    use windows::core::HSTRING;
+    windows::ApplicationModel::StartupTask::GetAsync(&HSTRING::from(packaging::STARTUP_TASK_ID))
+        .and_then(|operation| operation.join())
+        .map_err(|error| error.message())
+}
+fn packaged_login_value() -> i32 {
+    match startup_task().and_then(|task| task.State().map_err(|error| error.message())) {
+        Ok(state) => StartupState::from_winrt(state.0).login_value(),
+        Err(error) => {
+            log::warn!("Could not read the Windows startup task: {error}");
+            -1
+        }
+    }
+}
+fn set_packaged_login(on: bool) -> Result<(), String> {
+    let task = startup_task()?;
+    if on {
+        task.RequestEnableAsync()
+            .and_then(|operation| operation.join())
+            .map_err(|error| error.message())?;
+    } else {
+        task.Disable().map_err(|error| error.message())?;
+    }
+    // Report what Windows actually stored instead of assuming the request won.
+    let state = StartupState::from_winrt(task.State().map_err(|error| error.message())?.0);
+    let stored_as_requested = match on {
+        true => state.is_on(),
+        false => !state.is_on(),
+    };
+    if stored_as_requested {
+        return Ok(());
+    }
+    Err(match state {
+        StartupState::PolicyOff => {
+            "Windows policy prevents VYSTRIQ from opening when you sign in.".into()
+        }
+        StartupState::PolicyOn => {
+            "Windows policy keeps VYSTRIQ opening when you sign in; change it in your organization's policy.".into()
+        }
+        _ if on => {
+            "Windows did not enable VYSTRIQ at sign-in. Enable it in Settings > Apps > Startup."
+                .into()
+        }
+        _ => "Windows did not disable VYSTRIQ at sign-in.".into(),
+    })
+}
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     APP.set(app.clone())
@@ -55,20 +113,32 @@ pub fn info() -> Result<serde_json::Value, String> {
     unsafe {
         GetLocalTime(&mut time);
     }
-    let registered = RegKey::predef(HKEY_CURRENT_USER)
+    let packaged = is_packaged();
+    let login = if packaged {
+        packaged_login_value()
+    } else if RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(RUN)
         .ok()
         .and_then(|k| k.get_value::<String, _>("VYSTRIQ").ok())
-        .is_some();
+        .is_some()
+    {
+        1
+    } else {
+        0
+    };
+    // A packaged app's per-app notification switch lives under its package
+    // family name, not the unpackaged identifier, so only the global switch is
+    // reported there rather than claiming a state we cannot read.
     let notifications = enabled(
         r"Software\Microsoft\Windows\CurrentVersion\PushNotifications",
         "ToastEnabled",
-    ) && enabled(
-        r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\com.vystriq.desktop",
-        "Enabled",
-    );
+    ) && (packaged
+        || enabled(
+            r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\com.vystriq.desktop",
+            "Enabled",
+        ));
     Ok(serde_json::json!({
-        "login": if registered {1} else {0},
+        "login": login,
         "notifications": if notifications {2} else {1},
         "day": time.wDayOfWeek,
         "date": format!("{}-{}-{}", time.wYear,time.wMonth,time.wDay),
@@ -76,6 +146,9 @@ pub fn info() -> Result<serde_json::Value, String> {
     }))
 }
 pub fn login(on: bool) -> Result<(), String> {
+    if is_packaged() {
+        return set_packaged_login(on);
+    }
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
         .create_subkey(RUN)
         .map_err(|e| e.to_string())?;
