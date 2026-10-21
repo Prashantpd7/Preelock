@@ -335,45 +335,57 @@ Reviewer notes to include in the submission:
 > `%USERPROFILE%\VYSTRIQ\browser-extension`; it installs no service and requests
 > no elevation.
 
-## 10. Validation record (this checkout)
+## 10. Validation record
 
-Run on macOS 21 October 2026. Nothing below was executed on Windows.
+### Built package
 
-| Check                                                                                                   | Result                                                                                               |
-| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `npm run check` (typecheck, lint, 63 frontend tests in 10 files, production build)                      | Pass                                                                                                 |
-| `npm run format:check`                                                                                  | Pass                                                                                                 |
-| `cargo fmt --check` + `cargo clippy --all-targets -D warnings`                                          | Pass                                                                                                 |
-| `cargo test`                                                                                            | Pass, 53 tests (51 existing + 2 new packaging tests)                                                 |
-| macOS app bundle build (`tauri build --bundles app`)                                                    | Pass                                                                                                 |
-| `scripts/verify-macos-bundle.sh` on the built bundle                                                    | Pass: signature valid on disk, designated requirement satisfied, camera usage string present         |
-| Manifest template render + XML parse + referenced asset sizes                                           | Pass (all six Store assets exist at the declared sizes)                                              |
-| `Windows.ApplicationModel.StartupTask` calls type-checked for `x86_64-pc-windows-msvc` (isolated crate) | Pass                                                                                                 |
-| Full `cargo check --target x86_64-pc-windows-msvc` from macOS                                           | Failed at bundled SQLite C compilation (no MSVC toolchain); CI runs this on Windows instead          |
-| Packaging scripts parsed by PowerShell 7.6                                                              | Pass                                                                                                 |
-| Packaging + verification flow end-to-end with a stand-in `makeappx` (zip) on macOS                      | Pass: staging, identity/token rendering, resources, assets, forbidden-file check, hashes, build info |
-| Verifier negative tests (smuggled `browser-token`, wrong publisher)                                     | Pass: both rejected with exit code 1                                                                 |
-| Real `makeappx.exe` / MSIX install / launch / update / uninstall / WACK                                 | **Not run.** No Windows host or Windows CI run available here.                                       |
+| Item          | Value                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| Artifact      | `VYSTRIQ_0.4.1_x64.msix` (5,147,260 bytes)                                               |
+| SHA-256       | `b7c89bb4c7cbef6adff772609c5dd27108f64796309a3c801723d82b5beab191`                       |
+| Identity      | `Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`, version `1.4.1.0`, x64 |
+| Source commit | `5230762eb374394013581859ada7d2a79d2930d3`                                               |
+| Toolchain     | Windows SDK 10.0.26100.0 `makeappx.exe` on the free `windows-2022` runner                |
+| CI run        | https://github.com/Prashantpd7/VYSTRIQ/actions/runs/39626033382                          |
+| Signature     | Unsigned (expected; the Store re-signs accepted submissions)                             |
 
-The stand-in packer proves script logic, not MSIX validity. The package bytes
-themselves must be produced by the Windows SDK and validated on Windows, which
-is what the workflow is for. No package artifact or checksum is claimed in this
-repository; the script writes them next to the build output when it runs.
+### Executed checks
+
+| Check                                                                              | Where                        | Result                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run check` (typecheck, lint, 63 frontend tests in 10 files, production build) | macOS                        | Pass                                                                                                                                                                                                                             |
+| `npm run format:check`                                                             | macOS                        | Pass                                                                                                                                                                                                                             |
+| `cargo fmt --check` + `cargo clippy --all-targets -D warnings`                     | macOS and Windows            | Pass                                                                                                                                                                                                                             |
+| `cargo test`                                                                       | macOS (53 tests) and Windows | Pass                                                                                                                                                                                                                             |
+| macOS app bundle build + `verify-macos-bundle.sh`                                  | macOS                        | Pass: signature valid, designated requirement satisfied, camera usage string present                                                                                                                                             |
+| `makeappx pack` of the real x64 binary                                             | Windows CI                   | Pass (after adding the schema-required wide tile)                                                                                                                                                                                |
+| `scripts/verify-msix.ps1` against the built package                                | Windows CI                   | Pass, exit 0                                                                                                                                                                                                                     |
+| Independent structural check of the downloaded artifact                            | macOS                        | Pass: manifest identity, `runFullTrust`, opt-in startupTask, x64 PE header, six declared asset sizes, 22 block-map files with matching SHA-256 block hashes, extension resources present, no database/token/symbol/signing files |
+| Verifier negative tests (smuggled `browser-token`, wrong publisher)                | macOS + PowerShell 7.6       | Pass: both rejected with exit code 1                                                                                                                                                                                             |
+| App installation, launch, update, uninstall, WACK                                  | Windows                      | **Not run.** No interactive Windows machine was available.                                                                                                                                                                       |
+| Windows reboot/Fast Startup/force-quit, camera, browser pairing                    | Windows                      | **Not run.** Same limitation.                                                                                                                                                                                                    |
+
+Note: the Windows checkout converts repository text files to CRLF, so the
+packaged extension text files differ from the macOS checkout by line endings
+only (the four PNG icons are byte-identical). This is valid and does not affect
+behaviour; add a `.gitattributes` policy if byte-identical cross-platform
+resources are wanted later.
 
 ## 11. Known limitations and open items
 
-| Item                                      | State                                                                                                                                                                      |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Package built/installed/tested on Windows | **Not done.** No Windows host or Windows CI run is available from this environment.                                                                                        |
-| Windows App Certification Kit             | Not run. Needs an installed package on Windows.                                                                                                                            |
-| Screenshots                               | Not captured. Take genuine Windows screenshots; do not fabricate.                                                                                                          |
-| Partner Center identity                   | Not available. Placeholders are enforced by the script.                                                                                                                    |
-| Privacy policy URL and support contact    | Owner must supply; the draft text is in `docs/PRIVACY_POLICY.md`.                                                                                                          |
-| Windows camera presence                   | Not implemented, intentionally. Reported unavailable everywhere.                                                                                                           |
-| Single instance at sign-in                | Pre-existing gap: if the app is already running and the startup task launches it again, Windows starts a second process. Not changed by this work; test before submission. |
-| Automatic updates                         | None. Store updates replace the package; update compatibility relies on migrations and unchanged data paths.                                                               |
-| ARM64                                     | Not built. Only x64 is produced and tested.                                                                                                                                |
-| WebView2 on clean Windows 10              | See §7.                                                                                                                                                                    |
+| Item                                       | State                                                                                                                                                                                                            |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package built on Windows                   | **Done** on the free CI runner; artifact and checksum recorded above.                                                                                                                                            |
+| Install/launch/update/uninstall on Windows | **Not done.** Requires an interactive Windows machine.                                                                                                                                                           |
+| Windows App Certification Kit              | Not run. Needs an installed package on Windows.                                                                                                                                                                  |
+| Screenshots                                | Not captured. Take genuine Windows screenshots; do not fabricate.                                                                                                                                                |
+| Partner Center identity                    | Supplied and baked into `windows/msix/identity.json`. Confirm against Partner Center before upload; no screenshot was provided for cross-checking. Package Family Name suffix looks one character long (see §2). |
+| Privacy policy URL and support contact     | Owner must supply; the draft text is in `docs/PRIVACY_POLICY.md`.                                                                                                                                                |
+| Windows camera presence                    | Not implemented, intentionally. Reported unavailable everywhere.                                                                                                                                                 |
+| Single instance at sign-in                 | Pre-existing gap: if the app is already running and the startup task launches it again, Windows starts a second process. Not changed by this work; test before submission.                                       |
+| Automatic updates                          | None. Store updates replace the package; update compatibility relies on migrations and unchanged data paths.                                                                                                     |
+| ARM64                                      | Not built. Only x64 is produced and tested.                                                                                                                                                                      |
+| WebView2 on clean Windows 10               | See §7.                                                                                                                                                                                                          |
 
 ## 12. Steps to submit
 

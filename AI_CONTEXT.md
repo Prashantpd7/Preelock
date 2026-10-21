@@ -357,9 +357,13 @@ not replace existing release installers.
 
 ## Microsoft Store MSIX prep (21 October 2026)
 
-MSIX packaging exists but has not been built, installed or tested on Windows
-from this checkout. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for
-the exact status, owner-supplied values, listing copy and manual test plan.
+An unsigned x64 MSIX has been built on the free Windows CI runner (commit
+`5230762`, version `1.4.1.0`, SHA-256
+`b7c89bb4c7cbef6adff772609c5dd27108f64796309a3c801723d82b5beab191`) and its
+structure verified with `makeappx` and independently. It has **not** been
+installed, launched, updated, uninstalled, or WACK-tested; those remain manual
+Windows steps. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for the
+exact status, listing copy and test plan. Nothing was uploaded or published.
 
 - `windows/msix/identity.json` holds the reserved Partner Center identity
   (`Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`,
