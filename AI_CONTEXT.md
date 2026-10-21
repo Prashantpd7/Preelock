@@ -358,8 +358,8 @@ not replace existing release installers.
 ## Microsoft Store MSIX prep (21 October 2026)
 
 An unsigned x64 MSIX has been built on the free Windows CI runner (commit
-`5230762`, version `1.4.1.0`, SHA-256
-`b7c89bb4c7cbef6adff772609c5dd27108f64796309a3c801723d82b5beab191`) and its
+`b9939d4`, version `1.4.1.0`, SHA-256
+`4e2f9613660ecfc9551d68d7157bfebed0a030d23bd94ea79a04b72dfaf846ca`) and its
 structure verified with `makeappx` and independently. It has **not** been
 installed, launched, updated, uninstalled, or WACK-tested; those remain manual
 Windows steps. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for the
