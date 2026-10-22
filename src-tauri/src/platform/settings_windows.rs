@@ -1,13 +1,9 @@
 //! Windows settings use native dialogs, per-user startup registration and OS alerts.
 use crate::platform::packaging::{self, StartupState};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
-};
+use std::sync::OnceLock;
 use tauri_plugin_notification::NotificationExt;
 use winreg::{enums::*, RegKey};
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-static PRESERVE_MIGRATED_LOGIN: AtomicBool = AtomicBool::new(false);
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// An MSIX package installs under `WindowsApps` and virtualises HKCU writes,
@@ -68,10 +64,8 @@ fn set_packaged_login(on: bool) -> Result<(), String> {
 }
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
-    match migrate_login_label() {
-        Ok(true) => PRESERVE_MIGRATED_LOGIN.store(true, Ordering::Release),
-        Ok(false) => {}
-        Err(error) => log::warn!("Startup label migration deferred: {error}"),
+    if let Err(error) = migrate_login_label() {
+        log::warn!("Startup label migration deferred: {error}");
     }
     APP.set(app.clone())
         .map_err(|_| "Settings already initialized.".to_string())?;
@@ -86,10 +80,6 @@ pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
         return Err("Could not install Windows shutdown handler".into());
     }
     Ok(())
-}
-
-pub fn take_migrated_login_preservation() -> bool {
-    PRESERVE_MIGRATED_LOGIN.swap(false, Ordering::AcqRel)
 }
 
 // Observe the OS's confirmed shutdown, not a query that can be cancelled.
