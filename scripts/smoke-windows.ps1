@@ -19,7 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
 $legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
 $legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "Legacy installation failed" }
-$legacyApp = Start-Process (Join-Path $installDir "preelock.exe") -PassThru
+$legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") -PassThru
 try {
     Start-Sleep -Seconds 15
     if ($legacyApp.HasExited -or !(Test-Path $database)) { throw "Legacy startup failed" }
@@ -43,7 +43,7 @@ if ($setup.ExitCode -ne 0) { throw "NSIS failed: $($setup.ExitCode)" }
 $newRegistration = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Preelock'
 if ($newRegistration.DisplayName -ne 'Preelock') { throw "Wrong installed display name" }
 if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\VYSTRIQ') { throw "Duplicate legacy uninstall record" }
-$executable = Join-Path $installDir "vystriq.exe"
+$executable = Join-Path $installDir "preelock.exe"
 if (!(Test-Path $executable)) { throw "Installed executable missing" }
 python scripts/verify-windows-payload.py "src-tauri/target/release/preelock.exe" $executable
 if ($LASTEXITCODE -ne 0) { throw "Installed executable integrity validation failed" }
