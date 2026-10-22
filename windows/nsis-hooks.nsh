@@ -1,7 +1,12 @@
 ; Keep an existing direct installation in place when the public name changes.
 ; The legacy registry and directory names are compatibility identifiers.
 Var PreelockLegacyInstall
+Var PreelockLegacyRun
 !macro NSIS_HOOK_PREINSTALL
+  ReadRegStr $PreelockLegacyRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "VYSTRIQ"
+  ${If} $PreelockLegacyRun != ""
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock" "$PreelockLegacyRun"
+  ${EndIf}
   ReadRegStr $PreelockLegacyInstall HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\VYSTRIQ" "InstallLocation"
   ${If} $PreelockLegacyInstall != ""
     ; Tauri records InstallLocation in quotes.

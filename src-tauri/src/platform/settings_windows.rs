@@ -122,32 +122,33 @@ fn migrate_login_label() -> Result<bool, String> {
     else {
         return Ok(false);
     };
-    let Ok(legacy) = key.get_value::<String, _>("VYSTRIQ") else {
-        return Ok(false);
-    };
+    let legacy = key.get_value::<String, _>("VYSTRIQ").ok();
     let mut migrated = false;
     if key.get_value::<String, _>("Preelock").is_err() {
-        let approval = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
-        match RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey_with_flags(approval, KEY_READ | KEY_WRITE)
-        {
-            Ok(state) => match state.get_raw_value("VYSTRIQ") {
-                Ok(value) => state
-                    .set_raw_value("Preelock", &value)
-                    .map_err(|e| e.to_string())?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.to_string()),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.to_string()),
-        }
-        key.set_value("Preelock", &legacy)
+        let Some(legacy) = legacy.as_ref() else {
+            return Ok(false);
+        };
+        key.set_value("Preelock", legacy)
             .map_err(|e| e.to_string())?;
         migrated = true;
     }
-    key.delete_value("VYSTRIQ")
-        .map_err(|e| e.to_string())
-        .map(|()| migrated)
+    let approval = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    if let Ok(state) =
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(approval, KEY_READ | KEY_WRITE)
+    {
+        if state.get_raw_value("Preelock").is_err() {
+            if let Ok(value) = state.get_raw_value("VYSTRIQ") {
+                state
+                    .set_raw_value("Preelock", &value)
+                    .map_err(|e| e.to_string())?;
+                migrated = true;
+            }
+        }
+    }
+    if legacy.is_some() {
+        key.delete_value("VYSTRIQ").map_err(|e| e.to_string())?;
+    }
+    Ok(migrated)
 }
 pub fn info() -> Result<serde_json::Value, String> {
     use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
