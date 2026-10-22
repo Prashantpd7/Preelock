@@ -1,6 +1,6 @@
 [package]
 name = "preelock"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local-first focus and productivity desktop application"
 authors = ["Preelock"]
 edition = "2021"

@@ -9,7 +9,21 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   const [info, setInfo] = useState<SettingsInfo>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [browserGuide, setBrowserGuide] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [pathCopied, setPathCopied] = useState(false);
   const mac = setup?.platform === 'macos';
+  const browserConnected = !!setup?.browser.connected && !setup?.browser.error;
+  const folderPath = setup?.extension_directory ?? '';
+  // While the guide is open, keep checking so it detects the connection
+  // on its own once the user connects in the browser.
+  useEffect(() => {
+    if (!browserGuide || browserConnected) return;
+    const timer = setInterval(() => {
+      void refresh();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [browserGuide, browserConnected, refresh]);
   async function check() {
     await refresh();
     try {
@@ -47,158 +61,247 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
       setBusy(false);
     }
   }
+  async function openExtensions() {
+    try {
+      // No browser id: opens the extensions page in the default browser.
+      await api.openSetup('extensions');
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  async function openFolder() {
+    try {
+      await api.openSetup('extension_folder');
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  async function copyCode() {
+    const code = setup?.pairing_token ?? '';
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      /* Clipboard unavailable — the code is selectable as text. */
+    }
+    setCodeCopied(true);
+  }
+  async function copyFolderPath() {
+    if (!folderPath) return;
+    try {
+      await navigator.clipboard.writeText(folderPath);
+    } catch {
+      /* Clipboard unavailable — the path is selectable as text. */
+    }
+    setPathCopied(true);
+  }
   const cameraDenied = ['denied', 'restricted'].includes(
     setup?.camera_permission ?? '',
   );
   return (
-    <Modal title="Permissions & setup" onClose={onClose}>
-      {!setup ? (
-        <p>Checking your system…</p>
-      ) : (
-        <div className="dialog-stack permission-guide">
-          <SettingRow
-            title="App control"
-            hint={
-              mac
-                ? 'Hides distracting apps during sessions. Accessibility and Screen Recording access are not required.'
-                : 'Minimizes distracting windows during sessions. Administrator access is not required.'
-            }
-          >
-            <span>Ready</span>
-          </SettingRow>
-          <SettingRow
-            title="Camera"
-            hint={
-              !mac
-                ? 'Not available on Windows. Use Apps only.'
-                : cameraDenied
-                  ? 'Denied — System Settings → Privacy & Security → Camera → turn on Preelock.'
-                  : 'Optional. Permission is remembered by the system. Camera runs only in sessions where you select it (or during a camera test). No video is saved.'
-            }
-          >
-            <button
-              className="secondary"
-              disabled={busy || !mac || setup.camera_permission === 'granted'}
-              onClick={() =>
-                void act(() =>
-                  cameraDenied
-                    ? api.openSetup('camera_settings')
-                    : api.requestCamera(),
-                )
-              }
+    <>
+      <Modal title="Permissions & setup" onClose={onClose}>
+        {!setup ? (
+          <p>Checking your system…</p>
+        ) : (
+          <div className="dialog-stack permission-guide">
+            <SettingRow
+              title="Camera"
+              hint="Camera runs only in sessions where you select it."
             >
-              {!mac
-                ? 'Unavailable'
-                : setup.camera_permission === 'granted'
-                  ? 'Allowed'
-                  : cameraDenied
-                    ? 'Open settings'
-                    : 'Allow camera'}
-            </button>
-          </SettingRow>
-          <SettingRow
-            title="Open at login"
-            hint={
-              info.login === 2
-                ? 'Approve Preelock in System Settings → General → Login Items.'
-                : 'Allow automatic reopening after you sign in. Unfinished sessions recover after shutdown or restart.'
-            }
-          >
-            <Toggle
-              label="Open at login"
-              checked={info.login === 1 || info.login === 2}
-              disabled={busy || info.login === undefined || info.login === -1}
-              onChange={(enabled) =>
-                void act(() => settingsAction({ type: 'login', enabled }))
-              }
-            />
-          </SettingRow>
-          <SettingRow
-            title="Notifications"
-            hint={
-              mac
-                ? 'System Settings → Notifications → Preelock → Allow notifications.'
-                : 'Settings → System → Notifications → turn on Preelock. Install the app first; Do not disturb may silence alerts.'
-            }
-          >
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                void act(() =>
-                  mac && info.notifications === 0
-                    ? settingsAction({ type: 'allow_notifications' })
-                    : api.openSetup('notification_settings'),
-                )
-              }
-            >
-              {info.notifications === 1
-                ? 'Denied · Open settings'
-                : mac && info.notifications === 0
-                  ? 'Allow notifications'
-                  : 'Open settings'}
-            </button>
-          </SettingRow>
-          <SettingRow
-            title="Browser extension"
-            hint="Connect each browser you use. Enable Allow in Incognito on its Extensions page to block private windows too."
-          >
-            <span>Use Connections</span>
-          </SettingRow>
-          <section className="setup-guide">
-            <h3>Opening a downloaded app</h3>
-            <p>Continue only if you trust where you downloaded Preelock.</p>
-            {mac ? (
-              <ol>
-                <li>
-                  Drag Preelock from the downloaded disk image into
-                  Applications, then open the installed app from Finder.
-                </li>
-                <li>
-                  If blocked, open System Settings → Privacy & Security → Open
-                  Anyway, if offered, then confirm Open. This free build is not
-                  Apple-notarized.
-                </li>
-                <li>
-                  If approval is unavailable or the app is reported as damaged,
-                  check the release installation guide. Do not disable system
-                  protection.
-                </li>
-              </ol>
-            ) : (
-              <ol>
-                <li>
-                  If SmartScreen says “Windows protected your PC,” choose More
-                  info → Run anyway, if offered.
-                </li>
-                <li>
-                  If your organization or Smart App Control blocks it, ask your
-                  administrator. Do not turn off system protection.
-                </li>
-              </ol>
-            )}
-            {mac && (
               <button
                 className="secondary"
+                disabled={busy || !mac || setup.camera_permission === 'granted'}
+                aria-label={cameraDenied ? 'Open settings' : undefined}
                 onClick={() =>
-                  void act(() => api.openSetup('privacy_settings'))
+                  void act(() =>
+                    cameraDenied
+                      ? api.openSetup('camera_settings')
+                      : api.requestCamera(),
+                  )
                 }
               >
-                Open Privacy & Security
+                {!mac
+                  ? 'Unavailable'
+                  : setup.camera_permission === 'granted'
+                    ? 'Allowed'
+                    : cameraDenied
+                      ? 'Denied — System Settings'
+                      : 'Allow camera'}
               </button>
+            </SettingRow>
+            {!mac && (
+              <p className="muted small">
+                If Windows SmartScreen appears, choose{' '}
+                <strong>More info → Run anyway</strong> to continue.
+              </p>
             )}
-          </section>
+            <SettingRow
+              title="Open at login"
+              hint="Opens Preelock at login when there was an active session."
+            >
+              <Toggle
+                label="Open at login"
+                checked={info.login === 1 || info.login === 2}
+                disabled={info.login === undefined || info.login === -1}
+                onChange={(enabled) =>
+                  void act(() => settingsAction({ type: 'login', enabled }))
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              title="Notifications"
+              hint={
+                mac
+                  ? 'System Settings → Notifications → Preelock → Allow notifications.'
+                  : 'Settings → System → Notifications → turn on Preelock. Install the app first; Do not disturb may silence alerts.'
+              }
+            >
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void act(() =>
+                    mac && info.notifications === 0
+                      ? settingsAction({ type: 'allow_notifications' })
+                      : api.openSetup('notification_settings'),
+                  )
+                }
+              >
+                {info.notifications === 1
+                  ? 'Denied · Open settings'
+                  : mac && info.notifications === 0
+                    ? 'Allow notifications'
+                    : 'Open settings'}
+              </button>
+            </SettingRow>
+            <SettingRow
+              title="Browser extension"
+              hint="Connect your browser so Preelock can block distracting sites during sessions."
+            >
+              <button
+                className="secondary"
+                disabled={browserConnected}
+                onClick={() => setBrowserGuide(true)}
+              >
+                {browserConnected ? 'Connected' : 'Connect browser'}
+              </button>
+            </SettingRow>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        <div className="dialog-footer">
+          <button onClick={onClose}>Done</button>
         </div>
+      </Modal>
+      {browserGuide && !browserConnected && (
+        <Modal
+          title="Add Preelock to your browser"
+          onClose={() => setBrowserGuide(false)}
+        >
+          <ol className="install-steps">
+            <li>
+              <strong className="step-title">Open the extensions page</strong>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void openExtensions()}
+              >
+                Open extensions page
+              </button>
+            </li>
+            <li>
+              <strong className="step-title">Turn on Developer mode</strong>
+              <span className="muted">
+                The switch at the top-right of the extensions page.
+              </span>
+            </li>
+            <li>
+              <strong className="step-title">Load the extension folder</strong>
+              {setup?.platform === 'windows' ? (
+                <span className="muted">
+                  Click <strong>Load unpacked</strong> in the browser, paste the
+                  folder path below into the file picker's address bar, press
+                  Enter, then select the folder.
+                </span>
+              ) : (
+                <span className="muted">
+                  Click <strong>Load unpacked</strong> in the browser. In the
+                  file picker, press <strong>⌘⇧G</strong>, paste the folder
+                  path, press Enter, then click <strong>Select</strong>.
+                </span>
+              )}
+              <label className="code-label">
+                Extension folder on this PC
+                <div className="code-row">
+                  <input
+                    aria-label="Extension folder path"
+                    readOnly
+                    value={folderPath}
+                    placeholder="Loading…"
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!folderPath}
+                    onClick={() => void copyFolderPath()}
+                  >
+                    {pathCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </label>
+              <p className="muted small">
+                Prefer browsing yourself?{' '}
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => void openFolder()}
+                >
+                  Open extension folder
+                </button>
+                .
+              </p>
+            </li>
+            <li>
+              <strong className="step-title">Connect the extension</strong>
+              <label className="code-label">
+                Connection code
+                <div className="code-row">
+                  <input
+                    aria-label="Connection code"
+                    readOnly
+                    value={setup?.pairing_token ?? ''}
+                    placeholder="Loading…"
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!setup?.pairing_token}
+                    onClick={() => void copyCode()}
+                  >
+                    {codeCopied ? 'Copied' : 'Copy code'}
+                  </button>
+                </div>
+              </label>
+              <span className="muted">
+                Click the Preelock icon in your browser's toolbar, paste the
+                code, choose your browser, click <strong>Connect</strong> there.
+                Keep your browser open.
+              </span>
+            </li>
+          </ol>
+          <button type="button" onClick={() => setBrowserGuide(false)}>
+            Done
+          </button>
+        </Modal>
       )}
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <div className="dialog-footer">
-        <button onClick={onClose}>Done</button>
-      </div>
-    </Modal>
+    </>
   );
 }
 
@@ -207,7 +310,7 @@ export function FirstRunPermissions() {
     try {
       return (
         desktop &&
-        localStorage.getItem('preelock-permissions-v2') !== 'seen' &&
+        localStorage.getItem('preelock-permissions-v10') !== 'seen' &&
         localStorage.getItem('vystriq-permissions-v2') !== 'seen'
       );
     } catch {
@@ -219,7 +322,7 @@ export function FirstRunPermissions() {
     <PermissionsGuide
       onClose={() => {
         try {
-          localStorage.setItem('preelock-permissions-v2', 'seen');
+          localStorage.setItem('preelock-permissions-v10', 'seen');
         } catch {
           /* Still dismiss for this run. */
         }

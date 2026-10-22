@@ -14,16 +14,12 @@ export function BrowserSetup({
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
   const [installGuide, setInstallGuide] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   // Detected live on this PC by the app — never a hardcoded path.
   const folderPath = setup?.extension_directory ?? '';
-  const browser = browserId || setup?.browsers?.[0]?.id || '';
   // The app already filters the connection status to this browser:
   // connected here means the paired extension lives in this browser.
   const connected = !!setup?.browser.connected && !setup?.browser.error;
-  const browserName =
-    setup?.browsers?.find((b) => b.id === browser)?.name || 'This browser';
   // Keep checking while the guide is open so it flips to Connected
   // on its own once the user connects in the browser.
   useEffect(() => {
@@ -33,10 +29,44 @@ export function BrowserSetup({
     }, 3000);
     return () => clearInterval(timer);
   }, [connected, refresh]);
-  if (connected) return null;
+  // When connected, show a confirmation instead of rendering nothing —
+  // returning null here left an empty broken dialog in the "Before you
+  // start" popup when the fresh status check already showed connected.
+  if (connected) {
+    return (
+      <div className="setup-guide">
+        <p className="ready-box">Connected</p>
+        <p className="muted small">
+          The browser extension is paired and reporting. You can start the
+          session.
+        </p>
+        <p className="muted small">
+          Wrong browser?{' '}
+          <button
+            type="button"
+            className="text-link"
+            onClick={() => {
+              void api
+                .resetPairing()
+                .then(() => refresh())
+                .catch((e) => setNotice(String(e)));
+            }}
+          >
+            Disconnect and reconnect
+          </button>
+        </p>
+        {notice && (
+          <p role="status" className="small">
+            {notice}
+          </p>
+        )}
+      </div>
+    );
+  }
   async function openExtensions() {
     try {
-      await api.openSetup('extensions', browser);
+      // No browser id: opens the extensions page in the default browser.
+      await api.openSetup('extensions', browserId);
       setNotice('');
     } catch (e) {
       setNotice(String(e));
@@ -44,7 +74,7 @@ export function BrowserSetup({
   }
   async function openFolder() {
     try {
-      await api.openSetup('extension_folder');
+      await api.openSetup('extension_folder', browserId);
       setNotice('');
     } catch (e) {
       setNotice(String(e));
@@ -60,17 +90,6 @@ export function BrowserSetup({
     setPathCopied(true);
     setNotice('');
   }
-  async function checkNow() {
-    setChecking(true);
-    setNotice('');
-    // Keep re-checking for a few seconds: the moment the selected
-    // browser's extension syncs, this guide hides and shows Connected.
-    for (let i = 0; i < 5; i += 1) {
-      await refresh();
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    setChecking(false);
-  }
   async function copyCode() {
     const code = setup?.pairing_token ?? '';
     if (!code) return;
@@ -84,28 +103,16 @@ export function BrowserSetup({
   }
   return (
     <div className="setup-guide">
-      {browser && (
-        <p role="alert" className="connect-warn">
-          {browserName} is not connected. Follow the steps below to connect{' '}
-          {browserName}.
-        </p>
-      )}
+      <p role="alert" className="connect-warn">
+        Browser is not connected. Follow the steps below to connect it.
+      </p>
       <div className="row">
         <button
           type="button"
           className="secondary"
-          disabled={!browser}
           onClick={() => void openExtensions()}
         >
           Open Extensions
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={!browser || checking}
-          onClick={() => void checkNow()}
-        >
-          {checking ? 'Checking…' : 'Connect'}
         </button>
       </div>
       <label className="code-label">
@@ -129,14 +136,13 @@ export function BrowserSetup({
       </label>
       <p className="muted small code-hint">
         Copy the code and paste it in the Preelock extension in your browser
-        toolbar, choose {browserName}, then click Connect there.
+        toolbar, then click Connect there.
       </p>
       <p className="muted small">
-        Extension not installed in this browser?{' '}
+        Extension not installed?{' '}
         <button
           type="button"
           className="text-link"
-          disabled={!browser}
           onClick={() => setInstallGuide(true)}
         >
           Click here
@@ -155,7 +161,7 @@ export function BrowserSetup({
       )}
       {installGuide && (
         <Modal
-          title={`Add Preelock to ${browserName}`}
+          title="Add Preelock to your browser"
           onClose={() => setInstallGuide(false)}
         >
           <ol className="install-steps">
@@ -164,7 +170,6 @@ export function BrowserSetup({
               <button
                 type="button"
                 className="secondary"
-                disabled={!browser}
                 onClick={() => void openExtensions()}
               >
                 Open extensions page
@@ -227,9 +232,9 @@ export function BrowserSetup({
               <strong className="step-title">Connect the extension</strong>
               <span className="muted">
                 Copy the <strong>connection code</strong> from the setup guide,
-                click the Preelock icon in {browserName}'s toolbar, paste the
-                code, choose {browserName}, and click <strong>Connect</strong>{' '}
-                there. Keep {browserName} open.
+                click the Preelock icon in your browser's toolbar, paste the
+                code, and click <strong>Connect</strong> there. Keep your
+                browser open.
               </span>
             </li>
           </ol>

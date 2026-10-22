@@ -193,7 +193,7 @@ impl Runtime {
                         .get(&s.id)
                         .is_some_and(|old| matches!(old, Status::Running | Status::Preparing))
                 {
-                    if p.session_alert {
+                    if p.notifications_enabled && p.session_alert {
                         native::notify("Focus complete", "You reached your target.");
                     }
                     if p.sound {
@@ -208,7 +208,7 @@ impl Runtime {
                         .get(&s.id)
                         .is_some_and(|old| matches!(old, Status::Ready | Status::Preparing))
                 {
-                    if p.session_start_alert {
+                    if p.notifications_enabled && p.session_start_alert {
                         native::notify("Focus started", "Your session timer is running.");
                     }
                     if p.session_start_sound {
@@ -231,7 +231,7 @@ impl Runtime {
         });
         let now = clock::continuous_ms();
         if self.advance_break(now, active.is_some()) {
-            if p.break_alert {
+            if p.notifications_enabled && p.break_alert {
                 native::notify("Break finished", "Ready for your next session?");
             }
             if p.sound {
@@ -282,7 +282,7 @@ impl Runtime {
                     && self.reminder_key != key
                 {
                     self.reminder_key = key;
-                    if active.is_none() && self.break_end == 0 {
+                    if active.is_none() && self.break_end == 0 && p.notifications_enabled {
                         native::notify("Time to focus", "Choose a task when you’re ready.");
                     }
                 }

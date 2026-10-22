@@ -98,8 +98,10 @@ export function Settings() {
       | 'sound'
       | 'session_start_alert'
       | 'session_start_sound'
+      | 'notifications_enabled'
       | 'reminder',
     hint?: string,
+    extraDisabled = false,
   ) {
     return (
       <SettingRow title={label} hint={hint}>
@@ -107,11 +109,13 @@ export function Settings() {
           label={label}
           checked={draft[key]}
           onChange={(v) => change(key, v)}
-          disabled={disabled}
+          disabled={disabled || extraDisabled}
         />
       </SettingRow>
     );
   }
+  // Alerts sub-toggles only make sense when master notifications are on.
+  const notificationsOn = draft.notifications_enabled ?? true;
   const recent = data.sessions
     .filter((s) => s.focus?.attention?.enabled)
     .slice()
@@ -173,10 +177,10 @@ export function Settings() {
                 title="Open at login"
                 hint={
                   info.login === 2
-                    ? 'Approve Preelock in Login Items.'
+                    ? 'Approve Preelock in Login Items to finish setup. Opens at login when there was an active session.'
                     : info.login === -1
-                      ? 'Unavailable on this system.'
-                      : 'Open the app when you sign in.'
+                      ? 'Available in the installed app.'
+                      : 'Opens the app at login when there was an active session.'
                 }
               >
                 <Toggle
@@ -288,33 +292,41 @@ export function Settings() {
                 title="Notifications"
                 hint="Allow focus and reminder alerts."
               >
-                <button
-                  className={
-                    info.notifications === 2 ? 'connected-button' : 'secondary'
-                  }
-                  disabled={
-                    disabled ||
-                    info.notifications === 2 ||
-                    info.notifications === -1
-                  }
-                  onClick={() =>
-                    void run(
-                      { type: 'allow_notifications' },
-                      'Notifications are ready.',
-                    )
-                  }
-                >
-                  {info.notifications === 2
-                    ? 'Allowed'
-                    : info.notifications === -1
-                      ? 'Unavailable'
-                      : 'Allow notifications'}
-                </button>
+                <Toggle
+                  label="Notifications"
+                  checked={draft.notifications_enabled ?? true}
+                  onChange={(v) => {
+                    change('notifications_enabled', v);
+                    if (v) {
+                      // Ask the OS for permission right away when turning on.
+                      void run(
+                        { type: 'allow_notifications' },
+                        'Notifications are ready.',
+                      );
+                    }
+                  }}
+                  disabled={disabled}
+                />
               </SettingRow>
-              {switchRow('Session finished', 'session_alert')}
-              {switchRow('Play a sound', 'sound')}
-              {switchRow('Session started', 'session_start_alert')}
-              {switchRow('Play a sound', 'session_start_sound')}
+              {switchRow(
+                'Session finished',
+                'session_alert',
+                undefined,
+                !notificationsOn,
+              )}
+              {switchRow('Play a sound', 'sound', undefined, !notificationsOn)}
+              {switchRow(
+                'Session started',
+                'session_start_alert',
+                undefined,
+                !notificationsOn,
+              )}
+              {switchRow(
+                'Play a sound',
+                'session_start_sound',
+                undefined,
+                !notificationsOn,
+              )}
               {(draft.sound || draft.session_start_sound) && (
                 <SettingRow title="Volume">
                   <div className="volume-control">
@@ -324,11 +336,12 @@ export function Settings() {
                       min={0}
                       max={100}
                       value={draft.volume}
+                      disabled={disabled || !notificationsOn}
                       onChange={(e) => change('volume', Number(e.target.value))}
                     />
                     <button
                       className="secondary"
-                      disabled={disabled}
+                      disabled={disabled || !notificationsOn}
                       onClick={() =>
                         void run({
                           type: 'preview_sound',
@@ -345,6 +358,7 @@ export function Settings() {
                 'Focus reminder',
                 'reminder',
                 'A reminder, not an automatic session.',
+                !notificationsOn,
               )}
               {draft.reminder && (
                 <>
@@ -357,6 +371,7 @@ export function Settings() {
                       className="time-input"
                       type="time"
                       value={draft.reminder_time}
+                      disabled={disabled || !notificationsOn}
                       onChange={(e) => change('reminder_time', e.target.value)}
                     />
                   </SettingRow>
@@ -372,6 +387,7 @@ export function Settings() {
                             type="button"
                             key={d}
                             aria-pressed={draft.reminder_days.includes(i)}
+                            disabled={disabled || !notificationsOn}
                             onClick={() =>
                               change(
                                 'reminder_days',

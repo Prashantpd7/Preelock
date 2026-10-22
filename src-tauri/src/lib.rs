@@ -238,6 +238,18 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             migrate_legacy_data(&dir)?;
             std::fs::create_dir_all(&dir)?;
+            // Open-at-login defaults ON for new installs so unfinished sessions
+            // recover after a shutdown. The marker ensures an explicit user
+            // choice in Settings is never overridden.
+            {
+                let marker = dir.join(".login_configured");
+                if !marker.exists() {
+                    if let Err(e) = desktop_settings::login(true) {
+                        log::warn!("Could not enable open-at-login by default: {e}");
+                    }
+                    let _ = std::fs::write(&marker, "1");
+                }
+            }
             app.manage(Mutex::new(
                 Engine::open_native(&dir.join("preelock.sqlite")).map_err(std::io::Error::other)?,
             ));

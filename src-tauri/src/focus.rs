@@ -80,15 +80,46 @@ impl FocusConfig {
         // "Block all other apps" is on: strict allowlist — everything except
         // the chosen work apps and the paired browser is blocked.
         let work = if self.mode == Mode::Standard {
-            self.attention
-                .work_apps
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(id))
+            self.attention.work_apps.iter().any(|a| ids_match(a, id))
         } else {
-            self.apps.iter().any(|a| a.eq_ignore_ascii_case(id))
+            self.apps.iter().any(|a| ids_match(a, id))
         };
-        !work && !id.eq_ignore_ascii_case(&self.browser_app)
+        !work && !ids_match(id, &self.browser_app)
     }
+}
+/// Robust app-identity comparison. On Windows the id is a full exe path, and
+/// Windows can return the same exe with a different path spelling across
+/// launches (\\?\ prefix, 8.3 short names, separator style). Normalize first,
+/// then fall back to exe-filename comparison so a reopened work app is never
+/// mistaken for a blocked app. On macOS the id is a bundle identifier, where
+/// normalization is a no-op and the filename fallback never triggers.
+fn normalize_id(id: &str) -> String {
+    let mut s = id.trim().to_string();
+    // Strip Win32 extended-path prefix: \\?\C:\... -> C:\...
+    if let Some(rest) = s.strip_prefix("\\\\?\\") {
+        s = rest.to_string();
+    } else if let Some(rest) = s.strip_prefix("//?/") {
+        s = rest.to_string();
+    }
+    s.replace('/', "\\").to_ascii_lowercase()
+}
+fn id_filename(id: &str) -> &str {
+    id.rsplit(['/', '\\']).next().unwrap_or(id)
+}
+pub fn ids_match(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let na = normalize_id(a);
+    let nb = normalize_id(b);
+    if na == nb {
+        return true;
+    }
+    // Fallback: same exe filename (handles reinstalls to a different folder
+    // or short-name vs long-name path variants).
+    let fa = id_filename(&na);
+    let fb = id_filename(&nb);
+    !fa.is_empty() && fa == fb
 }
 pub fn protected(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
@@ -276,7 +307,7 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
         && config
             .apps
             .iter()
-            .any(|id| supported_browser(id) && !id.eq_ignore_ascii_case(&config.browser_app))
+            .any(|id| supported_browser(id) && !ids_match(id, &config.browser_app))
     {
         return Err("Only one browser per session. Remove the other browser from your work apps, or pick it as your browser.".into());
     }

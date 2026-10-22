@@ -85,8 +85,18 @@ export function Modal({
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = ref.current;
-    el?.showModal();
-    return () => el?.close();
+    if (el?.showModal) {
+      el.showModal();
+    } else {
+      el?.setAttribute('open', '');
+    }
+    return () => {
+      if (el?.close) {
+        el.close();
+      } else {
+        el?.removeAttribute('open');
+      }
+    };
   }, []);
   return (
     <dialog
