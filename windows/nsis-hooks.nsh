@@ -10,6 +10,7 @@ Var PreelockLegacyInstall
       StrCpy $PreelockLegacyInstall $PreelockLegacyInstall -1 1
     ${EndIf}
     ${If} ${FileExists} "$PreelockLegacyInstall\preelock.exe"
+    ${OrIf} ${FileExists} "$PreelockLegacyInstall\vystriq.exe"
       StrCpy $INSTDIR $PreelockLegacyInstall
     ${Else}
       StrCpy $PreelockLegacyInstall ""
