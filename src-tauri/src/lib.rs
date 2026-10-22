@@ -67,8 +67,14 @@ fn sync_login_for_sessions(app: &tauri::AppHandle) {
         if let Err(e) = desktop_settings::login(true) {
             log::warn!("Could not enable open-at-login for active session: {e}");
         }
-    } else if let Err(e) = desktop_settings::login(false) {
-        log::warn!("Could not disable open-at-login: {e}");
+    } else {
+        #[cfg(target_os = "windows")]
+        if crate::platform::settings_windows::take_migrated_login_preservation() {
+            return;
+        }
+        if let Err(e) = desktop_settings::login(false) {
+            log::warn!("Could not disable open-at-login: {e}");
+        }
     }
 }
 #[tauri::command]

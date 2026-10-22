@@ -1,9 +1,13 @@
 //! Windows settings use native dialogs, per-user startup registration and OS alerts.
 use crate::platform::packaging::{self, StartupState};
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
 use tauri_plugin_notification::NotificationExt;
 use winreg::{enums::*, RegKey};
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+static PRESERVE_MIGRATED_LOGIN: AtomicBool = AtomicBool::new(false);
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// An MSIX package installs under `WindowsApps` and virtualises HKCU writes,
@@ -64,8 +68,10 @@ fn set_packaged_login(on: bool) -> Result<(), String> {
 }
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
-    if let Err(error) = migrate_login_label() {
-        log::warn!("Startup label migration deferred: {error}");
+    match migrate_login_label() {
+        Ok(true) => PRESERVE_MIGRATED_LOGIN.store(true, Ordering::Release),
+        Ok(false) => {}
+        Err(error) => log::warn!("Startup label migration deferred: {error}"),
     }
     APP.set(app.clone())
         .map_err(|_| "Settings already initialized.".to_string())?;
@@ -78,6 +84,9 @@ pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     } == 0
     {
         return Err("Could not install Windows shutdown handler".into());
+    }
+    pub fn take_migrated_login_preservation() -> bool {
+        PRESERVE_MIGRATED_LOGIN.swap(false, Ordering::AcqRel)
     }
     Ok(())
 }
@@ -112,18 +121,19 @@ fn enabled(key: &str, value: &str) -> bool {
 }
 // Rename only an existing opt-in registration. Preserve Windows' disabled state
 // before creating the new value; never enable startup for a user without one.
-fn migrate_login_label() -> Result<(), String> {
+fn migrate_login_label() -> Result<bool, String> {
     if is_packaged() {
-        return Ok(());
+        return Ok(false);
     }
     let Ok(key) =
         RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_READ | KEY_WRITE)
     else {
-        return Ok(());
+        return Ok(false);
     };
     let Ok(legacy) = key.get_value::<String, _>("VYSTRIQ") else {
-        return Ok(());
+        return Ok(false);
     };
+    let mut migrated = false;
     if key.get_value::<String, _>("Preelock").is_err() {
         let approval = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
         match RegKey::predef(HKEY_CURRENT_USER)
@@ -141,8 +151,11 @@ fn migrate_login_label() -> Result<(), String> {
         }
         key.set_value("Preelock", &legacy)
             .map_err(|e| e.to_string())?;
+        migrated = true;
     }
-    key.delete_value("VYSTRIQ").map_err(|e| e.to_string())
+    key.delete_value("VYSTRIQ")
+        .map_err(|e| e.to_string())
+        .map(|()| migrated)
 }
 pub fn info() -> Result<serde_json::Value, String> {
     use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
