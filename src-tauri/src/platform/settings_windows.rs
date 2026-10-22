@@ -85,11 +85,13 @@ pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     {
         return Err("Could not install Windows shutdown handler".into());
     }
-    pub fn take_migrated_login_preservation() -> bool {
-        PRESERVE_MIGRATED_LOGIN.swap(false, Ordering::AcqRel)
-    }
     Ok(())
 }
+
+pub fn take_migrated_login_preservation() -> bool {
+    PRESERVE_MIGRATED_LOGIN.swap(false, Ordering::AcqRel)
+}
+
 // Observe the OS's confirmed shutdown, not a query that can be cancelled.
 unsafe extern "system" fn shutdown_proc(
     hwnd: windows_sys::Win32::Foundation::HWND,
