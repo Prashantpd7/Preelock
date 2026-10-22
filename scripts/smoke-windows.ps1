@@ -80,7 +80,15 @@ python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.
 if ($LASTEXITCODE -ne 0) { throw "Upgrade lost the saved preference" }
 if ((Get-FileHash $token).Hash -ne $tokenHash) { throw "Upgrade changed the pairing token" }
 if ((Get-ItemProperty $runKey).Preelock -notlike '*preelock.exe*') { throw "Startup registration was not retained" }
-if ((Get-ItemProperty $approvalKey).Preelock[0] -ne 3) { throw "Upgrade lost the disabled startup state" }
+$approval = Get-ItemProperty $approvalKey
+$approvalState = if ($null -ne $approval.Preelock) {
+    $approval.Preelock
+} else {
+    $approval.VYSTRIQ
+}
+if ($null -eq $approvalState -or $approvalState[0] -ne 3) {
+    throw "Upgrade lost the disabled startup state"
+}
 Write-Output "Legacy 0.4.2 upgrade preserved the database, preference, pairing token and disabled startup state."
 $uninstallers = @(Get-ChildItem $installDir -Filter "*uninstall*.exe")
 if ($uninstallers.Count -ne 1) { throw "Expected one uninstaller" }
