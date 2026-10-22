@@ -143,9 +143,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                             default_id = id;
                             &default_id
                         }
-                        None => {
-                            return Err("Could not find your default browser.".into())
-                        }
+                        None => return Err("Could not find your default browser.".into()),
                     }
                 } else {
                     browser_id
@@ -168,19 +166,21 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
             "extensions" => {
                 // Empty id = use the user's default browser.
                 let default_id;
-                let resolved: &str = if browser_id.is_empty() {
-                    match default_browser_id() {
-                        Some(id) => {
-                            default_id = id;
-                            &default_id
+                let resolved: &str =
+                    if browser_id.is_empty() {
+                        match default_browser_id() {
+                            Some(id) => {
+                                default_id = id;
+                                &default_id
+                            }
+                            None => return Err(
+                                "Could not find your default browser. Open it first, then refresh."
+                                    .into(),
+                            ),
                         }
-                        None => {
-                            return Err("Could not find your default browser. Open it first, then refresh.".into())
-                        }
-                    }
-                } else {
-                    browser_id
-                };
+                    } else {
+                        browser_id
+                    };
                 if !crate::focus::supported_browser(resolved) {
                     return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
                 }

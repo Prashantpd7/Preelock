@@ -5,9 +5,11 @@ import { Modal } from './SettingsControls';
 export function BrowserSetup({
   setup,
   refresh,
+  browserId = '',
 }: {
   setup: FocusSetup | null;
   refresh: () => Promise<void>;
+  browserId?: string;
 }) {
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
@@ -64,7 +66,7 @@ export function BrowserSetup({
   async function openExtensions() {
     try {
       // No browser id: opens the extensions page in the default browser.
-      await api.openSetup('extensions');
+      await api.openSetup('extensions', browserId);
       setNotice('');
     } catch (e) {
       setNotice(String(e));
@@ -72,7 +74,7 @@ export function BrowserSetup({
   }
   async function openFolder() {
     try {
-      await api.openSetup('extension_folder');
+      await api.openSetup('extension_folder', browserId);
       setNotice('');
     } catch (e) {
       setNotice(String(e));
@@ -110,7 +112,7 @@ export function BrowserSetup({
           className="secondary"
           onClick={() => void openExtensions()}
         >
-          Open browser's extensions
+          Open Extensions
         </button>
       </div>
       <label className="code-label">

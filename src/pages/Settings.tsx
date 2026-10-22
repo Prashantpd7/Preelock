@@ -308,10 +308,25 @@ export function Settings() {
                   disabled={disabled}
                 />
               </SettingRow>
-              {switchRow('Session finished', 'session_alert', undefined, !notificationsOn)}
+              {switchRow(
+                'Session finished',
+                'session_alert',
+                undefined,
+                !notificationsOn,
+              )}
               {switchRow('Play a sound', 'sound', undefined, !notificationsOn)}
-              {switchRow('Session started', 'session_start_alert', undefined, !notificationsOn)}
-              {switchRow('Play a sound', 'session_start_sound', undefined, !notificationsOn)}
+              {switchRow(
+                'Session started',
+                'session_start_alert',
+                undefined,
+                !notificationsOn,
+              )}
+              {switchRow(
+                'Play a sound',
+                'session_start_sound',
+                undefined,
+                !notificationsOn,
+              )}
               {(draft.sound || draft.session_start_sound) && (
                 <SettingRow title="Volume">
                   <div className="volume-control">
