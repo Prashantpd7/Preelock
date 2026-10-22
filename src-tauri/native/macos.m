@@ -13,6 +13,16 @@ static char *json(id object) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
     return strdup([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String ?: "null");
 }
+static NSString *displayNameForApp(NSRunningApplication *app) {
+    // Prefer CFBundleDisplayName (e.g. "Visual Studio Code") over the raw
+    // bundle/localized name (e.g. "Code").
+    if (app.bundleIdentifier) {
+        NSBundle *bundle = [NSBundle bundleWithIdentifier:app.bundleIdentifier];
+        NSString *display = [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+        if ([display isKindOfClass:[NSString class]] && display.length > 0) return display;
+    }
+    return app.localizedName ?: app.bundleIdentifier;
+}
 char *preelock_apps(void) {
     @autoreleasepool {
         __block char *result;
@@ -20,7 +30,7 @@ char *preelock_apps(void) {
             NSMutableArray *apps = [NSMutableArray array];
             for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
                 if (app.activationPolicy == NSApplicationActivationPolicyRegular && app.bundleIdentifier)
-                    [apps addObject:@{@"id":app.bundleIdentifier, @"name":app.localizedName ?: app.bundleIdentifier}];
+                    [apps addObject:@{@"id":app.bundleIdentifier, @"name":displayNameForApp(app)}];
             }
             result = json(apps);
         });
@@ -32,7 +42,7 @@ char *preelock_sample(void) {
         __block char *result;
         onMain(^{
             NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
-            result = json(@{@"id": app.bundleIdentifier ?: @"", @"name":app.localizedName ?: @"", @"pid":@(app.processIdentifier), @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000))});
+            result = json(@{@"id": app.bundleIdentifier ?: @"", @"name":displayNameForApp(app) ?: @"", @"pid":@(app.processIdentifier), @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000))});
         });
         return result;
     }
@@ -110,18 +120,22 @@ void preelock_free(char *data) { free(data); }
 #import <ServiceManagement/ServiceManagement.h>
 char *preelock_settings_info(void) {
     @autoreleasepool {
-        __block NSInteger auth = 0;
-        if (!NSBundle.mainBundle.bundleIdentifier ||
-            ![NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
-            return json(@{@"notifications":@(-1), @"login":@(-1)});
+        // UNUserNotificationCenter crashes the process when there is no .app
+        // bundle (dev mode) — check first and report unavailable instead.
+        BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
+            [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
+        __block NSInteger auth = -1;
+        if (bundled) {
+            dispatch_semaphore_t wait = dispatch_semaphore_create(0);
+            [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+                auth = settings.authorizationStatus; dispatch_semaphore_signal(wait);
+            }];
+            dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 3*NSEC_PER_SEC));
         }
-        dispatch_semaphore_t wait = dispatch_semaphore_create(0);
-        [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
-            auth = settings.authorizationStatus; dispatch_semaphore_signal(wait);
-        }];
-        dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 3*NSEC_PER_SEC));
         NSInteger login = -1;
-        if (@available(macOS 13.0, *)) login = SMAppService.mainAppService.status;
+        if (bundled) {
+            if (@available(macOS 13.0, *)) login = SMAppService.mainAppService.status;
+        }
         NSDateComponents *parts = [NSCalendar.currentCalendar components:(NSCalendarUnitYear|NSCalendarUnitMonth|NSCalendarUnitDay|NSCalendarUnitWeekday|NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:NSDate.date];
         return json(@{@"notifications":@(auth), @"login":@(login), @"day":@((parts.weekday+6)%7), @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day], @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]});
     }
@@ -141,10 +155,10 @@ char *preelock_login(int enabled) {
     }
 }
 int preelock_notification_permission(void) {
-    if (!NSBundle.mainBundle.bundleIdentifier ||
-        ![NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
-        return 0;
-    }
+    // UNUserNotificationCenter crashes without an .app bundle (dev mode).
+    BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
+        [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
+    if (!bundled) return 0;
     __block BOOL granted = NO;
     dispatch_semaphore_t wait = dispatch_semaphore_create(0);
     [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed, NSError *error) {
@@ -162,6 +176,10 @@ int preelock_notification_permission(void) {
 }
 @end
 void preelock_notify(const char *title, const char *body) {
+    // Skip silently without an .app bundle (dev mode) — the API would crash.
+    BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
+        [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
+    if (!bundled) return;
     static VYAlerts *delegate;
     static dispatch_once_t once;
     dispatch_once(&once, ^{delegate=[VYAlerts new]; UNUserNotificationCenter.currentNotificationCenter.delegate=delegate;});

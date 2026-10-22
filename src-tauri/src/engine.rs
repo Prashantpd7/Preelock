@@ -585,8 +585,8 @@ impl Engine {
                         signals.approved_app = !blocked
                             && (work_apps
                                 .iter()
-                                .any(|id| id.eq_ignore_ascii_case(&sample.id))
-                                || sample.id == s.focus.browser_app);
+                                .any(|id| crate::focus::ids_match(id, &sample.id))
+                                || crate::focus::ids_match(&sample.id, &s.focus.browser_app));
                         signals.idle_ms = sample.idle_ms;
                         if sample.id == s.focus.browser_app && !sample.id.is_empty() {
                             let domains = if s.focus.mode == Mode::Standard {

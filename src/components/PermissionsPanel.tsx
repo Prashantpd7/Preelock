@@ -6,8 +6,7 @@ import { PermissionsGuide } from './PermissionsGuide';
 import { BrowserSetup } from './BrowserSetup';
 import { Modal, SettingRow } from './SettingsControls';
 export function PermissionsPanel() {
-  const [pairBrowser, setPairBrowser] = useState('');
-  const { setup, error, refresh } = useFocusSetup(pairBrowser || undefined);
+  const { setup, error, refresh } = useFocusSetup();
   const [panel, setPanel] = useState<
     'browser' | 'add-browser' | 'camera' | null
   >(null);
@@ -204,20 +203,7 @@ export function PermissionsPanel() {
               </div>
             ) : (
               <div className="dialog-stack">
-                <div className="choice-group" aria-label="Browser to connect">
-                  {setup?.browsers?.map((browser) => (
-                    <button
-                      key={browser.id}
-                      className="secondary"
-                      aria-pressed={pairBrowser === browser.id}
-                      onClick={() => setPairBrowser(browser.id)}
-                    >
-                      {browser.name}
-                    </button>
-                  ))}
-                </div>
                 <BrowserSetup
-                  browserId={pairBrowser}
                   setup={setup}
                   refresh={async () => {
                     await refresh();

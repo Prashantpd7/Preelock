@@ -677,13 +677,18 @@ export function SessionCard({
                         setGuideBrowser(target);
                         setGuideSetup(null);
                         setShowBrowserSetup(true);
-                        // Fetch this browser's status now: the popup's
-                        // sessionSetup is filtered to the session's dropdown
-                        // browser and may already be connected, which would
-                        // render the guide as nothing.
+                        // Fetch this browser's status now, and also refresh
+                        // the popup's own sessionSetup so the readiness check
+                        // flips to Ready if the extension is already connected.
+                        // (Previously only guideSetup was updated, leaving
+                        // browserReady false while BrowserSetup saw a live
+                        // connection — the empty broken dialog.)
                         api
                           .focusSetup(target)
-                          .then(setGuideSetup)
+                          .then((fresh) => {
+                            setGuideSetup(fresh);
+                            setSessionSetup(fresh);
+                          })
                           .catch(() => {});
                       }}
                     >

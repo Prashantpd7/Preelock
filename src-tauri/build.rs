@@ -4,6 +4,7 @@ fn main() {
             .file("native/macos.m")
             .flag("-fobjc-arc")
             .flag("-fblocks")
+            .flag("-fobjc-exceptions")
             .compile("preelock_native");
         for framework in [
             "AppKit",

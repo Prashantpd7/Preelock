@@ -17,6 +17,7 @@ export const preferenceDefaults: Required<Preferences> = {
   offer_break: true,
   break_minutes: 5,
   break_alert: true,
+  notifications_enabled: true,
   saved_setups: [],
 };
 export type SettingsAction =

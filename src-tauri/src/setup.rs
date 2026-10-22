@@ -1,5 +1,65 @@
 //! Fixed setup actions. No arbitrary URLs or shell commands are accepted.
 use tauri::Manager;
+
+/// Bundle id of the user's default browser (macOS), via LaunchServices.
+#[cfg(target_os = "macos")]
+fn default_browser_id() -> Option<String> {
+    let script = "ObjC.import('AppKit'); const ws = $.NSWorkspace.sharedWorkspace; \
+        const url = $.NSURL.URLWithString('https://example.com'); \
+        const appUrl = ws.URLForApplicationToOpenURL(url); \
+        appUrl ? appUrl.path.js : '';";
+    let output = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()
+        .ok()?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    let output = std::process::Command::new("mdls")
+        .args(["-name", "kMDItemCFBundleIdentifier", "-r", &path])
+        .output()
+        .ok()?;
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.is_empty() || id == "(null)" {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Executable name of the user's default browser (Windows), via the
+/// https URL association in the registry.
+#[cfg(target_os = "windows")]
+fn default_browser_id() -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+            "/v",
+            "ProgId",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let prog_id = text
+        .lines()
+        .find_map(|l| l.split_whitespace().last())?
+        .to_ascii_lowercase();
+    // Map common Chromium ProgIds to their executables.
+    let exe = if prog_id.contains("chrome") {
+        "chrome.exe"
+    } else if prog_id.contains("msedge") {
+        "msedge.exe"
+    } else if prog_id.contains("brave") {
+        "brave.exe"
+    } else if prog_id.contains("vivaldi") {
+        "vivaldi.exe"
+    } else {
+        return None;
+    };
+    Some(exe.to_string())
+}
 pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let source = app
         .path()
@@ -75,10 +135,25 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                 cmd.arg("x-apple.systempreferences:com.apple.preference.security?Privacy");
             }
             "extensions" => {
-                if !crate::focus::supported_browser(browser_id) {
-                    return Err("Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
+                // Empty id = use the user's default browser.
+                let default_id;
+                let resolved: &str = if browser_id.is_empty() {
+                    match default_browser_id() {
+                        Some(id) => {
+                            default_id = id;
+                            &default_id
+                        }
+                        None => {
+                            return Err("Could not find your default browser.".into())
+                        }
+                    }
+                } else {
+                    browser_id
+                };
+                if !crate::focus::supported_browser(resolved) {
+                    return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
                 }
-                cmd.args(["-b", browser_id, "chrome://extensions/"]);
+                cmd.args(["-b", resolved, "chrome://extensions/"]);
             }
             _ => return Err("Unknown setup action.".into()),
         }
@@ -91,15 +166,35 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                 cmd.arg(extension_dir(app)?);
             }
             "extensions" => {
-                if !crate::focus::supported_browser(browser_id)
-                    || !crate::platform::installed_browsers()
+                // Empty id = use the user's default browser.
+                let default_id;
+                let resolved: &str = if browser_id.is_empty() {
+                    match default_browser_id() {
+                        Some(id) => {
+                            default_id = id;
+                            &default_id
+                        }
+                        None => {
+                            return Err("Could not find your default browser. Open it first, then refresh.".into())
+                        }
+                    }
+                } else {
+                    browser_id
+                };
+                if !crate::focus::supported_browser(resolved) {
+                    return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
+                }
+                // When a specific browser was requested, verify it is installed.
+                // The default browser from the registry is installed by definition.
+                if !browser_id.is_empty()
+                    && !crate::platform::installed_browsers()
                         .iter()
                         .chain(crate::platform::applications()?.iter())
-                        .any(|a| a.id.eq_ignore_ascii_case(browser_id))
+                        .any(|a| a.id.eq_ignore_ascii_case(resolved))
                 {
                     return Err("Open your browser first, then refresh.".into());
                 }
-                cmd = std::process::Command::new(browser_id);
+                cmd = std::process::Command::new(resolved);
                 cmd.arg("chrome://extensions/");
             }
             "camera_settings" | "notification_settings" | "privacy_settings" => {

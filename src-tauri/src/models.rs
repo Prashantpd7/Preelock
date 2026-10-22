@@ -70,6 +70,7 @@ pub struct Preferences {
     pub offer_break: bool,
     pub break_minutes: u32,
     pub break_alert: bool,
+    pub notifications_enabled: bool,
     pub saved_setups: Vec<SavedSetup>,
 }
 impl Default for Preferences {
@@ -91,6 +92,7 @@ impl Default for Preferences {
             offer_break: true,
             break_minutes: 5,
             break_alert: true,
+            notifications_enabled: true,
             saved_setups: vec![],
         }
     }

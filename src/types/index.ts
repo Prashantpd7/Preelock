@@ -52,6 +52,7 @@ export interface Preferences {
   offer_break?: boolean;
   break_minutes?: number;
   break_alert?: boolean;
+  notifications_enabled?: boolean;
   saved_setups?: SavedSetup[];
 }
 export interface Snapshot {
