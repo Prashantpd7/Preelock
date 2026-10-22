@@ -145,6 +145,16 @@ char *preelock_login(int enabled) {
         __block NSString *message = @"";
         onMain(^{
             if (@available(macOS 13.0, *)) {
+                // SMAppService needs a proper .app bundle. Registering the raw
+                // dev binary makes macOS launch it via Terminal at login with
+                // a white screen. Refuse to register in dev mode, but always
+                // allow unregister so a bad registration can be cleaned up.
+                BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
+                    [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
+                if (enabled && !bundled) {
+                    message = @"Open at login is available in the installed app.";
+                    return;
+                }
                 NSError *error = nil;
                 if (enabled) [SMAppService.mainAppService registerAndReturnError:&error];
                 else [SMAppService.mainAppService unregisterAndReturnError:&error];

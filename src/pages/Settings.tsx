@@ -25,7 +25,15 @@ const tabs = [
 type Tab = (typeof tabs)[number];
 export function Settings() {
   const { data, execute, busy, refresh } = useAppStore();
-  const [tab, setTab] = useState<Tab>('General');
+  // Allow deep-linking to a specific tab, e.g. /settings?tab=Connections
+  // from the Dashboard's "Connect browser" button.
+  const initialTab = (() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    return (tabs as readonly string[]).includes(t ?? '')
+      ? (t as Tab)
+      : 'General';
+  })();
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [draft, setDraft] = useState({
     ...preferenceDefaults,
     ...data.preferences,
@@ -173,24 +181,21 @@ export function Settings() {
                   disabled={disabled}
                 />
               </SettingRow>
-              <SettingRow
-                title="Open at login"
-                hint={
-                  info.login === 2
-                    ? 'Approve Preelock in Login Items to finish setup. Opens at login when there was an active session.'
-                    : info.login === -1
-                      ? 'Available in the installed app.'
-                      : 'Opens the app at login when there was an active session.'
-                }
-              >
-                <Toggle
-                  label="Open at login"
-                  checked={info.login === 1 || info.login === 2}
-                  disabled={
-                    disabled || info.login === undefined || info.login === -1
+              <SettingRow title="Open at login" hint="Opens the app at login.">
+                <span
+                  className="status-pill"
+                  aria-label={
+                    info.login === 1
+                      ? 'Open at login is on'
+                      : 'Open at login is automatic'
                   }
-                  onChange={(enabled) => void run({ type: 'login', enabled })}
-                />
+                >
+                  {info.login === 1
+                    ? 'On'
+                    : info.login === 2
+                      ? 'Needs approval'
+                      : 'Auto'}
+                </span>
               </SettingRow>
               {switchRow(
                 'Show timer in menu bar',

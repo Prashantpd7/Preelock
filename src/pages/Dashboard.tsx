@@ -12,7 +12,7 @@ import { PageHeading, Stat } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 export function Dashboard() {
-  const { sessions, tasks, preferences } = useAppStore((s) => s.data);
+  const { sessions, tasks, preferences, browser } = useAppStore((s) => s.data);
   const { setup, refresh } = useFocusSetup();
   const stats = statistics(sessions, tasks);
   const productive = productiveStatistics(sessions);
@@ -27,6 +27,26 @@ export function Dashboard() {
     (setup?.applications ?? []).map((a) => [a.id, a.name]),
   );
   const liveSession = sessions.find((s) => isLiveStatus(s));
+  // Does this session use browser website blocking? Mirrors the Rust
+  // FocusConfig::network_required() logic.
+  const sessionNeedsBrowser = (s: (typeof sessions)[number]) => {
+    const f = s.focus;
+    if (!f) return false;
+    return (
+      !f.general_internet ||
+      (f.domains?.length ?? 0) > 0 ||
+      (f.mode !== 'standard' && !!f.browser_app) ||
+      (f.attention?.work_domains?.length ?? 0) > 0
+    );
+  };
+  // Show the reconnect button when the live session needs the browser
+  // but the extension is not connected. The session keeps running and
+  // apps stay blocked; only website blocking is paused.
+  const showReconnectBrowser =
+    !!liveSession &&
+    liveSession.status === 'running' &&
+    sessionNeedsBrowser(liveSession) &&
+    !browser?.connected;
   const cameraBlocking =
     !!liveSession?.focus?.camera &&
     liveSession.status === 'running' &&
@@ -54,6 +74,21 @@ export function Dashboard() {
               ? 'Waiting for the browser extension to connect…'
               : 'Distracting apps and websites stay blocked until this session ends.'}
           </p>
+          {showReconnectBrowser && (
+            <p>
+              <Link
+                className="button secondary"
+                to="/settings?tab=Connections"
+                aria-label="Connect browser from Settings Connections"
+              >
+                Connect browser
+              </Link>
+              <span className="small muted" style={{ marginLeft: '0.75rem' }}>
+                Browser disconnected — apps stay blocked. Reconnect to resume
+                website blocking.
+              </span>
+            </p>
+          )}
           {cameraBlocking && (
             <p className="camera-warn" role="alert">
               Camera isn&apos;t detecting you — timer is paused. Sit in front of

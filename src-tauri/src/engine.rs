@@ -73,11 +73,13 @@ impl Engine {
                 if resume {
                     attention::recover(s, clock::now());
                     if s.status != Status::Paused {
-                        s.status = if s.focus.network_required() {
-                            Status::Preparing
-                        } else {
-                            Status::Running
-                        };
+                        // On resume after system restart, go directly to Running.
+                        // The user expects blocking to resume immediately when the
+                        // PC starts, without having to open the browser first.
+                        // Browser website rules are picked up by the extension
+                        // when the browser is opened; native app blocking starts
+                        // at once via the backend.
+                        s.status = Status::Running;
                     }
                     s.ended_at = None;
                     s.deadline_ms = None;
@@ -563,14 +565,25 @@ impl Engine {
                 );
             }
         } else {
+            // When the browser disconnects during a Running session, the session
+            // KEEPS GOING — apps stay blocked, timer keeps running. Only website
+            // blocking is paused until the browser reconnects. The UI shows a
+            // "Connect browser" button that navigates to Settings → Connections.
+            // We do NOT drop to Preparing; that would pause the session.
             if s.focus.network_required()
                 && (!browser.connected || browser.applied_id != s.id || !browser.error.is_empty())
             {
-                s.status = Status::Preparing;
-                s.deadline_ms = None;
-                s.attention.state = State::Preparing;
-                s.report.enforcement = "Waiting for browser reconnection".into();
-                s.report.event(now, "enforcement_lost", "Browser disconnected. Session stays active; focus time waits for reconnection.");
+                // Log once when the browser disconnects (avoid spam on every tick).
+                let already_logged = s
+                    .report
+                    .events
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .any(|e| e.kind == "browser_disconnected");
+                if !already_logged {
+                    s.report.event(now, "browser_disconnected", "Browser disconnected. Session keeps running; apps stay blocked. Reconnect the browser from Settings → Connections to resume website blocking.");
+                }
             }
             if s.status == Status::Running && s.focus.activity_consent && self.native {
                 match platform::sample() {
@@ -832,13 +845,13 @@ mod tests {
         e.db.save(&e.data).unwrap();
         drop(e);
         let mut e = Engine::open_recovery(&dir.path().join("test.sqlite"), false, true).unwrap();
-        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert_eq!(e.data.sessions[0].status, Status::Running);
         assert!(!e.data.sessions[0].force_quit);
         e.bridge = Some(Bridge::test_bridge(dir.path()));
         e.publish();
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].focused_ms, 0);
-        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert_eq!(e.data.sessions[0].status, Status::Running);
         e.bridge
             .as_ref()
             .unwrap()
@@ -1016,7 +1029,7 @@ mod tests {
             .unwrap()
             .acknowledge(TEST_CLIENT, TEST_BROWSER, "");
         e.tick().unwrap();
-        assert_eq!(e.data.sessions[0].status, Status::Preparing);
+        assert_eq!(e.data.sessions[0].status, Status::Running);
         assert!(!e.shutdown_if_idle());
     }
     #[test]

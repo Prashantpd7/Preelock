@@ -183,6 +183,17 @@ pub fn info() -> Result<serde_json::Value, String> {
     }))
 }
 pub fn login(on: bool) -> Result<(), String> {
+    // Never register a dev/build binary for open-at-login: the registry
+    // would launch the raw exe outside its installed context. Only the
+    // installed app (NSIS/MSIX) qualifies. Always allow unregister
+    // (cleanup of a bad entry).
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let p = exe.to_string_lossy().to_lowercase().replace('/', "\\");
+        if p.contains("\\target\\debug\\") || p.contains("\\target\\release\\") {
+            return Err("Open at login is available in the installed app.".into());
+        }
+    }
     if is_packaged() {
         return set_packaged_login(on);
     }

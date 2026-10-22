@@ -38,14 +38,38 @@ async fn snapshot(app: tauri::AppHandle) -> Result<Snapshot, String> {
 }
 #[tauri::command]
 async fn execute(action: Action, app: tauri::AppHandle) -> Result<Snapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Mutex<Engine>>()
+    let app_for_task = app.clone();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        app_for_task
+            .state::<Mutex<Engine>>()
             .lock()
             .map_err(|_| "Session engine unavailable.")?
             .execute(action)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    // Keep open-at-login in sync with session state: registered only while
+    // a session is active, so the app auto-opens after a restart solely to
+    // recover an interrupted session.
+    sync_login_for_sessions(&app);
+    Ok(snapshot)
+}
+/// Register for open-at-login iff a session is currently active (Running,
+/// Paused, or Preparing). Otherwise unregister, so the app never auto-opens
+/// without a session to recover. No-op in dev mode (macos.m refuses there).
+fn sync_login_for_sessions(app: &tauri::AppHandle) {
+    let has_active = app
+        .state::<Mutex<Engine>>()
+        .lock()
+        .map(|e| e.has_active())
+        .unwrap_or(false);
+    if has_active {
+        if let Err(e) = desktop_settings::login(true) {
+            log::warn!("Could not enable open-at-login for active session: {e}");
+        }
+    } else if let Err(e) = desktop_settings::login(false) {
+        log::warn!("Could not disable open-at-login: {e}");
+    }
 }
 #[tauri::command]
 fn capabilities() -> Vec<capabilities::Capability> {
@@ -238,24 +262,53 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             migrate_legacy_data(&dir)?;
             std::fs::create_dir_all(&dir)?;
-            // Open-at-login defaults ON for new installs so unfinished sessions
-            // recover after a shutdown. The marker ensures an explicit user
-            // choice in Settings is never overridden.
+            // Open-at-login is strictly session-conditional: the app should
+            // only auto-open after a restart if there was an ACTIVE session
+            // when the PC shut down. Never enable it unconditionally.
+            // In dev mode (not a bundled .app), always unregister to clean
+            // up any bad registration of the raw debug binary (which would
+            // launch via Terminal with a white screen).
+            #[cfg(target_os = "macos")]
             {
-                let marker = dir.join(".login_configured");
-                if !marker.exists() {
-                    if let Err(e) = desktop_settings::login(true) {
-                        log::warn!("Could not enable open-at-login by default: {e}");
-                    }
-                    let _ = std::fs::write(&marker, "1");
+                let bundled = std::env::current_exe().ok().is_some_and(|p| {
+                    p.ancestors().any(|a| {
+                        a.extension().is_some_and(|e| e == "app")
+                            && a.join("Contents").join("Info.plist").exists()
+                    })
+                });
+                if !bundled {
+                    // Dev mode: remove any stale login registration of the
+                    // debug binary. Never register the dev binary.
+                    let _ = desktop_settings::login(false);
                 }
             }
+            #[cfg(target_os = "windows")]
+            {
+                // Dev mode: remove any stale login registration of the raw
+                // dev exe (target\debug / target\release). Never register it.
+                let is_dev = std::env::current_exe().ok().is_some_and(|p| {
+                    let s = p.to_string_lossy().to_lowercase().replace('/', "\\");
+                    s.contains("\\target\\debug\\") || s.contains("\\target\\release\\")
+                });
+                if is_dev {
+                    let _ = desktop_settings::login(false);
+                }
+            }
+            // Remove the legacy unconditional marker so the old behavior
+            // (enable on first run) can never apply again.
+            let _ = std::fs::remove_file(dir.join(".login_configured"));
             app.manage(Mutex::new(
                 Engine::open_native(&dir.join("preelock.sqlite")).map_err(std::io::Error::other)?,
             ));
             app.manage(Mutex::new(settings::Runtime::default()));
             app.manage(ExitApproved::default());
             desktop_settings::install_quit_guard(app.handle()).map_err(std::io::Error::other)?;
+            // Sync open-at-login with session state on every launch: if a
+            // session is active, ensure registration (recovery after restart);
+            // otherwise unregister so the app doesn't auto-open for no reason.
+            // In dev mode this unregisters the debug binary (macos.m guards
+            // registration, but an old bad entry may still exist).
+            sync_login_for_sessions(app.handle());
             let app_handle = app.handle();
             let (initial_menu, mut showing_timer) = {
                 let state = app.state::<Mutex<Engine>>();
