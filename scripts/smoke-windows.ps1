@@ -10,8 +10,11 @@ if ($signature.Status -notin @("NotSigned", "Valid")) {
 }
 $installDir = Join-Path $env:RUNNER_TEMP "Preelock-installed"
 if (Test-Path $installDir) { throw "Test destination already exists" }
+$legacyDatabase = Join-Path $env:APPDATA "com.vystriq.desktop/vystriq.sqlite"
 $database = Join-Path $env:APPDATA "com.preelock.desktop/preelock.sqlite"
-if (Test-Path $database) { throw "Refusing to use existing app data" }
+if ((Test-Path $legacyDatabase) -or (Test-Path $database)) {
+    throw "Refusing to use existing app data"
+}
 # Exercise a real previous installer, then upgrade in place with seeded state.
 $legacyDir = Join-Path $env:RUNNER_TEMP "legacy-installer"
 gh release download v0.4.2 --repo Prashantpd7/Preelock --pattern '*Windows-x64.exe' --dir $legacyDir
@@ -22,13 +25,15 @@ if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "
 $legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") -PassThru
 try {
     Start-Sleep -Seconds 15
-    if ($legacyApp.HasExited -or !(Test-Path $database)) { throw "Legacy startup failed" }
+    if ($legacyApp.HasExited -or !(Test-Path $legacyDatabase)) {
+        throw "Legacy startup failed"
+    }
 } finally {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
 }
-python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); p=json.loads(c.execute('select payload from preferences where id=1').fetchone()[0]); p['theme']='light'; c.execute('update preferences set payload=? where id=1',(json.dumps(p),)); c.commit()" $database
+python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); p=json.loads(c.execute('select payload from preferences where id=1').fetchone()[0]); p['theme']='light'; c.execute('update preferences set payload=? where id=1',(json.dumps(p),)); c.commit()" $legacyDatabase
 if ($LASTEXITCODE -ne 0) { throw "Could not seed upgrade preference" }
-$token = Join-Path (Split-Path $database -Parent) "browser-token"
+$token = Join-Path (Split-Path $legacyDatabase -Parent) "browser-token"
 $tokenHash = (Get-FileHash $token).Hash
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 New-Item $runKey -Force | Out-Null
@@ -67,6 +72,7 @@ try {
         $app.WaitForExit(10000) | Out-Null
     }
 }
+$token = Join-Path (Split-Path $database -Parent) "browser-token"
 python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==4; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
 if ($LASTEXITCODE -ne 0) { throw "Database validation failed" }
 python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.loads(c.execute('select payload from preferences where id=1').fetchone()[0])['theme']=='light'" $database
