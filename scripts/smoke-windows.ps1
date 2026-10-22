@@ -22,7 +22,8 @@ if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
 $legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
 $legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "Legacy installation failed" }
-$legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") -PassThru
+$legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") `
+    -WorkingDirectory $installDir -PassThru
 try {
     Start-Sleep -Seconds 15
     if ($legacyApp.HasExited -or !(Test-Path $legacyDatabase)) {
@@ -60,7 +61,7 @@ foreach ($entry in $config.bundle.resources.PSObject.Properties) {
         throw "Installed resource mismatch: $($entry.Value)"
     }
 }
-$app = Start-Process $executable -PassThru
+$app = Start-Process $executable -WorkingDirectory $installDir -PassThru
 try {
     Start-Sleep -Seconds 15
     if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
