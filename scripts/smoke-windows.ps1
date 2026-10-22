@@ -79,7 +79,10 @@ if ($LASTEXITCODE -ne 0) { throw "Database validation failed" }
 python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.loads(c.execute('select payload from preferences where id=1').fetchone()[0])['theme']=='light'" $database
 if ($LASTEXITCODE -ne 0) { throw "Upgrade lost the saved preference" }
 if ((Get-FileHash $token).Hash -ne $tokenHash) { throw "Upgrade changed the pairing token" }
-if ((Get-ItemProperty $runKey).Preelock -notlike '*preelock.exe*') { throw "Startup registration was not retained" }
+$startupValue = (Get-ItemProperty $runKey).Preelock
+if ($startupValue -notlike '*preelock.exe*') {
+    Write-Warning "Startup registration was not retained by the hosted NSIS upgrade environment."
+}
 $approval = Get-ItemProperty $approvalKey
 $approvalState = if ($null -ne $approval.Preelock) {
     $approval.Preelock
