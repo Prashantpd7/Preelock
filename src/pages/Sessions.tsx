@@ -458,7 +458,8 @@ export function Sessions() {
                   {strict || focus.activity_consent
                     ? 'Other apps will be hidden.'
                     : 'Time counts in the apps you choose.'}{' '}
-                  Open a missing app, then refresh.
+                  If an app you want to use is missing, open it on your laptop,
+                  then click “Refresh apps.”
                 </p>
                 <div className="application-picker">
                   {apps.map((app) => (
