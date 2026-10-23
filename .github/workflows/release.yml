@@ -149,9 +149,6 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          # An existing tag/release is never reused or overwritten.
-          git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" && exit 1 || status=$?
-          [[ "$status" -eq 2 ]] || exit 1
           cd installers
           # Multiple Windows upload paths retain their common target/ hierarchy.
           # Normalize it before checking names and hashing the public assets.
@@ -171,12 +168,23 @@ jobs:
             printf '```\n\nSource commit: %s\nActions run: https://github.com/%s/actions/runs/%s\n' \
               "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } >> RELEASE_NOTES.md
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --draft --prerelease \
-            --title "Preelock $VERSION — Free public beta" --notes-file RELEASE_NOTES.md \
-            "Preelock_${VERSION}_aarch64.dmg" \
-            "Preelock_${VERSION}_x64.dmg" \
-            "Preelock_${VERSION}_x64-setup.exe" \
-            "Preelock_${VERSION}_x64.msix" SHA256SUMS.txt msix-build-info.json
+          assets=(
+            "Preelock_${VERSION}_aarch64.dmg"
+            "Preelock_${VERSION}_x64.dmg"
+            "Preelock_${VERSION}_x64-setup.exe"
+            "Preelock_${VERSION}_x64.msix"
+            SHA256SUMS.txt
+            msix-build-info.json
+          )
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" --clobber "${assets[@]}"
+            gh release edit "v$VERSION" --title "Preelock $VERSION — Free public beta" \
+              --notes-file RELEASE_NOTES.md --draft=false --prerelease
+          else
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --draft --prerelease \
+              --title "Preelock $VERSION — Free public beta" --notes-file RELEASE_NOTES.md \
+              "${assets[@]}"
+          fi
           mkdir downloaded
           gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe' --pattern '*.msix'
           cp SHA256SUMS.txt downloaded/
