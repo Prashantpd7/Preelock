@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Preelock",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "minimum_chrome_version": "120",
   "description": "Voluntary, session-scoped browser filtering paired with Preelock Desktop.",
   "icons": {

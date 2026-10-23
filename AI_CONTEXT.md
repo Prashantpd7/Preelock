@@ -25,11 +25,11 @@ impossible to stop.
 
 ## Current release and downloads
 
-Product and extension version: `0.5.0`. Public name: **Preelock**; extension:
+Product and extension version: `0.5.2`. Public name: **Preelock**; extension:
 **Preelock Focus**. Repository: `Prashantpd7/Preelock`. Release builds are gated by
 `.github/workflows/release.yml`; do not claim artifacts exist before the run succeeds.
 See [REBRANDING.md](docs/REBRANDING.md) for stable identities, installer migration
-and the full audit. MSIX version is `1.5.0.0`; Store identity and publisher are
+and the full audit. MSIX version is `1.5.2.0`; Store identity and publisher are
 unchanged. Mac builds are ad-hoc signed, not notarized; Windows NSIS is unsigned.
 The existing V artwork is approved for temporary reuse.
 

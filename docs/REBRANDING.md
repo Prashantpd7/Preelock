@@ -1,4 +1,4 @@
-# Preelock 0.5.0 compatibility and branding audit
+# Preelock 0.5.2 compatibility and branding audit
 
 Public product spelling: **Preelock**, one word. Browser extension: **Preelock Focus**.
 The existing V-shaped artwork is intentionally retained; no new artwork was invented.
@@ -23,7 +23,7 @@ Repository: https://github.com/Prashantpd7/Preelock (renamed in place).
 Fresh Store installations export their extension under `%USERPROFILE%\Preelock`.
 Existing extension paths are reused. No SQLite, pairing, session, task or backup
 files are moved or deleted. No schema, network, permissions or privacy change is
-part of this rebrand. MSIX version **1.5.0.0** exceeds **1.4.1.0**; its fourth
+part of this rebrand. MSIX version **1.5.2.0** exceeds **1.4.1.0**; its fourth
 segment remains zero. Package family identity continues to derive from the
 unchanged name and publisher. The supplied informational PFN in identity.json
 has a previously documented length discrepancy; verify the OS-derived PFN on a

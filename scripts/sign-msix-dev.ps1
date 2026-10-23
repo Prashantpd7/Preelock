@@ -10,7 +10,7 @@
 #   powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
 #     -IdentityName "Preelock.LocalTest" -Publisher "CN=Preelock Local Test"
 #   powershell -File scripts/sign-msix-dev.ps1 `
-#     -Package src-tauri/target/msix/Preelock_0.5.0_x64-validation.msix
+#     -Package src-tauri/target/msix/Preelock_0.5.2_x64-validation.msix
 #
 # Then, in a normal (non-elevated) PowerShell window:
 #   Add-AppxPackage -Path <package>

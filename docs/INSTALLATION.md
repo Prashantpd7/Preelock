@@ -1,7 +1,7 @@
 # Install Preelock — free public beta
 
 Download only from [Prashantpd7/Preelock releases](https://github.com/Prashantpd7/Preelock/releases).
-Choose the newest **Preelock 0.5.0 or later** beta. Do not use the old v0.4.0 Mac installer:
+Choose the newest **Preelock 0.5.2 or later** beta. Do not use the old v0.4.0 Mac installer:
 its application bundle signature is defective.
 
 Preelock is free and needs no account, subscription, programming tools, Node.js,
