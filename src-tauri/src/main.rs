@@ -12,6 +12,9 @@ fn main() {
                 .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
         })
         .is_some_and(|stem| stem == "preelockbackground");
+    if args.iter().any(|arg| arg == "--attention") {
+        std::process::exit(preelock_lib::attention_agent::run());
+    }
     if background_executable || preelock_lib::background::is_invocation(&args) {
         std::process::exit(preelock_lib::background::run());
     }

@@ -22,9 +22,10 @@ function loadScript(overrides = {}) {
     // script uses new URL(); browsers always provide it.
     URL,
     Date: { now: () => overrides.now ?? 0 },
-    setTimeout: (fn) => {
-      // The observer debounce: run immediately in tests.
-      fn();
+    setTimeout: (fn, delay) => {
+      // Run the observer debounce immediately, but leave IPC timeout
+      // callbacks pending so the synchronous mock response can win.
+      if (delay === 500) fn();
       return 0;
     },
     clearTimeout: () => {},
@@ -67,17 +68,19 @@ describe('youtube.js content script', () => {
   it('parses channel keys from paths and hrefs, mirroring rules.js', () => {
     const { api } = loadScript();
     expect(api.parseChannelKeyFromPath('/@Handle/videos')).toBe('@handle');
-    expect(api.parseChannelKeyFromPath('/channel/UCabcdefghijklmnopqrstuv')).toBe(
-      'UCabcdefghijklmnopqrstuv',
-    );
+    expect(
+      api.parseChannelKeyFromPath('/channel/UCabcdefghijklmnopqrstuv'),
+    ).toBe('UCabcdefghijklmnopqrstuv');
     expect(api.parseChannelKeyFromPath('/c/SomeName')).toBe('c:somename');
     expect(api.parseChannelKeyFromPath('/user/SomeName')).toBe('user:somename');
     expect(api.parseChannelKeyFromPath('/watch')).toBe(null);
     expect(api.parseChannelKeyFromPath('/shorts/abc')).toBe(null);
     expect(api.parseChannelKeyFromHref('/@Owner')).toBe('@owner');
-    expect(api.parseChannelKeyFromHref('https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv')).toBe(
-      'UCabcdefghijklmnopqrstuv',
-    );
+    expect(
+      api.parseChannelKeyFromHref(
+        'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv',
+      ),
+    ).toBe('UCabcdefghijklmnopqrstuv');
     expect(api.parseChannelKeyFromHref('https://example.com/@x')).toBe(null);
     expect(
       api.extractChannelKey([

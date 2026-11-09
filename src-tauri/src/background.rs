@@ -3,13 +3,7 @@
 //! The desktop UI starts this process once, but it does not own it. The
 //! process has its own SQLite connection and takes ownership of the browser
 //! bridge whenever the UI heartbeat expires.
-use crate::{
-    browser::{Bridge, Policy},
-    clock,
-    database::Database,
-    models::Status,
-    platform, screen_time,
-};
+use crate::{attention_agent, database::Database, engine::Engine, platform};
 use fs2::FileExt;
 use std::{
     fs::File,
@@ -71,6 +65,22 @@ fn lock_held(data_dir: &Path) -> bool {
     } else {
         true
     }
+}
+
+fn attention_needed(path: &Path) -> bool {
+    Database::open(path)
+        .and_then(|db| db.load())
+        .map(|data| {
+            data.sessions.iter().any(|session| {
+                matches!(
+                    session.status,
+                    crate::models::Status::Running | crate::models::Status::Preparing
+                ) && session.focus.camera
+                    && session.focus.attention.enabled
+                    && session.focus.attention.verification == "camera_and_activity"
+            })
+        })
+        .unwrap_or(false)
 }
 
 pub fn touch_desktop(data_dir: &Path) {
@@ -146,7 +156,7 @@ pub fn ensure_running(data_dir: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let path = exe.to_string_lossy().to_lowercase().replace('/', "\\");
     let development = path.contains("\\target\\debug\\") || path.contains("\\target\\release\\");
-    if !development {
+    if !development && !platform::packaged() {
         register_startup(&exe)?;
     }
     if tracker_alive(data_dir) || lock_held(data_dir) {
@@ -162,69 +172,10 @@ pub fn ensure_running(data_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("Could not start background tracker: {e}"))
 }
 
-fn publish_session(bridge: &Bridge, data: &crate::models::Snapshot) {
-    let active = data.sessions.iter().find(|session| {
-        matches!(
-            session.status,
-            Status::Running | Status::Paused | Status::Preparing
-        )
-    });
-    let policy =
-        active.map(|session| Policy::new(&session.id, &session.focus, session.remaining_ms));
-    bridge.publish(policy);
-    bridge.set_screen_time_tracking(true);
-}
-
-fn sample(db: &mut Database, bridge: Option<&Bridge>, last: &mut u64) -> Result<(), String> {
-    let now = clock::now();
-    let current = clock::continuous_ms();
-    let delta = current.saturating_sub(*last);
-    *last = current;
-    if delta == 0 || delta > 3_000 {
-        return Ok(());
-    }
-    let sample = platform::sample()?;
-    let Some(bridge) = bridge else {
-        if sample.idle_ms >= 60_000 {
-            return Ok(());
-        }
-        let mut buckets = Vec::new();
-        screen_time::add_usage(
-            &mut buckets,
-            screen_time::local_day_start_ms(now),
-            "app",
-            &sample.id,
-            &sample.name,
-            delta,
-        );
-        return db.record_screen_time(&buckets);
-    };
-    let status = bridge.status();
-    let mut buckets = Vec::new();
-    let day = screen_time::local_day_start_ms(now);
-    if sample.idle_ms < 60_000 && !sample.id.is_empty() {
-        screen_time::add_usage(&mut buckets, day, "app", &sample.id, &sample.name, delta);
-    }
-    if status.activity_fresh && status.browser_focused && !status.active_domain.is_empty() {
-        screen_time::add_usage(
-            &mut buckets,
-            day,
-            "site",
-            &status.active_domain,
-            &status.active_domain,
-            delta,
-        );
-    }
-    db.record_screen_time(&buckets)
-}
-
 pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let Ok(dir) = data_dir() else { return 1 };
     let path = dir.join("preelock.sqlite");
-    let Ok(mut db) = Database::open(&path) else {
-        return 1;
-    };
     let Ok(lock) = File::create(dir.join("background.lock")) else {
         return 1;
     };
@@ -236,35 +187,58 @@ pub fn run() -> i32 {
         let args: Vec<u16> = "--background\0".encode_utf16().collect();
         let _ = windows_sys::Win32::System::Recovery::RegisterApplicationRestart(args.as_ptr(), 0);
     }
-    let mut bridge: Option<Bridge> = None;
-    let mut last = clock::continuous_ms();
     loop {
         if desktop_alive(&dir) {
-            if let Some(current) = bridge.take() {
-                current.stop();
+            let needs_attention = attention_needed(&path);
+            if needs_attention {
+                if let Err(error) = attention_agent::ensure_running(&dir) {
+                    log::warn!("Could not start attention agent: {error}");
+                }
             }
-        } else if bridge.is_none() {
-            bridge = Bridge::start(&dir).ok();
-            if let Some(current) = &bridge {
-                current.set_screen_time_tracking(true);
+
+            let _ = attention_agent::signal(&dir, needs_attention);
+            thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        match Engine::open_background(&path) {
+            Ok(mut engine) => {
+                loop {
+                    if desktop_alive(&dir) {
+                        break;
+                    }
+                    let needs_attention = engine.needs_attention_agent();
+                    if needs_attention {
+                        if let Err(error) = attention_agent::ensure_running(&dir) {
+                            log::warn!("Could not start attention agent: {error}");
+                        }
+                    }
+
+                    let signal = attention_agent::signal(&dir, needs_attention).unwrap_or(
+                        attention_agent::Signal {
+                            status: "camera_unavailable".into(),
+                            sampled_at_ms: 0,
+                        },
+                    );
+                    engine.set_attention_camera_status(signal);
+                    if let Err(error) = engine.tick() {
+                        log::error!("Background engine tick failed: {error}");
+                        break;
+                    }
+                    if let Err(error) = touch(&dir.join(HEARTBEAT)) {
+                        log::warn!("Could not update background heartbeat: {error}");
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                }
+                drop(engine);
+            }
+            Err(error) => {
+                log::error!("Could not open background engine: {error}");
+                thread::sleep(Duration::from_secs(1));
             }
         }
-        if let Some(current) = &bridge {
-            if let Ok(data) = db.load() {
-                publish_session(current, &data);
-            }
-            current.refresh_screen_time_tracking();
-        }
-        if !desktop_alive(&dir) {
-            if let Err(error) = sample(&mut db, bridge.as_ref(), &mut last) {
-                log::warn!("Background screen-time sample failed: {error}");
-            }
-        } else {
-            last = clock::continuous_ms();
-        }
+
         if let Err(error) = touch(&dir.join(HEARTBEAT)) {
             log::warn!("Could not update background heartbeat: {error}");
         }
-        thread::sleep(Duration::from_secs(1));
     }
 }

@@ -1,17 +1,18 @@
 mod allowances;
 mod applocks;
-pub mod background;
 pub mod attention;
-mod blockreasons;
+pub mod attention_agent;
+pub mod background;
 mod blockedpage;
+mod blockreasons;
 pub mod browser;
-mod camera;
+pub(crate) mod camera;
 pub mod capabilities;
 pub mod cli;
 mod clock;
 pub mod database;
 mod desktop_settings;
-mod engine;
+pub(crate) mod engine;
 pub mod focus;
 mod frozen;
 mod lifecycle;
@@ -403,6 +404,10 @@ fn quit(app: &tauri::AppHandle) {
         }
     });
 }
+fn disconnect_ui(app: &tauri::AppHandle) {
+    app.state::<ExitApproved>().0.store(true, Ordering::Release);
+    app.exit(0);
+}
 /// Step 12 Frozen Turkey overlay sync, run on every 1-second tick
 /// from the tray thread (see `run`). The overlay is a fullscreen,
 /// always-on-top Tauri window (label `frozen`) showing the frozen
@@ -676,6 +681,19 @@ pub fn run() {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
+                    let needs_attention = engine.needs_attention_agent();
+                    if needs_attention {
+                        if let Err(error) = attention_agent::ensure_running(&cli_dir) {
+                            log::warn!("Could not start attention agent: {error}");
+                        }
+                    }
+                    let signal = attention_agent::signal(&cli_dir, needs_attention).unwrap_or(
+                        attention_agent::Signal {
+                            status: "camera_unavailable".into(),
+                            sampled_at_ms: 0,
+                        },
+                    );
+                    engine.set_attention_camera_status(signal);
                     if engine.tick().is_err() {
                         log::error!("Focus worker failed; restrictions released where possible.");
                     }
@@ -767,9 +785,7 @@ pub fn run() {
                 // untouched. Unlike the frozen overlay, this close is
                 // never prevented.
                 if window.label() == "blocked-app" {
-                    if let Ok(mut engine) =
-                        window.app_handle().state::<Mutex<Engine>>().lock()
-                    {
+                    if let Ok(mut engine) = window.app_handle().state::<Mutex<Engine>>().lock() {
                         engine.dismiss_blocked_app_page();
                     }
                     return;
@@ -777,18 +793,21 @@ pub fn run() {
                 if lifecycle::ending() {
                     return;
                 }
-                // Covers the Mac close button/Cmd+W and Windows X/Alt+F4/
-                // taskbar close. A busy/poisoned engine fails closed.
-                api.prevent_close();
                 let state = window.app_handle().state::<Mutex<Engine>>();
-                let blocked = match state.try_lock() {
-                    Ok(engine) if !engine.has_active() => {
-                        let _ = window.hide();
-                        false
-                    }
-                    _ => true,
-                };
-                if blocked {
+                let active = state
+                    .try_lock()
+                    .map(|engine| engine.has_active())
+                    .unwrap_or(true);
+                if active {
+                    // A strict session is owned by the background engine;
+                    // closing the UI must not end it.
+                    return;
+                }
+                // Preserve the existing idle close-to-tray behavior.
+                api.prevent_close();
+                if state.try_lock().is_ok() {
+                    let _ = window.hide();
+                } else {
                     blocked_quit(window.app_handle());
                 }
             }
@@ -817,8 +836,18 @@ pub fn run() {
                 if !lifecycle::ending()
                     && !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
             {
-                api.prevent_exit();
-                quit(app);
+                let active = app
+                    .state::<Mutex<Engine>>()
+                    .try_lock()
+                    .map(|engine| engine.has_active())
+                    .unwrap_or(true);
+                if active {
+                    api.prevent_exit();
+                    disconnect_ui(app);
+                } else {
+                    api.prevent_exit();
+                    quit(app);
+                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_window(app),

@@ -29,6 +29,8 @@ pub struct Engine {
     bridge: Option<Bridge>,
     bridge_error: String,
     native: bool,
+    camera_enabled: bool,
+    attention_camera_status: String,
     camera: crate::camera::Capture,
     camera_test_until: u64,
     failed: Option<String>,
@@ -194,20 +196,28 @@ fn record_blocked_app_page(
 impl Engine {
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, false)
+        Self::open_inner(path, false, false)
     }
     pub fn open_native(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, true)
+        Self::open_inner(path, true, false)
     }
-    fn open_inner(path: &Path, native: bool) -> Result<Self, String> {
+    pub fn open_background(path: &Path) -> Result<Self, String> {
+        Self::open_inner(path, true, false)
+    }
+    fn open_inner(path: &Path, native: bool, camera_enabled: bool) -> Result<Self, String> {
         let resume = if native {
             crate::lifecycle::initialize(path)?
         } else {
             false
         };
-        Self::open_recovery(path, native, resume)
+        Self::open_recovery(path, native, resume, camera_enabled)
     }
-    fn open_recovery(path: &Path, native: bool, resume: bool) -> Result<Self, String> {
+    fn open_recovery(
+        path: &Path,
+        native: bool,
+        resume: bool,
+        camera_enabled: bool,
+    ) -> Result<Self, String> {
         let mut db = Database::open(path)?;
         let mut data = db.load()?;
         // One-shot timers (step 6c): anything whose time passed while
@@ -356,7 +366,10 @@ impl Engine {
         let now = clock::continuous_ms();
         let engine = Self {
             db,
-            data_dir: path.parent().ok_or("Invalid database location.")?.to_path_buf(),
+            data_dir: path
+                .parent()
+                .ok_or("Invalid database location.")?
+                .to_path_buf(),
             data,
             anchor: now,
             sample_anchor: now,
@@ -368,6 +381,8 @@ impl Engine {
             bridge,
             bridge_error,
             native,
+            camera_enabled,
+            attention_camera_status: "camera_unavailable".into(),
             camera: Default::default(),
             camera_test_until: 0,
             failed: None,
@@ -381,6 +396,37 @@ impl Engine {
             bridge.set_screen_time_tracking(true);
         }
         Ok(engine)
+    }
+    pub fn set_attention_camera_status(&mut self, signal: crate::attention_agent::Signal) {
+        let now = clock::continuous_ms();
+        let fresh = signal.fresh(now);
+        let valid = matches!(
+            signal.status.as_str(),
+            "person_detected"
+                | "person_not_detected"
+                | "extended_absence"
+                | "permission_required"
+                | "camera_unavailable"
+                | "camera_interrupted"
+                | "camera_stalled"
+                | "analysis_error"
+                | "no_camera"
+                | "camera_error"
+                | "off"
+        );
+        self.attention_camera_status = if fresh && valid {
+            signal.status
+        } else {
+            "camera_unavailable".into()
+        };
+    }
+    pub fn needs_attention_agent(&self) -> bool {
+        self.data.sessions.iter().any(|session| {
+            matches!(session.status, Status::Running | Status::Preparing)
+                && session.focus.camera
+                && session.focus.attention.enabled
+                && session.focus.attention.verification == "camera_and_activity"
+        })
     }
     pub fn shutdown_if_idle(&mut self) -> bool {
         if self.has_active() {
@@ -2360,7 +2406,11 @@ impl Engine {
                 0
             };
             if s.status == Status::Running && s.focus.camera && self.native {
-                let status = self.camera.poll(tick);
+                let status = if self.camera_enabled {
+                    self.camera.poll(tick)
+                } else {
+                    self.attention_camera_status.clone()
+                };
                 signals.camera_status = status.clone();
                 if status != s.report.camera_status {
                     s.report.event(now, "camera_status", &status);
@@ -2702,7 +2752,7 @@ mod tests {
     fn restart_resumes_sessions_killed_mid_run() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("killed.sqlite");
-        let mut engine = Engine::open_inner(&path, false).unwrap();
+        let mut engine = Engine::open_inner(&path, false, false).unwrap();
         for title in ["Killed", "Clean"] {
             engine
                 .execute(Action::CreateSession {
@@ -2739,7 +2789,7 @@ mod tests {
         // killed session resumes with its remaining time intact,
         // still flagged force_quit (visibility, not punishment);
         // the cleanly ended session is untouched.
-        let engine = Engine::open_inner(&path, false).unwrap();
+        let engine = Engine::open_inner(&path, false, false).unwrap();
         assert!(engine.data.sessions[0].force_quit);
         assert_eq!(engine.data.sessions[0].status, Status::Running);
         assert_eq!(engine.data.sessions[0].remaining_ms, 25 * 60_000);
@@ -2754,7 +2804,7 @@ mod tests {
     fn restart_lock_resumes_locked_session_instead_of_flagging_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lock-restart.sqlite");
-        let mut engine = Engine::open_inner(&path, false).unwrap();
+        let mut engine = Engine::open_inner(&path, false, false).unwrap();
         engine
             .execute(Action::CreateSession {
                 title: "Locked".into(),
@@ -2775,7 +2825,7 @@ mod tests {
         engine.data.sessions[0].status = Status::Running;
         engine.db.save(&engine.data).unwrap();
         drop(engine);
-        let engine = Engine::open_inner(&path, false).unwrap();
+        let engine = Engine::open_inner(&path, false, false).unwrap();
         assert!(!engine.data.sessions[0].force_quit);
         assert_eq!(engine.data.sessions[0].status, Status::Running);
         assert!(engine.data.sessions[0].lock.restart_lock);
@@ -2818,7 +2868,7 @@ mod tests {
             s.attention.checkpoint_at = Some(clock::now() - 60000);
             e.db.save(&e.data).unwrap();
             drop(e);
-            let mut e = Engine::open_recovery(&path, false, true).unwrap();
+            let mut e = Engine::open_recovery(&path, false, true, false).unwrap();
             let s = &e.data.sessions[0];
             assert_eq!(s.status, status);
             assert_eq!(s.focus.camera, camera);
@@ -2842,7 +2892,8 @@ mod tests {
         e.tick().unwrap();
         e.db.save(&e.data).unwrap();
         drop(e);
-        let mut e = Engine::open_recovery(&dir.path().join("test.sqlite"), false, true).unwrap();
+        let mut e =
+            Engine::open_recovery(&dir.path().join("test.sqlite"), false, true, false).unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Running);
         assert!(!e.data.sessions[0].force_quit);
         e.bridge = Some(Bridge::test_bridge(dir.path()));
