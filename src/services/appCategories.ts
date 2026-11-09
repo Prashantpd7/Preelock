@@ -181,10 +181,7 @@ function domainMatches(domain: string, list: string[]): boolean {
 // Stable identity for one override entry: a website's domain, or an
 // app's target exactly as recorded (bundle id, or file path for bare
 // executables such as the dev binary).
-export function categoryKey(
-  kind: 'app' | 'site',
-  target: string,
-): string {
+export function categoryKey(kind: 'app' | 'site', target: string): string {
   return kind === 'site' ? domainOf(target) : target;
 }
 

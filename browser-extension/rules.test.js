@@ -88,9 +88,15 @@ describe('real browser policy rule generation', () => {
     expect(ruleMatches('example.com', 'notexample.com', '/')).toBe(false);
     expect(ruleMatches('*.example.com', 'www.example.com', '/')).toBe(true);
     expect(ruleMatches('*.example.com', 'example.com', '/')).toBe(false);
-    expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/shorts')).toBe(true);
-    expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/shorts/abc')).toBe(true);
-    expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/shortsabc')).toBe(false);
+    expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/shorts')).toBe(
+      true,
+    );
+    expect(
+      ruleMatches('youtube.com/shorts', 'youtube.com', '/shorts/abc'),
+    ).toBe(true);
+    expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/shortsabc')).toBe(
+      false,
+    );
     expect(ruleMatches('youtube.com/shorts', 'youtube.com', '/')).toBe(false);
     expect(ruleMatches('search:chess', 'google.com', '/search')).toBe(false);
   });
@@ -116,21 +122,33 @@ describe('real browser policy rule generation', () => {
       extra_blocked: ['pornhub.com'],
     };
     expect(
-      urlBlockedByPolicy('https://www.google.com/search?q=chess+openings', policy),
+      urlBlockedByPolicy(
+        'https://www.google.com/search?q=chess+openings',
+        policy,
+      ),
     ).toBe(true);
     expect(
       urlBlockedByPolicy('https://www.google.com/search?q=checkers', policy),
     ).toBe(false);
     expect(
-      urlBlockedByPolicy('https://www.youtube.com/results?search_query=chess', policy),
+      urlBlockedByPolicy(
+        'https://www.youtube.com/results?search_query=chess',
+        policy,
+      ),
     ).toBe(true);
     expect(
       urlBlockedByPolicy('https://www.youtube.com/watch?v=abc', policy),
     ).toBe(false);
     expect(urlBlockedByPolicy('https://pornhub.com/', policy)).toBe(true);
-    expect(searchPageQuery('https://www.bing.com/search?q=chess')?.query).toBe('chess');
-    expect(searchPageQuery('https://duckduckgo.com/?q=chess')?.query).toBe('chess');
-    expect(searchPageQuery('https://duckduckgo.com/?q=chess&ia=web')?.query).toBe('chess');
+    expect(searchPageQuery('https://www.bing.com/search?q=chess')?.query).toBe(
+      'chess',
+    );
+    expect(searchPageQuery('https://duckduckgo.com/?q=chess')?.query).toBe(
+      'chess',
+    );
+    expect(
+      searchPageQuery('https://duckduckgo.com/?q=chess&ia=web')?.query,
+    ).toBe('chess');
     expect(searchPageQuery('https://www.google.com/maps?q=chess')).toBe(null);
     const allow = {
       mode: 'allowlist',
@@ -154,9 +172,13 @@ describe('real browser policy rule generation', () => {
     };
     // Exception overrides a blocklist rule, including subdomains.
     expect(urlBlockedByPolicy('https://youtube.com/', policy)).toBe(false);
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', policy)).toBe(false);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/watch?v=x', policy),
+    ).toBe(false);
     // A path exception allows only that path, not the whole domain.
-    expect(urlBlockedByPolicy('https://example.com/docs/intro', policy)).toBe(false);
+    expect(urlBlockedByPolicy('https://example.com/docs/intro', policy)).toBe(
+      false,
+    );
     expect(urlBlockedByPolicy('https://example.com/other', policy)).toBe(true);
     // Exception on the search engine's host exempts its keyword blocks.
     const searchPolicy = {
@@ -193,7 +215,9 @@ describe('real browser policy rule generation', () => {
     expect(urlBlockedByPolicy('https://github.com/', allow)).toBe(true);
     expect(urlBlockedByPolicy('https://docs.rs/', allow)).toBe(false);
     // Local files are never blocked, with or without exceptions.
-    expect(urlBlockedByPolicy('file:///Users/x/notes.html', policy)).toBe(false);
+    expect(urlBlockedByPolicy('file:///Users/x/notes.html', policy)).toBe(
+      false,
+    );
   });
   it('compiles exception allows above block rules and below the adult overlay', () => {
     const rules = compileRules({
@@ -217,9 +241,7 @@ describe('real browser policy rule generation', () => {
       exceptions: ['pornhub.com'],
     });
     expect(
-      overlap.filter(
-        (r) => r.action.type === 'block' && r.priority === 3,
-      ),
+      overlap.filter((r) => r.action.type === 'block' && r.priority === 3),
     ).toHaveLength(1);
     // Allowlist mode adds no allow for the excepted (non-listed) domain.
     expect(
@@ -250,12 +272,24 @@ describe('real browser policy rule generation', () => {
 describe('YouTube channel rules', () => {
   it('normalizes every channel entry form, mirroring Rust', () => {
     expect(normalizeYouTubeChannel('@Some_Handle-1')).toBe('@some_handle-1');
-    expect(normalizeYouTubeChannel('https://www.youtube.com/@SomeHandle/')).toBe('@somehandle');
-    expect(normalizeYouTubeChannel('youtube.com/@handle/videos')).toBe('@handle');
-    expect(normalizeYouTubeChannel('youtube.com/channel/UCabcdefghijklmnopqrstuv')).toBe('UCabcdefghijklmnopqrstuv');
-    expect(normalizeYouTubeChannel('UCabcdefghijklmnopqrstuv')).toBe('UCabcdefghijklmnopqrstuv');
-    expect(normalizeYouTubeChannel('https://youtube.com/c/SomeName')).toBe('c:somename');
-    expect(normalizeYouTubeChannel('youtube.com/user/SomeName')).toBe('user:somename');
+    expect(
+      normalizeYouTubeChannel('https://www.youtube.com/@SomeHandle/'),
+    ).toBe('@somehandle');
+    expect(normalizeYouTubeChannel('youtube.com/@handle/videos')).toBe(
+      '@handle',
+    );
+    expect(
+      normalizeYouTubeChannel('youtube.com/channel/UCabcdefghijklmnopqrstuv'),
+    ).toBe('UCabcdefghijklmnopqrstuv');
+    expect(normalizeYouTubeChannel('UCabcdefghijklmnopqrstuv')).toBe(
+      'UCabcdefghijklmnopqrstuv',
+    );
+    expect(normalizeYouTubeChannel('https://youtube.com/c/SomeName')).toBe(
+      'c:somename',
+    );
+    expect(normalizeYouTubeChannel('youtube.com/user/SomeName')).toBe(
+      'user:somename',
+    );
     expect(normalizeYouTubeChannel('c:somename')).toBe('c:somename');
     for (const bad of [
       '',
@@ -277,7 +311,9 @@ describe('YouTube channel rules', () => {
   });
   it('reads channel keys from paths and owner-chip hrefs', () => {
     expect(channelKeyFromPath('/@Handle/videos')).toBe('@handle');
-    expect(channelKeyFromPath('/channel/UCabcdefghijklmnopqrstuv')).toBe('UCabcdefghijklmnopqrstuv');
+    expect(channelKeyFromPath('/channel/UCabcdefghijklmnopqrstuv')).toBe(
+      'UCabcdefghijklmnopqrstuv',
+    );
     expect(channelKeyFromPath('/c/SomeName')).toBe('c:somename');
     expect(channelKeyFromPath('/user/SomeName')).toBe('user:somename');
     expect(channelKeyFromPath('/watch')).toBe(null);
@@ -289,15 +325,25 @@ describe('YouTube channel rules', () => {
         '/channel/UCabcdefghijklmnopqrstuv',
       ]),
     ).toBe('@owner');
-    expect(extractChannelKey(['/watch?v=x', 'https://example.com/@x'])).toBe(null);
+    expect(extractChannelKey(['/watch?v=x', 'https://example.com/@x'])).toBe(
+      null,
+    );
     expect(extractChannelKey([])).toBe(null);
   });
   it('recognizes Watch-Later URLs only', () => {
-    expect(isWatchLaterUrl('https://www.youtube.com/watch?v=x&list=WL')).toBe(true);
-    expect(isWatchLaterUrl('https://www.youtube.com/playlist?list=WL')).toBe(true);
-    expect(isWatchLaterUrl('https://www.youtube.com/watch?v=x&list=WLxyz')).toBe(false);
+    expect(isWatchLaterUrl('https://www.youtube.com/watch?v=x&list=WL')).toBe(
+      true,
+    );
+    expect(isWatchLaterUrl('https://www.youtube.com/playlist?list=WL')).toBe(
+      true,
+    );
+    expect(
+      isWatchLaterUrl('https://www.youtube.com/watch?v=x&list=WLxyz'),
+    ).toBe(false);
     expect(isWatchLaterUrl('https://www.youtube.com/watch?v=x')).toBe(false);
-    expect(isWatchLaterUrl('https://www.youtube.com/playlist?list=PL123')).toBe(false);
+    expect(isWatchLaterUrl('https://www.youtube.com/playlist?list=PL123')).toBe(
+      false,
+    );
     expect(isWatchLaterUrl('not a url')).toBe(false);
   });
   it('blocks listed channels and study-mode surfaces by URL, never watch pages', () => {
@@ -306,27 +352,56 @@ describe('YouTube channel rules', () => {
       domains: [],
       youtube_blocked_channels: ['@blocked'],
     };
-    expect(urlBlockedByPolicy('https://www.youtube.com/@blocked', block)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/@blocked/videos', block)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/@other', block)).toBe(false);
+    expect(urlBlockedByPolicy('https://www.youtube.com/@blocked', block)).toBe(
+      true,
+    );
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/@blocked/videos', block),
+    ).toBe(true);
+    expect(urlBlockedByPolicy('https://www.youtube.com/@other', block)).toBe(
+      false,
+    );
     // Watch pages carry no channel: the content script decides, not this.
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', block)).toBe(false);
+    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', block)).toBe(
+      false,
+    );
     const study = {
       mode: 'blocklist',
       domains: [],
       youtube_study_mode: true,
       youtube_allowed_channels: ['@allowed'],
     };
-    expect(urlBlockedByPolicy('https://www.youtube.com/@allowed', study)).toBe(false);
-    expect(urlBlockedByPolicy('https://www.youtube.com/@other', study)).toBe(true);
+    expect(urlBlockedByPolicy('https://www.youtube.com/@allowed', study)).toBe(
+      false,
+    );
+    expect(urlBlockedByPolicy('https://www.youtube.com/@other', study)).toBe(
+      true,
+    );
     expect(urlBlockedByPolicy('https://www.youtube.com/', study)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/shorts/abc', study)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/feed/subscriptions', study)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/results?search_query=cats', study)).toBe(true);
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', study)).toBe(false);
-    expect(channelBlockReason('https://www.youtube.com/@other', study)).toBe('study_channel');
-    expect(channelBlockReason('https://www.youtube.com/', study)).toBe('study_surface');
-    expect(channelBlockReason('https://www.youtube.com/watch?v=x', study)).toBe(null);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/shorts/abc', study),
+    ).toBe(true);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/feed/subscriptions', study),
+    ).toBe(true);
+    expect(
+      urlBlockedByPolicy(
+        'https://www.youtube.com/results?search_query=cats',
+        study,
+      ),
+    ).toBe(true);
+    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', study)).toBe(
+      false,
+    );
+    expect(channelBlockReason('https://www.youtube.com/@other', study)).toBe(
+      'study_channel',
+    );
+    expect(channelBlockReason('https://www.youtube.com/', study)).toBe(
+      'study_surface',
+    );
+    expect(channelBlockReason('https://www.youtube.com/watch?v=x', study)).toBe(
+      null,
+    );
   });
   it('lets Watch Later through a domain block and past channel rules', () => {
     const policy = {
@@ -335,9 +410,15 @@ describe('YouTube channel rules', () => {
       youtube_blocked_channels: ['@blocked'],
       youtube_allow_watch_later: true,
     };
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', policy)).toBe(false);
-    expect(urlBlockedByPolicy('https://www.youtube.com/playlist?list=WL', policy)).toBe(false);
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x', policy)).toBe(true);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', policy),
+    ).toBe(false);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/playlist?list=WL', policy),
+    ).toBe(false);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/watch?v=x', policy),
+    ).toBe(true);
     // Without the toggle, Watch Later is just another blocked page.
     expect(
       urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', {
@@ -359,7 +440,9 @@ describe('YouTube channel rules', () => {
       domains: ['docs.rs'],
       youtube_allow_watch_later: true,
     };
-    expect(urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', allow)).toBe(true);
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', allow),
+    ).toBe(true);
     expect(
       urlBlockedByPolicy('https://www.youtube.com/watch?v=x&list=WL', {
         ...allow,
@@ -376,12 +459,16 @@ describe('YouTube channel rules', () => {
       exceptions: ['youtube.com/@blocked'],
       youtube_blocked_channels: ['@blocked'],
     };
-    expect(urlBlockedByPolicy('https://www.youtube.com/@blocked', policy)).toBe(false);
-    expect(urlBlockedByPolicy('https://www.youtube.com/@other', {
-      ...policy,
-      exceptions: ['youtube.com'],
-      youtube_blocked_channels: ['@other'],
-    })).toBe(false);
+    expect(urlBlockedByPolicy('https://www.youtube.com/@blocked', policy)).toBe(
+      false,
+    );
+    expect(
+      urlBlockedByPolicy('https://www.youtube.com/@other', {
+        ...policy,
+        exceptions: ['youtube.com'],
+        youtube_blocked_channels: ['@other'],
+      }),
+    ).toBe(false);
     expect(
       youtubeWatchDecision('https://www.youtube.com/watch?v=x', '@blocked', {
         mode: 'blocklist',
@@ -392,26 +479,48 @@ describe('YouTube channel rules', () => {
     ).toEqual({ blocked: false, reason: 'exception' });
   });
   it('decides watch pages fail-open in block mode and fail-closed in study mode', () => {
-    const block = { mode: 'blocklist', domains: [], youtube_blocked_channels: ['@blocked'] };
+    const block = {
+      mode: 'blocklist',
+      domains: [],
+      youtube_blocked_channels: ['@blocked'],
+    };
     expect(youtubeWatchBlocked('@blocked', block)).toBe(true);
     expect(youtubeWatchBlocked('@other', block)).toBe(false);
     expect(youtubeWatchBlocked(null, block)).toBe(false);
-    const study = { mode: 'blocklist', domains: [], youtube_study_mode: true, youtube_allowed_channels: ['@allowed'] };
+    const study = {
+      mode: 'blocklist',
+      domains: [],
+      youtube_study_mode: true,
+      youtube_allowed_channels: ['@allowed'],
+    };
     expect(youtubeWatchBlocked('@allowed', study)).toBe(false);
     expect(youtubeWatchBlocked('@other', study)).toBe(true);
     expect(youtubeWatchBlocked(null, study)).toBe(false);
     expect(youtubeWatchBlocked(null, study, true)).toBe(true);
     expect(
-      youtubeWatchDecision('https://www.youtube.com/watch?v=x', '@blocked', block),
+      youtubeWatchDecision(
+        'https://www.youtube.com/watch?v=x',
+        '@blocked',
+        block,
+      ),
     ).toEqual({ blocked: true, reason: 'blocked_channel' });
     expect(
-      youtubeWatchDecision('https://www.youtube.com/watch?v=x', null, study, true),
+      youtubeWatchDecision(
+        'https://www.youtube.com/watch?v=x',
+        null,
+        study,
+        true,
+      ),
     ).toEqual({ blocked: true, reason: 'study_unidentified' });
     expect(
-      youtubeWatchDecision('https://www.youtube.com/watch?v=x&list=WL', '@blocked', {
-        ...block,
-        youtube_allow_watch_later: true,
-      }),
+      youtubeWatchDecision(
+        'https://www.youtube.com/watch?v=x&list=WL',
+        '@blocked',
+        {
+          ...block,
+          youtube_allow_watch_later: true,
+        },
+      ),
     ).toEqual({ blocked: false, reason: 'watch_later' });
   });
   it('compiles channel DNR rules with the right priorities', () => {
@@ -420,12 +529,30 @@ describe('YouTube channel rules', () => {
       domains: [],
       youtube_blocked_channels: ['@blocked'],
     });
-    const blockedRule = block.find((r) => r.action.type === 'block' && r.condition.regexFilter);
+    const blockedRule = block.find(
+      (r) => r.action.type === 'block' && r.condition.regexFilter,
+    );
     expect(blockedRule).toBeDefined();
-    expect(new RegExp(blockedRule.condition.regexFilter).test('https://www.youtube.com/@blocked')).toBe(true);
-    expect(new RegExp(blockedRule.condition.regexFilter).test('https://www.youtube.com/@BLOCKED/videos')).toBe(true);
-    expect(new RegExp(blockedRule.condition.regexFilter).test('https://www.youtube.com/@other')).toBe(false);
-    expect(new RegExp(blockedRule.condition.regexFilter).test('https://www.youtube.com/watch?v=x')).toBe(false);
+    expect(
+      new RegExp(blockedRule.condition.regexFilter).test(
+        'https://www.youtube.com/@blocked',
+      ),
+    ).toBe(true);
+    expect(
+      new RegExp(blockedRule.condition.regexFilter).test(
+        'https://www.youtube.com/@BLOCKED/videos',
+      ),
+    ).toBe(true);
+    expect(
+      new RegExp(blockedRule.condition.regexFilter).test(
+        'https://www.youtube.com/@other',
+      ),
+    ).toBe(false);
+    expect(
+      new RegExp(blockedRule.condition.regexFilter).test(
+        'https://www.youtube.com/watch?v=x',
+      ),
+    ).toBe(false);
     const study = compileRules({
       mode: 'blocklist',
       domains: [],
@@ -440,18 +567,52 @@ describe('YouTube channel rules', () => {
         (r) =>
           r.priority === 2 &&
           r.condition.regexFilter &&
-          new RegExp(r.condition.regexFilter).test('https://www.youtube.com/@allowed'),
+          new RegExp(r.condition.regexFilter).test(
+            'https://www.youtube.com/@allowed',
+          ),
       ),
     ).toBe(true);
-    const wl = allows.find((r) => /list=WL/.test(r.condition.regexFilter || ''));
+    const wl = allows.find((r) =>
+      /list=WL/.test(r.condition.regexFilter || ''),
+    );
     expect(wl).toBeDefined();
-    expect(new RegExp(wl.condition.regexFilter).test('https://www.youtube.com/watch?v=x&list=WL')).toBe(true);
-    expect(new RegExp(wl.condition.regexFilter).test('https://www.youtube.com/watch?v=x&list=WLxyz')).toBe(false);
-    expect(new RegExp(wl.condition.regexFilter).test('https://www.youtube.com/watch?v=x')).toBe(false);
-    const surface = study.filter((r) => r.action.type === 'block' && r.priority === 1);
-    expect(surface.some((r) => new RegExp(r.condition.regexFilter).test('https://www.youtube.com/'))).toBe(true);
-    expect(surface.some((r) => new RegExp(r.condition.regexFilter).test('https://www.youtube.com/shorts/abc'))).toBe(true);
-    expect(surface.some((r) => new RegExp(r.condition.regexFilter).test('https://www.youtube.com/results?search_query=cats'))).toBe(true);
+    expect(
+      new RegExp(wl.condition.regexFilter).test(
+        'https://www.youtube.com/watch?v=x&list=WL',
+      ),
+    ).toBe(true);
+    expect(
+      new RegExp(wl.condition.regexFilter).test(
+        'https://www.youtube.com/watch?v=x&list=WLxyz',
+      ),
+    ).toBe(false);
+    expect(
+      new RegExp(wl.condition.regexFilter).test(
+        'https://www.youtube.com/watch?v=x',
+      ),
+    ).toBe(false);
+    const surface = study.filter(
+      (r) => r.action.type === 'block' && r.priority === 1,
+    );
+    expect(
+      surface.some((r) =>
+        new RegExp(r.condition.regexFilter).test('https://www.youtube.com/'),
+      ),
+    ).toBe(true);
+    expect(
+      surface.some((r) =>
+        new RegExp(r.condition.regexFilter).test(
+          'https://www.youtube.com/shorts/abc',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      surface.some((r) =>
+        new RegExp(r.condition.regexFilter).test(
+          'https://www.youtube.com/results?search_query=cats',
+        ),
+      ),
+    ).toBe(true);
     // In allowlist mode channel blocks outrank domain allows.
     const allow = compileRules({
       mode: 'allowlist',
@@ -459,12 +620,23 @@ describe('YouTube channel rules', () => {
       youtube_blocked_channels: ['@blocked'],
     });
     const channelBlock = allow.find(
-      (r) => r.action.type === 'block' && r.priority === 4 && r.condition.regexFilter,
+      (r) =>
+        r.action.type === 'block' &&
+        r.priority === 4 &&
+        r.condition.regexFilter,
     );
     expect(channelBlock).toBeDefined();
-    expect(new RegExp(channelBlock.condition.regexFilter).test('https://www.youtube.com/@blocked')).toBe(true);
+    expect(
+      new RegExp(channelBlock.condition.regexFilter).test(
+        'https://www.youtube.com/@blocked',
+      ),
+    ).toBe(true);
     expect(() =>
-      compileRules({ mode: 'blocklist', domains: [], youtube_blocked_channels: ['youtube.com/watch?v=x'] }),
+      compileRules({
+        mode: 'blocklist',
+        domains: [],
+        youtube_blocked_channels: ['youtube.com/watch?v=x'],
+      }),
     ).toThrow();
   });
 });
@@ -492,7 +664,9 @@ describe('blockDetail: which rule blocks a URL', () => {
       mechanism: 'domain',
       rule: null,
     });
-    expect(blockDetail('https://other.com/', policy)).toEqual({ blocked: false });
+    expect(blockDetail('https://other.com/', policy)).toEqual({
+      blocked: false,
+    });
   });
   it('mirrors urlBlockedByPolicy precedence: exceptions, keywords, allowlist, offline', () => {
     const policy = {
@@ -502,7 +676,9 @@ describe('blockDetail: which rule blocks a URL', () => {
       exceptions: ['example.com'],
     };
     // Exception allows.
-    expect(blockDetail('https://example.com/', policy)).toEqual({ blocked: false });
+    expect(blockDetail('https://example.com/', policy)).toEqual({
+      blocked: false,
+    });
     // Keyword block.
     expect(
       blockDetail('https://www.google.com/search?q=chess', policy).mechanism,
@@ -514,7 +690,9 @@ describe('blockDetail: which rule blocks a URL', () => {
       mechanism: 'allowlist',
       rule: null,
     });
-    expect(blockDetail('https://example.com/', allow)).toEqual({ blocked: false });
+    expect(blockDetail('https://example.com/', allow)).toEqual({
+      blocked: false,
+    });
     // Offline blocks everything.
     expect(
       blockDetail('https://anything.com/', { mode: 'offline' }).mechanism,
@@ -523,7 +701,9 @@ describe('blockDetail: which rule blocks a URL', () => {
     expect(blockDetail('http://127.0.0.1:47832/x', policy)).toEqual({
       blocked: false,
     });
-    expect(blockDetail('file:///etc/hosts', policy)).toEqual({ blocked: false });
+    expect(blockDetail('file:///etc/hosts', policy)).toEqual({
+      blocked: false,
+    });
     expect(blockDetail('not a url', policy)).toEqual({ blocked: false });
     expect(blockDetail('https://x.com/', null)).toEqual({ blocked: false });
   });

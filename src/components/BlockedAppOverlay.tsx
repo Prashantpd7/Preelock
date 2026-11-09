@@ -62,8 +62,8 @@ export function BlockedAppOverlay() {
         Back to work
       </button>
       <p className="small muted">
-        The app stays blocked — this only closes the page. You can
-        also press Esc.
+        The app stays blocked — this only closes the page. You can also press
+        Esc.
       </p>
     </main>
   );

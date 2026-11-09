@@ -73,9 +73,9 @@ describe('dayCategoryTotals', () => {
     expect(totals.productive).toBe(45 * 60_000);
     expect(totals.others).toBe(15 * 60_000);
     expect(totals.total).toBe(140 * 60_000);
-    expect(
-      totals.distracting + totals.productive + totals.others,
-    ).toBe(totals.total);
+    expect(totals.distracting + totals.productive + totals.others).toBe(
+      totals.total,
+    );
   });
 
   it('respects the kind filter', () => {
@@ -83,9 +83,7 @@ describe('dayCategoryTotals', () => {
       bucket(THURSDAY, 'Instagram', 60),
       bucket(THURSDAY, 'YouTube', 20, 'site', 'youtube.com'),
     ];
-    expect(dayCategoryTotals(buckets, THURSDAY, 'app').total).toBe(
-      60 * 60_000,
-    );
+    expect(dayCategoryTotals(buckets, THURSDAY, 'app').total).toBe(60 * 60_000);
     expect(dayCategoryTotals(buckets, THURSDAY, 'site').total).toBe(
       20 * 60_000,
     );
@@ -154,8 +152,8 @@ describe('week navigation rules', () => {
 
   it('keeps the same weekday when the week has no usage at all', () => {
     const days = weekDays(SUNDAY - 7 * DAY_MS);
-    expect(
-      pickDayForWeek(days, 4, [0, 0, 0, 0, 0, 0, 0], THURSDAY),
-    ).toBe(days[4]);
+    expect(pickDayForWeek(days, 4, [0, 0, 0, 0, 0, 0, 0], THURSDAY)).toBe(
+      days[4],
+    );
   });
 });

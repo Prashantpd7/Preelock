@@ -76,16 +76,18 @@ async function removeRules() {
 // closes, or the policy goes away (see removeRules).
 async function markChannelBlocked(tabId) {
   if (tabId == null) return;
-  const { channel_blocked_tabs = {} } =
-    await chrome.storage.session.get('channel_blocked_tabs');
+  const { channel_blocked_tabs = {} } = await chrome.storage.session.get(
+    'channel_blocked_tabs',
+  );
   await chrome.storage.session.set({
     channel_blocked_tabs: { ...channel_blocked_tabs, [tabId]: true },
   });
 }
 async function clearChannelBlocked(tabId) {
   if (tabId == null) return;
-  const { channel_blocked_tabs = {} } =
-    await chrome.storage.session.get('channel_blocked_tabs');
+  const { channel_blocked_tabs = {} } = await chrome.storage.session.get(
+    'channel_blocked_tabs',
+  );
   if (!(tabId in channel_blocked_tabs)) return;
   const next = { ...channel_blocked_tabs };
   delete next[tabId];
@@ -205,12 +207,13 @@ async function activity(policy) {
     // DNR-blocked channel/surface URL (its error page keeps the URL,
     // so the reason recomputes from it). The flag is also how a
     // content-script block on the block page itself is reported.
-    const { channel_blocked_tabs = {} } =
-      await chrome.storage.session.get('channel_blocked_tabs');
+    const { channel_blocked_tabs = {} } = await chrome.storage.session.get(
+      'channel_blocked_tabs',
+    );
     const channel_blocked = Boolean(
       !excepted &&
-        ((tab?.id != null && channel_blocked_tabs[tab.id]) ||
-          channelBlockReason(tab?.url || '', policy)),
+      ((tab?.id != null && channel_blocked_tabs[tab.id]) ||
+        channelBlockReason(tab?.url || '', policy)),
     );
     return {
       browser_focused: true,
@@ -220,8 +223,8 @@ async function activity(policy) {
           : '',
       search_distracted: Boolean(
         !excepted &&
-          found &&
-          searchQueryBlocked(policy.keywords || [], found.query),
+        found &&
+        searchQueryBlocked(policy.keywords || [], found.query),
       ),
       channel_blocked,
     };
@@ -400,8 +403,16 @@ chrome.alarms.onAlarm.addListener(() => {
 // channel blocking never runs on those tabs (SPA navigation doesn't help).
 async function reloadYouTubeTabs() {
   try {
-    const tabs = await chrome.tabs.query({ url: ['*://youtube.com/*', '*://*.youtube.com/*'] });
-    await Promise.all(tabs.map((tab) => tab.id != null ? chrome.tabs.reload(tab.id).catch(() => {}) : Promise.resolve()));
+    const tabs = await chrome.tabs.query({
+      url: ['*://youtube.com/*', '*://*.youtube.com/*'],
+    });
+    await Promise.all(
+      tabs.map((tab) =>
+        tab.id != null
+          ? chrome.tabs.reload(tab.id).catch(() => {})
+          : Promise.resolve(),
+      ),
+    );
   } catch {}
 }
 chrome.runtime.onInstalled.addListener(() => {

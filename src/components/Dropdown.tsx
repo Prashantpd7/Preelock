@@ -26,7 +26,12 @@ type DropdownProps = {
  * and every option are type="button", so choosing an option inside a
  * <form> never submits it.
  */
-export function Dropdown({ value, options, onChange, disabled }: DropdownProps) {
+export function Dropdown({
+  value,
+  options,
+  onChange,
+  disabled,
+}: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -37,8 +42,7 @@ export function Dropdown({ value, options, onChange, disabled }: DropdownProps) 
   const optionId = (index: number) => `dropdown-${rawId}-option-${index}`;
 
   const selectedIndex = options.findIndex((option) => option.value === value);
-  const selectedLabel =
-    selectedIndex >= 0 ? options[selectedIndex].label : '';
+  const selectedLabel = selectedIndex >= 0 ? options[selectedIndex].label : '';
   const safeActive =
     activeIndex === null || options.length === 0
       ? null
@@ -80,9 +84,7 @@ export function Dropdown({ value, options, onChange, disabled }: DropdownProps) 
         openWithActive(selectedIndex >= 0 ? selectedIndex : 0);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        openWithActive(
-          selectedIndex >= 0 ? selectedIndex : options.length - 1,
-        );
+        openWithActive(selectedIndex >= 0 ? selectedIndex : options.length - 1);
       } else if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         openWithActive(selectedIndex >= 0 ? selectedIndex : 0);
@@ -140,10 +142,7 @@ export function Dropdown({ value, options, onChange, disabled }: DropdownProps) 
       </button>
       {open && (
         <>
-          <div
-            className="dropdown-backdrop"
-            onClick={() => close(true)}
-          />
+          <div className="dropdown-backdrop" onClick={() => close(true)} />
           <div
             className="dropdown-panel"
             role="listbox"

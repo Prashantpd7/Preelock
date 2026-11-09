@@ -15,8 +15,8 @@
 //! 4. Frozen — a Frozen session blocks everything.
 //! 5. SessionActive — a focus session's own rules.
 //! 6. ScheduleActive — a scheduled block window.
-//! Anything unrecognized renders as "Blocked by Preelock" and
-//! should be rare: every engine block point supplies a real cause.
+//!    Anything unrecognized renders as "Blocked by Preelock" and
+//!    should be rare: every engine block point supplies a real cause.
 
 use serde::{Deserialize, Serialize};
 

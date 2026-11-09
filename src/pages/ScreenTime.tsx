@@ -87,8 +87,7 @@ export function ScreenTime() {
   // range total, so the list and the chart above it always agree.
   const dayBuckets = buckets.filter(
     (bucket) =>
-      bucket.day_ms === selectedDay &&
-      (kind === 'all' || bucket.kind === kind),
+      bucket.day_ms === selectedDay && (kind === 'all' || bucket.kind === kind),
   );
   const grouped = new Map<string, ScreenTimeBucket>();
   for (const bucket of dayBuckets) {
@@ -255,55 +254,50 @@ export function ScreenTime() {
           role="group"
           aria-label="Daily usage for this week"
         >
-          {dayTotals.map(
-            ({ day, distracting, productive, others, total }) => {
-              const isSelected = day === selectedDay;
-              const date = new Date(day);
-              const height = (ms: number) =>
-                `${(ms / maxDay) * 100}%`;
-              return (
-                <button
-                  type="button"
-                  key={day}
-                  className={`screen-time-day${isSelected ? ' selected' : ''}`}
-                  aria-pressed={isSelected}
-                  aria-label={formatDayLabel(day)}
-                  title={`${formatDayLabel(day)}: ${duration(total)}`}
-                  onClick={() => selectDay(day)}
-                >
-                  <span className="screen-time-bar-track">
-                    {isSelected ? (
-                      <>
-                        <span
-                          className="screen-time-seg screen-time-seg-distracting"
-                          style={{ height: height(distracting) }}
-                        />
-                        <span
-                          className="screen-time-seg screen-time-seg-productive"
-                          style={{ height: height(productive) }}
-                        />
-                        <span
-                          className="screen-time-seg screen-time-seg-others"
-                          style={{ height: height(others) }}
-                        />
-                      </>
-                    ) : (
+          {dayTotals.map(({ day, distracting, productive, others, total }) => {
+            const isSelected = day === selectedDay;
+            const date = new Date(day);
+            const height = (ms: number) => `${(ms / maxDay) * 100}%`;
+            return (
+              <button
+                type="button"
+                key={day}
+                className={`screen-time-day${isSelected ? ' selected' : ''}`}
+                aria-pressed={isSelected}
+                aria-label={formatDayLabel(day)}
+                title={`${formatDayLabel(day)}: ${duration(total)}`}
+                onClick={() => selectDay(day)}
+              >
+                <span className="screen-time-bar-track">
+                  {isSelected ? (
+                    <>
                       <span
-                        className="screen-time-seg screen-time-seg-muted"
-                        style={{ height: height(total) }}
+                        className="screen-time-seg screen-time-seg-distracting"
+                        style={{ height: height(distracting) }}
                       />
-                    )}
-                  </span>
-                  <span className="screen-time-day-label">
-                    {WEEKDAY_LETTERS[date.getDay()]}
-                  </span>
-                  <span className="screen-time-day-date">
-                    {date.getDate()}
-                  </span>
-                </button>
-              );
-            },
-          )}
+                      <span
+                        className="screen-time-seg screen-time-seg-productive"
+                        style={{ height: height(productive) }}
+                      />
+                      <span
+                        className="screen-time-seg screen-time-seg-others"
+                        style={{ height: height(others) }}
+                      />
+                    </>
+                  ) : (
+                    <span
+                      className="screen-time-seg screen-time-seg-muted"
+                      style={{ height: height(total) }}
+                    />
+                  )}
+                </span>
+                <span className="screen-time-day-label">
+                  {WEEKDAY_LETTERS[date.getDay()]}
+                </span>
+                <span className="screen-time-day-date">{date.getDate()}</span>
+              </button>
+            );
+          })}
         </div>
         <div className="screen-time-category-totals">
           <span>
@@ -366,9 +360,7 @@ export function ScreenTime() {
                             }}
                             aria-haspopup="listbox"
                             aria-expanded={menuOpen}
-                            aria-controls={
-                              menuOpen ? menuListboxId : undefined
-                            }
+                            aria-controls={menuOpen ? menuListboxId : undefined}
                             aria-activedescendant={
                               menuOpen && menuActive !== null
                                 ? menuOptionId(menuActive)
@@ -425,12 +417,8 @@ export function ScreenTime() {
                                     role="option"
                                     aria-selected={option === category}
                                     tabIndex={-1}
-                                    onClick={() =>
-                                      pickCategory(entry, option)
-                                    }
-                                    onMouseEnter={() =>
-                                      setMenuActive(index)
-                                    }
+                                    onClick={() => pickCategory(entry, option)}
+                                    onMouseEnter={() => setMenuActive(index)}
                                   >
                                     <span
                                       aria-hidden="true"

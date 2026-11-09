@@ -81,15 +81,17 @@ describe('validateAppLockForm', () => {
     expect(validateAppLockForm({ ...valid, target: '  ' })).toBe(
       'Enter a website domain to block.',
     );
-    expect(
-      validateAppLockForm({ ...valid, kind: 'app', target: '' }),
-    ).toBe('Pick an app to block.');
+    expect(validateAppLockForm({ ...valid, kind: 'app', target: '' })).toBe(
+      'Pick an app to block.',
+    );
   });
   it('rejects search: keywords and paths for sites', () => {
     expect(validateAppLockForm({ ...valid, target: 'search:chess' })).toBe(
       'An app lock needs a domain, not a search: keyword — keywords have no host to watch.',
     );
-    expect(validateAppLockForm({ ...valid, target: 'youtube.com/shorts' })).toBe(
+    expect(
+      validateAppLockForm({ ...valid, target: 'youtube.com/shorts' }),
+    ).toBe(
       'An app lock needs a plain or wildcard domain, not a domain with a path.',
     );
   });
@@ -139,9 +141,9 @@ describe('appLockTodayUsageMs', () => {
       bucket('app', 'com.example.game', 10 * 60_000, DAY - 86_400_000),
       bucket('app', 'com.example.other', 50 * 60_000),
     ];
-    expect(
-      appLockTodayUsageMs(buckets, DAY, 'app', 'com.example.game'),
-    ).toBe(20 * 60_000);
+    expect(appLockTodayUsageMs(buckets, DAY, 'app', 'com.example.game')).toBe(
+      20 * 60_000,
+    );
   });
   it('matches a plain domain with itself and subdomains', () => {
     const buckets = [

@@ -1,5 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Action, BlockAttempt, Capability, Snapshot, FocusSetup } from '../types';
+import type {
+  Action,
+  BlockAttempt,
+  Capability,
+  Snapshot,
+  FocusSetup,
+} from '../types';
 export const desktop = isTauri();
 export const emptySnapshot: Snapshot = {
   sessions: [],
@@ -32,7 +38,9 @@ export const api = {
           new Error('Open the desktop app to save tasks and sessions.'),
         ),
   blockAttempts: () =>
-    desktop ? invoke<BlockAttempt[]>('block_attempts') : Promise.resolve<BlockAttempt[]>([]),
+    desktop
+      ? invoke<BlockAttempt[]>('block_attempts')
+      : Promise.resolve<BlockAttempt[]>([]),
   appIcon: (identity: string) =>
     desktop
       ? invoke<string | null>('get_app_icon', { identity })
@@ -44,7 +52,5 @@ export const api = {
       ? invoke<Capability[]>('capabilities')
       : Promise.resolve<Capability[]>([]),
   dismissBlockedAppPage: () =>
-    desktop
-      ? invoke<void>('dismiss_blocked_app_page')
-      : Promise.resolve(),
+    desktop ? invoke<void>('dismiss_blocked_app_page') : Promise.resolve(),
 };

@@ -4,10 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
-import {
-  formatDayLabel,
-  localDayStart,
-} from '../services/screenTimeWeek';
+import { formatDayLabel, localDayStart } from '../services/screenTimeWeek';
 import type { ScreenTimeBucket } from '../types';
 
 vi.mock('../services/settings', () => ({
@@ -122,9 +119,7 @@ it('shows only the top 4 apps until Show all is clicked', async () => {
   await user.click(screen.getByRole('button', { name: 'Show less' }));
   expect(screen.queryByText('Echo App')).not.toBeInTheDocument();
   expect(screen.queryByText('Foxtrot App')).not.toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: 'Show all' }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Show all' })).toBeInTheDocument();
 });
 
 it('shows no button for 4 or fewer rows', async () => {

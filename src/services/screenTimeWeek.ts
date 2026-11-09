@@ -8,15 +8,7 @@ import { appCategory, type CategoryOverrides } from './appCategories';
 export const DAY_MS = 86_400_000;
 
 export const WEEKDAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-export const WEEKDAY_SHORT = [
-  'Sun',
-  'Mon',
-  'Tue',
-  'Wed',
-  'Thu',
-  'Fri',
-  'Sat',
-];
+export const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export const MONTH_SHORT = [
   'Jan',
   'Feb',
@@ -44,7 +36,11 @@ export interface DayCategoryTotals {
 // Local-midnight timestamp for the given date (matches the backend's
 // day_ms, which is also a local day start).
 export function localDayStart(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+  ).getTime();
 }
 
 // Sunday (local) starting the week that contains dayMs, where dayMs is a

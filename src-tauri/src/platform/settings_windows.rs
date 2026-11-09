@@ -39,22 +39,6 @@ fn set_packaged_login(on: bool) -> Result<(), String> {
     } else {
         task.Disable().map_err(|error| error.message())?;
     }
-    pub fn enable_background_startup() -> Result<(), String> {
-        let task = windows::ApplicationModel::StartupTask::GetAsync(&windows::core::HSTRING::from(
-            packaging::BACKGROUND_STARTUP_TASK_ID,
-        ))
-        .and_then(|operation| operation.join())
-        .map_err(|error| error.message())?;
-        task.RequestEnableAsync()
-            .and_then(|operation| operation.join())
-            .map_err(|error| error.message())?;
-        let state = StartupState::from_winrt(task.State().map_err(|error| error.message())?.0);
-        if state.is_on() {
-            Ok(())
-        } else {
-            Err("Windows did not enable the Preelock background startup task.".into())
-        }
-    }
     // Report what Windows actually stored instead of assuming the request won.
     let state = StartupState::from_winrt(task.State().map_err(|error| error.message())?.0);
     let stored_as_requested = match on {
@@ -77,6 +61,26 @@ fn set_packaged_login(on: bool) -> Result<(), String> {
         }
         _ => "Windows did not disable Preelock at sign-in.".into(),
     })
+}
+
+pub fn enable_background_startup() -> Result<(), String> {
+    if !is_packaged() {
+        return Ok(());
+    }
+    let task = windows::ApplicationModel::StartupTask::GetAsync(&windows::core::HSTRING::from(
+        packaging::BACKGROUND_STARTUP_TASK_ID,
+    ))
+    .and_then(|operation| operation.join())
+    .map_err(|error| error.message())?;
+    task.RequestEnableAsync()
+        .and_then(|operation| operation.join())
+        .map_err(|error| error.message())?;
+    let state = StartupState::from_winrt(task.State().map_err(|error| error.message())?.0);
+    if state.is_on() {
+        Ok(())
+    } else {
+        Err("Windows did not enable the Preelock background startup task.".into())
+    }
 }
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;

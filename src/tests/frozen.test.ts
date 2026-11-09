@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  defaultFocus,
-  frozenLabel,
-  type FocusConfig,
-} from '../types';
+import { defaultFocus, frozenLabel, type FocusConfig } from '../types';
 import { setupProblem } from '../services/focusSetup';
 import type { FocusSetup } from '../types';
 

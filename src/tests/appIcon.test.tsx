@@ -42,9 +42,7 @@ describe('RowIcon', () => {
     );
     await waitFor(() =>
       expect(
-        container
-          .querySelector('img.screen-time-icon')
-          ?.getAttribute('src'),
+        container.querySelector('img.screen-time-icon')?.getAttribute('src'),
       ).toBe('data:image/png;base64,AAA'),
     );
   });

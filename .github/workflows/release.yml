@@ -1,5 +1,8 @@
 name: Free public beta release
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,6 +26,8 @@ jobs:
       - run: npm run check
       - run: npm run format:check
       - id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: node scripts/release-version.mjs >> "$GITHUB_OUTPUT"
   macos:
     needs: validate
@@ -140,9 +145,16 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: release-*
-          path: installers
-          merge-multiple: true
+          name: release-aarch64-apple-darwin
+          path: installers/arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-x86_64-apple-darwin
+          path: installers/intel
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows-x64
+          path: installers/windows
       - name: Publish all installers together as a public beta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,14 +162,21 @@ jobs:
         run: |
           set -euo pipefail
           cd installers
-          # Multiple Windows upload paths retain their common target/ hierarchy.
-          # Normalize it before checking names and hashing the public assets.
-          mv release/bundle/nsis/*.exe .
-          mv msix/*.msix msix/msix-build-info.json .
-          test -f "Preelock_${VERSION}_aarch64.dmg"
-          test -f "Preelock_${VERSION}_x64.dmg"
-          test -f "Preelock_${VERSION}_x64-setup.exe"
-          test -f "Preelock_${VERSION}_x64.msix"
+          arm_dmg="$(find arm64 -type f -name '*.dmg' -print -quit)"
+          intel_dmg="$(find intel -type f -name '*.dmg' -print -quit)"
+          windows_exe="$(find windows -type f -path '*/nsis/*.exe' -print -quit)"
+          windows_msix="$(find windows -type f -name '*.msix' -print -quit)"
+          windows_info="$(find windows -type f -name 'msix-build-info.json' -print -quit)"
+          test -n "$arm_dmg" -a -n "$intel_dmg" -a -n "$windows_exe" -a -n "$windows_msix" -a -n "$windows_info"
+          cp "$arm_dmg" "Preelock-macOS-Apple-Silicon.dmg"
+          cp "$intel_dmg" "Preelock-macOS-Intel.dmg"
+          cp "$windows_exe" "Preelock-Windows-Setup.exe"
+          cp "$windows_msix" "Preelock-Windows-MSIX.msix"
+          cp "$windows_info" "msix-build-info.json"
+          test -f "Preelock-macOS-Apple-Silicon.dmg"
+          test -f "Preelock-macOS-Intel.dmg"
+          test -f "Preelock-Windows-Setup.exe"
+          test -f "Preelock-Windows-MSIX.msix"
           sha256sum *.dmg *.exe *.msix > SHA256SUMS.txt
           cp ../docs/RELEASE_NOTES.md RELEASE_NOTES.md
           {
@@ -169,10 +188,10 @@ jobs:
               "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } >> RELEASE_NOTES.md
           assets=(
-            "Preelock_${VERSION}_aarch64.dmg"
-            "Preelock_${VERSION}_x64.dmg"
-            "Preelock_${VERSION}_x64-setup.exe"
-            "Preelock_${VERSION}_x64.msix"
+            "Preelock-macOS-Apple-Silicon.dmg"
+            "Preelock-macOS-Intel.dmg"
+            "Preelock-Windows-Setup.exe"
+            "Preelock-Windows-MSIX.msix"
             SHA256SUMS.txt
             msix-build-info.json
           )

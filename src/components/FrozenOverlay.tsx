@@ -56,15 +56,14 @@ export function FrozenOverlay() {
         {countdown(left)}
       </p>
       <p className="muted">
-        Everything except what you allowed is blocked until this
-        timer runs out. There is no way to end it early — that is
-        the point of Frozen.
+        Everything except what you allowed is blocked until this timer runs out.
+        There is no way to end it early — that is the point of Frozen.
       </p>
       {label && <p className="small">{label}</p>}
       <p className="small muted">
-        On macOS you can switch Spaces away from this screen, but
-        the block stays on. Closing or killing the app does not end
-        it either: it comes back on relaunch until the timer ends.
+        On macOS you can switch Spaces away from this screen, but the block
+        stays on. Closing or killing the app does not end it either: it comes
+        back on relaunch until the timer ends.
       </p>
     </main>
   );

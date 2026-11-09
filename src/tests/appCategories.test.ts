@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  appCategory,
-  type CategoryOverrides,
-} from '../services/appCategories';
+import { appCategory, type CategoryOverrides } from '../services/appCategories';
 
 describe('appCategory', () => {
   it('labels social and entertainment apps Distracting', () => {

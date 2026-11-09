@@ -49,9 +49,7 @@
   }
   function validLegacyName(name) {
     return (
-      name.length >= 1 &&
-      name.length <= 100 &&
-      /^[a-z0-9._-]+$/.test(name)
+      name.length >= 1 && name.length <= 100 && /^[a-z0-9._-]+$/.test(name)
     );
   }
   function channelKeyFromSegments(segments) {
@@ -239,7 +237,10 @@
       // This is reliable on SPA navigation where the owner chip loads late.
       if (!channel) {
         try {
-          var oembedUrl = 'https://www.youtube.com/oembed?url=' + encodeURIComponent(href) + '&format=json';
+          var oembedUrl =
+            'https://www.youtube.com/oembed?url=' +
+            encodeURIComponent(href) +
+            '&format=json';
           var resp = await fetch(oembedUrl);
           if (resp && resp.ok) {
             var data = await resp.json();

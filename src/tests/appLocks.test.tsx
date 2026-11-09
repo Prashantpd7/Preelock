@@ -187,9 +187,7 @@ it('the app picker lists recently used apps, most used first', async () => {
     screen.getAllByRole('option').map((option) => option.textContent),
   ).toEqual(['Alpha App', 'Beta App']);
   await user.click(screen.getByRole('option', { name: 'Beta App' }));
-  expect(
-    screen.getByRole('button', { name: 'Beta App' }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Beta App' })).toBeInTheDocument();
 });
 
 it('creates a timed app block with a preset duration', async () => {
@@ -254,9 +252,7 @@ it('strips a leading zero from custom minutes (no stuck "010")', async () => {
   await user.click(
     screen.getByRole('button', { name: 'Block for a set time' }),
   );
-  const custom = screen.getByLabelText(
-    'Custom (minutes)',
-  ) as HTMLInputElement;
+  const custom = screen.getByLabelText('Custom (minutes)') as HTMLInputElement;
   await user.clear(custom);
   await user.type(custom, '010');
   // The zero is stripped as typed: the field shows "10", not "010".
@@ -279,9 +275,7 @@ it('allows clearing the custom-minutes field and keeps a single zero', async () 
   await user.click(
     screen.getByRole('button', { name: 'Block for a set time' }),
   );
-  const custom = screen.getByLabelText(
-    'Custom (minutes)',
-  ) as HTMLInputElement;
+  const custom = screen.getByLabelText('Custom (minutes)') as HTMLInputElement;
   await user.clear(custom);
   expect(custom.value).toBe('');
   await user.type(custom, '0');
@@ -375,9 +369,7 @@ it('renders active locks with live status text, newest first', async () => {
   await user.click(screen.getByRole('button', { name: 'Block websites' }));
   expect(within(section).getByText('youtube.com')).toBeInTheDocument();
   expect(within(section).getByText('Daily limit')).toBeInTheDocument();
-  expect(
-    within(section).getByText('45m of 2h used today'),
-  ).toBeInTheDocument();
+  expect(within(section).getByText('45m of 2h used today')).toBeInTheDocument();
   expect(within(section).queryByText('Game')).not.toBeInTheDocument();
 });
 
@@ -424,9 +416,7 @@ it('remove dispatches delete_app_lock', async () => {
   const user = userEvent.setup();
   await screen.findByText('App lock');
   await user.click(screen.getByRole('button', { name: 'Block apps' }));
-  await user.click(
-    screen.getByRole('button', { name: 'Remove block: Game' }),
-  );
+  await user.click(screen.getByRole('button', { name: 'Remove block: Game' }));
   expect(api.execute).toHaveBeenCalledWith({
     type: 'delete_app_lock',
     id: 'lock-1',

@@ -68,9 +68,7 @@ it('shows a live countdown for timed locks', () => {
   });
   expect(screen.getByText('Game is blocked for 2h 13m more')).toBeTruthy();
   // countdown() renders MM:SS — about 133 minutes left.
-  expect(screen.getByLabelText('Time remaining').textContent).toMatch(
-    /^133:/,
-  );
+  expect(screen.getByLabelText('Time remaining').textContent).toMatch(/^133:/);
 });
 
 it('dismisses the page from the Back to work button', () => {

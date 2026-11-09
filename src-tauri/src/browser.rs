@@ -1056,7 +1056,7 @@ mod tests {
         assert_eq!(p.youtube_blocked_channels, vec!["@beta"]);
         assert!(p.youtube_study_mode && p.youtube_allow_watch_later);
         // Offline with no YouTube rules: still offline, no channels.
-        let mut off_no_yt = FocusConfig {
+        let off_no_yt = FocusConfig {
             website_blocking: WebsiteBlocking::Blocklist,
             general_internet: false,
             ..Default::default()

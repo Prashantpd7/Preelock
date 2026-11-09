@@ -88,10 +88,7 @@ export interface Preferences {
    *  website domain (see categoryKey in services/appCategories).
    *  Checked before the built-in mapping everywhere the Screen Time
    *  page categorizes usage, so a correction re-colors past days too. */
-  category_overrides?: Record<
-    string,
-    'Distracting' | 'Productive' | 'Others'
-  >;
+  category_overrides?: Record<string, 'Distracting' | 'Productive' | 'Others'>;
 }
 /** Recurring weekly block (step 5). `focus` is a full snapshot
  *  copied from the template session at creation time: editing the
@@ -375,8 +372,16 @@ export function frozenLabel(focus: FocusConfig | undefined): string | null {
   const apps = focus.frozen.allowed_apps?.length ?? 0;
   const sites = focus.frozen.allowed_websites?.length ?? 0;
   const parts: string[] = [];
-  parts.push(apps ? `${apps} app${apps === 1 ? '' : 's'} allowed` : 'only Preelock + system apps');
-  parts.push(sites ? `${sites} site${sites === 1 ? '' : 's'} allowed` : 'no websites allowed');
+  parts.push(
+    apps
+      ? `${apps} app${apps === 1 ? '' : 's'} allowed`
+      : 'only Preelock + system apps',
+  );
+  parts.push(
+    sites
+      ? `${sites} site${sites === 1 ? '' : 's'} allowed`
+      : 'no websites allowed',
+  );
   return parts.join(' · ');
 }
 /** Pomodoro configuration (step 7): focus length, break lengths, and

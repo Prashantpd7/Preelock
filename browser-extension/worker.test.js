@@ -251,13 +251,19 @@ it('passes the resolved block cause to the blocked page', async () => {
     domains: ['example.com'],
     extra_blocked: ['youtube.com'],
     rule_causes: [
-      { rule: 'youtube.com', cause: { kind: 'timed_lock', ends_at_ms: endsAt } },
+      {
+        rule: 'youtube.com',
+        cause: { kind: 'timed_lock', ends_at_ms: endsAt },
+      },
     ],
     session_cause: { kind: 'session', title: 'Deep work' },
     expires_at: Date.now() + 60000,
     observe_activity: true,
   });
-  vi.stubGlobal('fetch', vi.fn(async () => response(causalPolicy())));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(causalPolicy())),
+  );
   await import('./worker.js');
   await send({ type: 'sync' });
   const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];

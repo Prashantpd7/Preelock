@@ -3,7 +3,9 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
 
-function renderDialog(over: Partial<Parameters<typeof SessionConfirmDialog>[0]> = {}) {
+function renderDialog(
+  over: Partial<Parameters<typeof SessionConfirmDialog>[0]> = {},
+) {
   const onStart = vi.fn();
   const onCancel = vi.fn();
   render(
@@ -44,12 +46,16 @@ describe('SessionConfirmDialog', () => {
     );
     expect(screen.getByText('60 min · Strict mode')).toBeInTheDocument();
     expect(
-      screen.getByText(/Strict mode will block everything except your work apps/),
+      screen.getByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).toBeInTheDocument();
     unmount();
     renderDialog({ strict: false });
     expect(
-      screen.queryByText(/Strict mode will block everything except your work apps/),
+      screen.queryByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).not.toBeInTheDocument();
   });
 
@@ -71,7 +77,9 @@ describe('SessionConfirmDialog', () => {
 
   it('disables both buttons while busy', () => {
     renderDialog({ busy: true });
-    expect(screen.getByRole('button', { name: 'Start session' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Start session' }),
+    ).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
   });
 });

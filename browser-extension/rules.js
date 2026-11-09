@@ -53,7 +53,9 @@ export function parseRule(raw) {
   const host = wildcard ? hostPart.slice(2) : hostPart;
   if (
     !host ||
-    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host) ||
+    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(
+      host,
+    ) ||
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     /^(\d+\.)+\d+$/.test(host) ||
@@ -160,9 +162,7 @@ export function searchPageQuery(urlString) {
 }
 export function searchQueryBlocked(keywords, query) {
   const q = String(query || '').toLowerCase();
-  return (keywords || []).some(
-    (k) => k && q.includes(String(k).toLowerCase()),
-  );
+  return (keywords || []).some((k) => k && q.includes(String(k).toLowerCase()));
 }
 // ---- YouTube channel rules (step 3). Mirrors Rust focus.rs
 // (`normalize_youtube_channel`, `channel_key_from_path`) and
@@ -280,9 +280,7 @@ export function normalizeYouTubeChannel(raw) {
   }
   const lower = s.toLowerCase();
   const withoutScheme = lower.replace(/^https?:\/\//, '');
-  const withoutQuery = withoutScheme
-    .split(/[?#]/)[0]
-    .replace(/\/$/, '');
+  const withoutQuery = withoutScheme.split(/[?#]/)[0].replace(/\/$/, '');
   const slash = withoutQuery.indexOf('/');
   if (slash === -1) return null;
   const host = withoutQuery.slice(0, slash);
@@ -549,7 +547,12 @@ export function blockDetail(urlString, policy) {
 // otherwise the domain decision applies, then the watch decision.
 // `unidentified` is set by youtube.js only after its detection
 // timeout with a loaded player, so study mode fails closed only then.
-export function youtubeWatchDecision(urlString, channelKey, policy, unidentified = false) {
+export function youtubeWatchDecision(
+  urlString,
+  channelKey,
+  policy,
+  unidentified = false,
+) {
   if (!policy) return { blocked: false, reason: null };
   let url;
   try {
@@ -613,8 +616,7 @@ export function compileRules(policy) {
   ];
   const local = ['localhost', '127.0.0.1', '[::1]'];
   const parsed = (policy.domains || []).map((d) => parseRule(d));
-  if (parsed.some((p) => p === null))
-    throw new Error('Invalid policy domains');
+  if (parsed.some((p) => p === null)) throw new Error('Invalid policy domains');
   const hostRules = parsed.filter((p) => p.kind !== 'keyword');
   // Exceptions are host/path rules only: a keyword entry here is
   // invalid (the Rust validator rejects search: exceptions), and a
@@ -700,25 +702,40 @@ export function compileRules(policy) {
     if (watchLater)
       add(
         'allow',
-        { regexFilter: YOUTUBE_WATCH_LATER_PATTERN, resourceTypes: ['main_frame', 'sub_frame'] },
+        {
+          regexFilter: YOUTUBE_WATCH_LATER_PATTERN,
+          resourceTypes: ['main_frame', 'sub_frame'],
+        },
         2,
       );
     if (studyMode) {
       for (const pattern of YOUTUBE_SURFACE_PATTERNS)
         add('block', { regexFilter: pattern, resourceTypes: types }, 1);
-      add('block', { regexFilter: YOUTUBE_CHANNEL_CATCHALL, resourceTypes: types }, 1);
+      add(
+        'block',
+        { regexFilter: YOUTUBE_CHANNEL_CATCHALL, resourceTypes: types },
+        1,
+      );
       const seenAllowed = new Set();
       for (const key of allowedChannels) {
         if (seenAllowed.has(key)) continue;
         seenAllowed.add(key);
-        add('allow', { regexFilter: youtubeChannelRegex(key), resourceTypes: types }, 2);
+        add(
+          'allow',
+          { regexFilter: youtubeChannelRegex(key), resourceTypes: types },
+          2,
+        );
       }
     } else {
       const seenBlocked = new Set();
       for (const key of blockedChannels) {
         if (seenBlocked.has(key)) continue;
         seenBlocked.add(key);
-        add('block', { regexFilter: youtubeChannelRegex(key), resourceTypes: types }, 1);
+        add(
+          'block',
+          { regexFilter: youtubeChannelRegex(key), resourceTypes: types },
+          1,
+        );
       }
     }
     return rules;
@@ -752,8 +769,7 @@ export function compileRules(policy) {
     }
   }
   if (policy.mode === 'allowlist') {
-    for (const p of extra)
-      add('block', domainCondition(p, navigation), 3);
+    for (const p of extra) add('block', domainCondition(p, navigation), 3);
   }
   rules.push({
     id: ++nextId,
@@ -780,19 +796,31 @@ export function compileRules(policy) {
     if (studyMode) {
       for (const pattern of YOUTUBE_SURFACE_PATTERNS)
         add('block', { regexFilter: pattern, resourceTypes: navigation }, 4);
-      add('block', { regexFilter: YOUTUBE_CHANNEL_CATCHALL, resourceTypes: navigation }, 4);
+      add(
+        'block',
+        { regexFilter: YOUTUBE_CHANNEL_CATCHALL, resourceTypes: navigation },
+        4,
+      );
       const seenAllowed = new Set();
       for (const key of allowedChannels) {
         if (seenAllowed.has(key)) continue;
         seenAllowed.add(key);
-        add('allow', { regexFilter: youtubeChannelRegex(key), resourceTypes: navigation }, 5);
+        add(
+          'allow',
+          { regexFilter: youtubeChannelRegex(key), resourceTypes: navigation },
+          5,
+        );
       }
     } else {
       const seenBlocked = new Set();
       for (const key of blockedChannels) {
         if (seenBlocked.has(key)) continue;
         seenBlocked.add(key);
-        add('block', { regexFilter: youtubeChannelRegex(key), resourceTypes: navigation }, 4);
+        add(
+          'block',
+          { regexFilter: youtubeChannelRegex(key), resourceTypes: navigation },
+          4,
+        );
       }
     }
   }

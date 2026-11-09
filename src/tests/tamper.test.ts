@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tamperNote, type Session } from '../types';
 
-function sessionWithEvents(
-  kinds: string[],
-): Session {
+function sessionWithEvents(kinds: string[]): Session {
   return {
     id: 's1',
     title: 'Work',

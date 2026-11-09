@@ -28,8 +28,14 @@ describe('allowance usage math', () => {
     const now = new Date(2026, 9, 27, 10, 0, 0);
     const a = allowance({
       usage: [
-        { minute_ms: new Date(2026, 9, 27, 9, 0, 0).getTime(), ms: 25 * 60_000 },
-        { minute_ms: new Date(2026, 9, 27, 9, 30, 0).getTime(), ms: 5 * 60_000 },
+        {
+          minute_ms: new Date(2026, 9, 27, 9, 0, 0).getTime(),
+          ms: 25 * 60_000,
+        },
+        {
+          minute_ms: new Date(2026, 9, 27, 9, 30, 0).getTime(),
+          ms: 5 * 60_000,
+        },
       ],
     });
     expect(allowanceUsedMs(a, now)).toBe(30 * 60_000);
@@ -41,7 +47,10 @@ describe('allowance usage math', () => {
     const now = new Date(2026, 9, 27, 10, 0, 0);
     const a = allowance({
       usage: [
-        { minute_ms: new Date(2026, 9, 26, 23, 0, 0).getTime(), ms: 30 * 60_000 },
+        {
+          minute_ms: new Date(2026, 9, 26, 23, 0, 0).getTime(),
+          ms: 30 * 60_000,
+        },
       ],
     });
     expect(allowanceUsedMs(a, now)).toBe(0);
@@ -53,14 +62,20 @@ describe('allowance usage math', () => {
     const now = new Date(2026, 9, 27, 10, 0, 0);
     const sunday = allowance({
       usage: [
-        { minute_ms: new Date(2026, 9, 25, 12, 0, 0).getTime(), ms: 30 * 60_000 },
+        {
+          minute_ms: new Date(2026, 9, 25, 12, 0, 0).getTime(),
+          ms: 30 * 60_000,
+        },
       ],
     });
     expect(allowanceUsedMs(sunday, now)).toBe(0);
     const monday = allowance({
       period: 'week',
       usage: [
-        { minute_ms: new Date(2026, 9, 26, 12, 0, 0).getTime(), ms: 30 * 60_000 },
+        {
+          minute_ms: new Date(2026, 9, 26, 12, 0, 0).getTime(),
+          ms: 30 * 60_000,
+        },
       ],
     });
     expect(allowanceUsedMs(monday, now)).toBe(30 * 60_000);
@@ -96,7 +111,10 @@ describe('allowance usage math', () => {
     const a = allowance({
       enabled: false,
       usage: [
-        { minute_ms: new Date(2026, 9, 27, 9, 0, 0).getTime(), ms: 30 * 60_000 },
+        {
+          minute_ms: new Date(2026, 9, 27, 9, 0, 0).getTime(),
+          ms: 30 * 60_000,
+        },
       ],
     });
     expect(allowanceUsedMs(a, now)).toBe(30 * 60_000);
@@ -133,7 +151,9 @@ describe('allowance form validation', () => {
     ).toBe('');
   });
   it('accepts wildcard domains and app targets', () => {
-    expect(validateAllowanceForm({ ...base, target: '*.example.com' })).toBe('');
+    expect(validateAllowanceForm({ ...base, target: '*.example.com' })).toBe(
+      '',
+    );
     expect(
       validateAllowanceForm({
         ...base,

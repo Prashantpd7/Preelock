@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  attemptCounts,
-  websiteBlocksTotal,
-} from '../services/analytics';
+import { attemptCounts, websiteBlocksTotal } from '../services/analytics';
 import { defaultFocus, type Session } from '../types';
 
 function makeSession(over: Partial<Session> = {}): Session {

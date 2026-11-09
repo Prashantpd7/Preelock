@@ -62,8 +62,7 @@ export function PlanningSections({
   const [schedLockPasswordOn, setSchedLockPasswordOn] = useState(false);
   const [schedLockPassword, setSchedLockPassword] = useState('');
   const [schedLockChallengeOn, setSchedLockChallengeOn] = useState(false);
-  const [schedLockChallengeLength, setSchedLockChallengeLength] =
-    useState(32);
+  const [schedLockChallengeLength, setSchedLockChallengeLength] = useState(32);
   const [schedLockDelayOn, setSchedLockDelayOn] = useState(false);
   const [schedLockDelayMinutes, setSchedLockDelayMinutes] = useState(5);
   const [schedLockRestart, setSchedLockRestart] = useState(false);
@@ -277,15 +276,17 @@ export function PlanningSections({
       lock: {
         // The stored hash is sent back verbatim while the
         // password lock stays on; omitting it turns it off.
-        password_hash: schedLockPasswordOn ? (existingHash ?? undefined) : undefined,
-        challenge_length: schedLockChallengeOn
-          ? schedLockChallengeLength
-          : 0,
+        password_hash: schedLockPasswordOn
+          ? (existingHash ?? undefined)
+          : undefined,
+        challenge_length: schedLockChallengeOn ? schedLockChallengeLength : 0,
         delay_minutes: schedLockDelayOn ? schedLockDelayMinutes : 0,
         restart_lock: schedLockRestart,
       },
       lock_password:
-        schedLockPasswordOn && schedLockPassword ? schedLockPassword : undefined,
+        schedLockPasswordOn && schedLockPassword
+          ? schedLockPassword
+          : undefined,
     };
   }
   function resetSchedForm() {
@@ -325,9 +326,7 @@ export function PlanningSections({
   async function submitSchedule(e: React.FormEvent) {
     e.preventDefault();
     setSchedProblem('');
-    const days = schedDays
-      .map((on, i) => (on ? i : -1))
-      .filter((i) => i >= 0);
+    const days = schedDays.map((on, i) => (on ? i : -1)).filter((i) => i >= 0);
     const problem = validateScheduleForm({
       title: schedTitle,
       days,
@@ -403,444 +402,425 @@ export function PlanningSections({
           <div className="section-heading section-start">
             <h2>Schedules</h2>
           </div>
-      <p className="small muted section-desc">
-        Automatic blocks on your weekly schedule. Needs open at login to
-        run.
-      </p>
-      {schedules.length ? (
-        <div className="session-list">
-          {schedules.map((s) => {
-            const active = isScheduleActive(s);
-            const lockedActive = isScheduleLockedActive(s);
-            const schedLockText = lockLabel(s.lock);
-            const hasStep10Gate =
-              !!s.lock &&
-              (!!s.lock.password_hash ||
-                (s.lock.challenge_length ?? 0) > 0 ||
-                (s.lock.delay_minutes ?? 0) > 0);
-            const delayStatus = scheduleLockDelayStatus(s);
-            const delayPending =
-              s.lock_state?.delay_for === 'change' &&
-              delayStatus.kind === 'pending';
-            const delayDone =
-              s.lock_state?.delay_for === 'change' &&
-              delayStatus.kind === 'done';
-            return (
-              <div className="panel" key={s.id}>
-                <h3>{s.title}</h3>
-                <p className="small muted">
-                  {formatDays(s.days)} · {s.start_time}–{s.end_time}
-                </p>
-                <div className="row controls">
-                  {active && <span className="status-pill">Active</span>}
-                  {s.lock_changes && (
-                    <span className="status-pill">Locked</span>
-                  )}
-                  {s.focus?.frozen?.enabled && (
-                    <span className="status-pill">Frozen</span>
-                  )}
-                  {schedLockText && (
-                    <span className="status-pill">
-                      Lock: {schedLockText}
-                    </span>
-                  )}
-                  {!s.enabled && (
-                    <span className="status-pill">Off</span>
-                  )}
-                </div>
-                {lockedActive && !hasStep10Gate && (
-                  <p className="small muted">
-                    Locked until this window ends.
-                  </p>
-                )}
-                {lockedActive && hasStep10Gate && (
-                  <p className="small muted">
-                    Locked; unlock from Edit below.
-                  </p>
-                )}
-                {s.focus?.frozen?.enabled && active && (
-                  <p className="small muted">
-                    Frozen until this window ends.
-                  </p>
-                )}
-                {(s.lock?.delay_minutes ?? 0) > 0 && active && (
-                  <div className="row controls">
-                    {delayPending && (
-                      <>
-                        <span className="small muted">
-                          Change unlocks in {delayStatus.minutesLeft} min
+          <p className="small muted section-desc">
+            Automatic blocks on your weekly schedule. Needs open at login to
+            run.
+          </p>
+          {schedules.length ? (
+            <div className="session-list">
+              {schedules.map((s) => {
+                const active = isScheduleActive(s);
+                const lockedActive = isScheduleLockedActive(s);
+                const schedLockText = lockLabel(s.lock);
+                const hasStep10Gate =
+                  !!s.lock &&
+                  (!!s.lock.password_hash ||
+                    (s.lock.challenge_length ?? 0) > 0 ||
+                    (s.lock.delay_minutes ?? 0) > 0);
+                const delayStatus = scheduleLockDelayStatus(s);
+                const delayPending =
+                  s.lock_state?.delay_for === 'change' &&
+                  delayStatus.kind === 'pending';
+                const delayDone =
+                  s.lock_state?.delay_for === 'change' &&
+                  delayStatus.kind === 'done';
+                return (
+                  <div className="panel" key={s.id}>
+                    <h3>{s.title}</h3>
+                    <p className="small muted">
+                      {formatDays(s.days)} · {s.start_time}–{s.end_time}
+                    </p>
+                    <div className="row controls">
+                      {active && <span className="status-pill">Active</span>}
+                      {s.lock_changes && (
+                        <span className="status-pill">Locked</span>
+                      )}
+                      {s.focus?.frozen?.enabled && (
+                        <span className="status-pill">Frozen</span>
+                      )}
+                      {schedLockText && (
+                        <span className="status-pill">
+                          Lock: {schedLockText}
                         </span>
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={busy}
-                          onClick={async () => {
+                      )}
+                      {!s.enabled && <span className="status-pill">Off</span>}
+                    </div>
+                    {lockedActive && !hasStep10Gate && (
+                      <p className="small muted">
+                        Locked until this window ends.
+                      </p>
+                    )}
+                    {lockedActive && hasStep10Gate && (
+                      <p className="small muted">
+                        Locked; unlock from Edit below.
+                      </p>
+                    )}
+                    {s.focus?.frozen?.enabled && active && (
+                      <p className="small muted">
+                        Frozen until this window ends.
+                      </p>
+                    )}
+                    {(s.lock?.delay_minutes ?? 0) > 0 && active && (
+                      <div className="row controls">
+                        {delayPending && (
+                          <>
+                            <span className="small muted">
+                              Change unlocks in {delayStatus.minutesLeft} min
+                            </span>
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy}
+                              onClick={async () => {
+                                await execute({
+                                  type: 'cancel_schedule_lock_delay',
+                                  id: s.id,
+                                });
+                              }}
+                            >
+                              Cancel delay
+                            </button>
+                          </>
+                        )}
+                        {delayDone && (
+                          <span className="small muted">
+                            Delay done; you can change now.
+                          </span>
+                        )}
+                        {!delayPending && !delayDone && (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy}
+                            onClick={async () => {
+                              await execute({
+                                type: 'request_schedule_lock_delay',
+                                id: s.id,
+                              });
+                            }}
+                          >
+                            Request change delay ({s.lock!.delay_minutes} min)
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    <div className="row controls">
+                      <label className="check-label">
+                        <input
+                          type="checkbox"
+                          checked={s.enabled}
+                          disabled={lockedActive || busy}
+                          onChange={async () => {
                             await execute({
-                              type: 'cancel_schedule_lock_delay',
+                              type: 'update_schedule',
                               id: s.id,
+                              title: s.title,
+                              days: s.days,
+                              start_time: s.start_time,
+                              end_time: s.end_time,
+                              focus: s.focus,
+                              enabled: !s.enabled,
+                              lock_changes: s.lock_changes,
                             });
                           }}
-                        >
-                          Cancel delay
-                        </button>
-                      </>
-                    )}
-                    {delayDone && (
-                      <span className="small muted">
-                        Delay done; you can change now.
-                      </span>
-                    )}
-                    {!delayPending && !delayDone && (
+                        />
+                        Enabled
+                      </label>
                       <button
                         type="button"
                         className="secondary"
                         disabled={busy}
+                        onClick={() => startSchedEdit(s)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={lockedActive || busy}
                         onClick={async () => {
-                          await execute({
-                            type: 'request_schedule_lock_delay',
-                            id: s.id,
-                          });
+                          await execute({ type: 'delete_schedule', id: s.id });
                         }}
                       >
-                        Request change delay ({s.lock!.delay_minutes} min)
+                        Delete
                       </button>
-                    )}
+                    </div>
                   </div>
-                )}
+                );
+              })}
+            </div>
+          ) : (
+            <div className="panel">
+              <Empty>No schedules yet.</Empty>
+            </div>
+          )}
+          {!data.sessions.length ? (
+            <div className="panel">
+              <p className="small muted">Create a session template first.</p>
+            </div>
+          ) : !schedFormOpen ? (
+            <div className="row controls">
+              <button
+                type="button"
+                onClick={() => {
+                  resetSchedForm();
+                  setSchedFormOpen(true);
+                }}
+              >
+                <Plus size={16} />
+                New schedule
+              </button>
+            </div>
+          ) : (
+            <form className="panel form-panel" onSubmit={submitSchedule}>
+              <h2>{schedEditingId ? 'Edit schedule' : 'New schedule'}</h2>
+              {!schedEditingId && (
+                <label>
+                  Template session
+                  <Dropdown
+                    value={schedTemplateId}
+                    onChange={(value) => {
+                      const chosen = data.sessions.find((s) => s.id === value);
+                      setSchedTemplateId(value);
+                      if (chosen) setSchedTitle(chosen.title);
+                    }}
+                    options={[
+                      { value: '', label: 'Pick a session…' },
+                      ...data.sessions.map((s) => ({
+                        value: s.id,
+                        label: `${s.title} · ${s.duration_minutes} min`,
+                      })),
+                    ]}
+                  />
+                </label>
+              )}
+              <label className="grow">
+                Schedule name
+                <input
+                  required
+                  maxLength={160}
+                  value={schedTitle}
+                  onChange={(e) => setSchedTitle(e.target.value)}
+                  placeholder="e.g. Morning deep work"
+                />
+              </label>
+              <fieldset>
+                <legend>Days</legend>
                 <div className="row controls">
-                  <label className="check-label">
-                    <input
-                      type="checkbox"
-                      checked={s.enabled}
-                      disabled={lockedActive || busy}
-                      onChange={async () => {
-                        await execute({
-                          type: 'update_schedule',
-                          id: s.id,
-                          title: s.title,
-                          days: s.days,
-                          start_time: s.start_time,
-                          end_time: s.end_time,
-                          focus: s.focus,
-                          enabled: !s.enabled,
-                          lock_changes: s.lock_changes,
-                        });
-                      }}
-                    />
-                    Enabled
-                  </label>
+                  {DAY_LABELS.map((label, i) => (
+                    <label className="check-label" key={label}>
+                      <input
+                        type="checkbox"
+                        checked={schedDays[i]}
+                        onChange={() =>
+                          setSchedDays((days) =>
+                            days.map((on, j) => (j === i ? !on : on)),
+                          )
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <div className="simple-grid time-grid">
+                <label>
+                  Start time
+                  <input
+                    type="time"
+                    required
+                    value={schedStart}
+                    onChange={(e) => setSchedStart(e.target.value)}
+                  />
+                </label>
+                <label>
+                  End time
+                  <input
+                    type="time"
+                    required
+                    value={schedEnd}
+                    onChange={(e) => setSchedEnd(e.target.value)}
+                  />
+                </label>
+              </div>
+              <p className="small muted">Ends earlier? It runs overnight.</p>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedLock}
+                  onChange={(e) => setSchedLock(e.target.checked)}
+                />
+                Lock changes during the window
+              </label>
+              <p className="small muted">
+                Locked windows can&apos;t be changed early.
+              </p>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedLockPasswordOn}
+                  onChange={(e) => setSchedLockPasswordOn(e.target.checked)}
+                />
+                Lock with a password
+              </label>
+              {schedLockPasswordOn && (
+                <label>
+                  Lock password
+                  <input
+                    type="password"
+                    value={schedLockPassword}
+                    onChange={(e) => setSchedLockPassword(e.target.value)}
+                    autoComplete="off"
+                    placeholder={
+                      editingSchedule?.lock?.password_hash
+                        ? 'Leave empty to keep the existing password'
+                        : undefined
+                    }
+                  />
+                </label>
+              )}
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedLockChallengeOn}
+                  onChange={(e) => setSchedLockChallengeOn(e.target.checked)}
+                />
+                Lock with a typed challenge
+              </label>
+              {schedLockChallengeOn && (
+                <label>
+                  Challenge length (characters, 8-64)
+                  <input
+                    type="number"
+                    min={8}
+                    max={64}
+                    value={schedLockChallengeLength}
+                    onChange={(e) =>
+                      setSchedLockChallengeLength(Number(e.target.value))
+                    }
+                  />
+                </label>
+              )}
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedLockDelayOn}
+                  onChange={(e) => setSchedLockDelayOn(e.target.checked)}
+                />
+                Lock with a delay
+              </label>
+              {schedLockDelayOn && (
+                <label>
+                  Delay (minutes, 1-60)
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={schedLockDelayMinutes}
+                    onChange={(e) =>
+                      setSchedLockDelayMinutes(Number(e.target.value))
+                    }
+                  />
+                </label>
+              )}
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedLockRestart}
+                  onChange={(e) => setSchedLockRestart(e.target.checked)}
+                />
+                Keep the lock after a restart
+              </label>
+              {(schedLockPasswordOn ||
+                schedLockChallengeOn ||
+                schedLockDelayOn) && (
+                <p className="small muted">Locks pass together, lift at end.</p>
+              )}
+              {editingLockedActive && (
+                <>
+                  <p className="small muted">Locked now; enter proofs below.</p>
+                  {editingSchedule?.lock?.password_hash && (
+                    <label>
+                      Password
+                      <input
+                        type="password"
+                        value={schedUnlockPassword}
+                        onChange={(e) => setSchedUnlockPassword(e.target.value)}
+                        autoComplete="off"
+                      />
+                    </label>
+                  )}
+                  {(editingSchedule?.lock?.challenge_length ?? 0) > 0 &&
+                    editingSchedule?.lock_state?.challenge && (
+                      <label>
+                        Type this challenge exactly:{' '}
+                        <code>{editingSchedule.lock_state.challenge}</code>
+                        <input
+                          value={schedUnlockChallenge}
+                          onChange={(e) =>
+                            setSchedUnlockChallenge(e.target.value)
+                          }
+                          autoComplete="off"
+                        />
+                      </label>
+                    )}
+                </>
+              )}
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={schedEnabled}
+                  onChange={(e) => setSchedEnabled(e.target.checked)}
+                />
+                Enabled
+              </label>
+              {schedProblem && (
+                <p className="error small" role="alert">
+                  {schedProblem}
+                </p>
+              )}
+              <div
+                className="row controls"
+                style={{ justifyContent: 'flex-end' }}
+              >
+                {schedEditingId && editingLockedActive && (
                   <button
                     type="button"
                     className="secondary"
                     disabled={busy}
-                    onClick={() => startSchedEdit(s)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={lockedActive || busy}
                     onClick={async () => {
-                      await execute({ type: 'delete_schedule', id: s.id });
+                      if (
+                        await execute({
+                          type: 'delete_schedule',
+                          id: schedEditingId,
+                          password: schedUnlockPassword || undefined,
+                          challenge_answer: schedUnlockChallenge || undefined,
+                        })
+                      ) {
+                        resetSchedForm();
+                        setSchedFormOpen(false);
+                      }
                     }}
                   >
-                    Delete
+                    Delete schedule
                   </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="panel">
-          <Empty>No schedules yet.</Empty>
-        </div>
-      )}
-      {!data.sessions.length ? (
-        <div className="panel">
-          <p className="small muted">
-            Create a session template first.
-          </p>
-        </div>
-      ) : !schedFormOpen ? (
-        <div className="row controls">
-          <button
-            type="button"
-            onClick={() => {
-              resetSchedForm();
-              setSchedFormOpen(true);
-            }}
-          >
-            <Plus size={16} />
-            New schedule
-          </button>
-        </div>
-      ) : (
-        <form className="panel form-panel" onSubmit={submitSchedule}>
-          <h2>{schedEditingId ? 'Edit schedule' : 'New schedule'}</h2>
-          {!schedEditingId && (
-            <label>
-              Template session
-              <Dropdown
-                value={schedTemplateId}
-                onChange={(value) => {
-                  const chosen = data.sessions.find(
-                    (s) => s.id === value,
-                  );
-                  setSchedTemplateId(value);
-                  if (chosen) setSchedTitle(chosen.title);
-                }}
-                options={[
-                  { value: '', label: 'Pick a session…' },
-                  ...data.sessions.map((s) => ({
-                    value: s.id,
-                    label: `${s.title} · ${s.duration_minutes} min`,
-                  })),
-                ]}
-              />
-            </label>
-          )}
-          <label className="grow">
-            Schedule name
-            <input
-              required
-              maxLength={160}
-              value={schedTitle}
-              onChange={(e) => setSchedTitle(e.target.value)}
-              placeholder="e.g. Morning deep work"
-            />
-          </label>
-          <fieldset>
-            <legend>Days</legend>
-            <div className="row controls">
-              {DAY_LABELS.map((label, i) => (
-                <label className="check-label" key={label}>
-                  <input
-                    type="checkbox"
-                    checked={schedDays[i]}
-                    onChange={() =>
-                      setSchedDays((days) =>
-                        days.map((on, j) => (j === i ? !on : on)),
-                      )
-                    }
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div className="simple-grid time-grid">
-            <label>
-              Start time
-              <input
-                type="time"
-                required
-                value={schedStart}
-                onChange={(e) => setSchedStart(e.target.value)}
-              />
-            </label>
-            <label>
-              End time
-              <input
-                type="time"
-                required
-                value={schedEnd}
-                onChange={(e) => setSchedEnd(e.target.value)}
-              />
-            </label>
-          </div>
-          <p className="small muted">
-            Ends earlier? It runs overnight.
-          </p>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedLock}
-              onChange={(e) => setSchedLock(e.target.checked)}
-            />
-            Lock changes during the window
-          </label>
-          <p className="small muted">
-            Locked windows can&apos;t be changed early.
-          </p>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedLockPasswordOn}
-              onChange={(e) =>
-                setSchedLockPasswordOn(e.target.checked)
-              }
-            />
-            Lock with a password
-          </label>
-          {schedLockPasswordOn && (
-            <label>
-              Lock password
-              <input
-                type="password"
-                value={schedLockPassword}
-                onChange={(e) => setSchedLockPassword(e.target.value)}
-                autoComplete="off"
-                placeholder={
-                  editingSchedule?.lock?.password_hash
-                    ? 'Leave empty to keep the existing password'
-                    : undefined
-                }
-              />
-            </label>
-          )}
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedLockChallengeOn}
-              onChange={(e) =>
-                setSchedLockChallengeOn(e.target.checked)
-              }
-            />
-            Lock with a typed challenge
-          </label>
-          {schedLockChallengeOn && (
-            <label>
-              Challenge length (characters, 8-64)
-              <input
-                type="number"
-                min={8}
-                max={64}
-                value={schedLockChallengeLength}
-                onChange={(e) =>
-                  setSchedLockChallengeLength(Number(e.target.value))
-                }
-              />
-            </label>
-          )}
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedLockDelayOn}
-              onChange={(e) => setSchedLockDelayOn(e.target.checked)}
-            />
-            Lock with a delay
-          </label>
-          {schedLockDelayOn && (
-            <label>
-              Delay (minutes, 1-60)
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={schedLockDelayMinutes}
-                onChange={(e) =>
-                  setSchedLockDelayMinutes(Number(e.target.value))
-                }
-              />
-            </label>
-          )}
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedLockRestart}
-              onChange={(e) => setSchedLockRestart(e.target.checked)}
-            />
-            Keep the lock after a restart
-          </label>
-          {(schedLockPasswordOn ||
-            schedLockChallengeOn ||
-            schedLockDelayOn) && (
-            <p className="small muted">
-              Locks pass together, lift at end.
-            </p>
-          )}
-          {editingLockedActive && (
-            <>
-              <p className="small muted">
-                Locked now; enter proofs below.
-              </p>
-              {editingSchedule?.lock?.password_hash && (
-                <label>
-                  Password
-                  <input
-                    type="password"
-                    value={schedUnlockPassword}
-                    onChange={(e) =>
-                      setSchedUnlockPassword(e.target.value)
-                    }
-                    autoComplete="off"
-                  />
-                </label>
-              )}
-              {(editingSchedule?.lock?.challenge_length ?? 0) > 0 &&
-                editingSchedule?.lock_state?.challenge && (
-                  <label>
-                    Type this challenge exactly:{' '}
-                    <code>{editingSchedule.lock_state.challenge}</code>
-                    <input
-                      value={schedUnlockChallenge}
-                      onChange={(e) =>
-                        setSchedUnlockChallenge(e.target.value)
-                      }
-                      autoComplete="off"
-                    />
-                  </label>
                 )}
-            </>
-          )}
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={schedEnabled}
-              onChange={(e) => setSchedEnabled(e.target.checked)}
-            />
-            Enabled
-          </label>
-          {schedProblem && (
-            <p className="error small" role="alert">
-              {schedProblem}
-            </p>
-          )}
-          <div
-            className="row controls"
-            style={{ justifyContent: 'flex-end' }}
-          >
-            {schedEditingId && editingLockedActive && (
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy}
-                onClick={async () => {
-                  if (
-                    await execute({
-                      type: 'delete_schedule',
-                      id: schedEditingId,
-                      password: schedUnlockPassword || undefined,
-                      challenge_answer:
-                        schedUnlockChallenge || undefined,
-                    })
-                  ) {
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
                     resetSchedForm();
                     setSchedFormOpen(false);
-                  }
-                }}
-              >
-                Delete schedule
-              </button>
-            )}
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                resetSchedForm();
-                setSchedFormOpen(false);
-              }}
-            >
-              Cancel
-            </button>
-            <button disabled={busy}>
-              {schedEditingId ? 'Save schedule' : 'Create schedule'}
-            </button>
-          </div>
-        </form>
-      )}
+                  }}
+                >
+                  Cancel
+                </button>
+                <button disabled={busy}>
+                  {schedEditingId ? 'Save schedule' : 'Create schedule'}
+                </button>
+              </div>
+            </form>
+          )}
         </section>
       )}
       {(!only || only === 'oneshots') && (
@@ -848,123 +828,118 @@ export function PlanningSections({
           <div className="section-heading section-start">
             <h2>Start once at</h2>
           </div>
-      <p className="small muted section-desc">
-        One block at a chosen time.
-      </p>
-      {oneShots.length ? (
-        <div className="session-list">
-          {oneShots.map((o) => (
-            <div className="panel" key={o.id}>
-              <h3>{o.title}</h3>
-              <p className="small muted">
-                {new Date(o.fire_at_ms).toLocaleString()} · {o.minutes}{' '}
-                min
-              </p>
-              <div className="row controls">
+          <p className="small muted section-desc">
+            One block at a chosen time.
+          </p>
+          {oneShots.length ? (
+            <div className="session-list">
+              {oneShots.map((o) => (
+                <div className="panel" key={o.id}>
+                  <h3>{o.title}</h3>
+                  <p className="small muted">
+                    {new Date(o.fire_at_ms).toLocaleString()} · {o.minutes} min
+                  </p>
+                  <div className="row controls">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      aria-label="Cancel timer"
+                      onClick={async () => {
+                        await execute({ type: 'delete_one_shot', id: o.id });
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="panel">
+              <Empty>No one-shot timers yet.</Empty>
+            </div>
+          )}
+          {!data.sessions.length ? (
+            <div className="panel">
+              <p className="small muted">No session templates yet.</p>
+            </div>
+          ) : !oneFormOpen ? (
+            <div className="row controls">
+              <button
+                type="button"
+                onClick={() => {
+                  resetOneForm();
+                  setOneFormOpen(true);
+                }}
+              >
+                <Plus size={16} />
+                New one-shot
+              </button>
+            </div>
+          ) : (
+            <form className="panel form-panel" onSubmit={submitOneShot}>
+              <h2>New one-shot</h2>
+              <label>
+                One-shot template
+                <Dropdown
+                  value={oneTemplateId}
+                  onChange={(value) => {
+                    const chosen = data.sessions.find((s) => s.id === value);
+                    setOneTemplateId(value);
+                    if (chosen) setOneTitle(chosen.title);
+                  }}
+                  options={[
+                    { value: '', label: 'Pick a session…' },
+                    ...data.sessions.map((s) => ({
+                      value: s.id,
+                      label: `${s.title} · ${s.duration_minutes} min`,
+                    })),
+                  ]}
+                />
+              </label>
+              <label className="grow">
+                One-shot name
+                <input
+                  required
+                  maxLength={160}
+                  value={oneTitle}
+                  onChange={(e) => setOneTitle(e.target.value)}
+                  placeholder="e.g. Evening deep work"
+                />
+              </label>
+              <label>
+                Start at
+                <input
+                  type="datetime-local"
+                  required
+                  value={oneWhen}
+                  onChange={(e) => setOneWhen(e.target.value)}
+                />
+              </label>
+              {oneProblem && (
+                <p className="error small" role="alert">
+                  {oneProblem}
+                </p>
+              )}
+              <div
+                className="row controls"
+                style={{ justifyContent: 'flex-end' }}
+              >
                 <button
                   type="button"
                   className="secondary"
-                  disabled={busy}
-                  aria-label="Cancel timer"
-                  onClick={async () => {
-                    await execute({ type: 'delete_one_shot', id: o.id });
+                  onClick={() => {
+                    resetOneForm();
+                    setOneFormOpen(false);
                   }}
                 >
                   Cancel
                 </button>
+                <button disabled={busy}>Create one-shot</button>
               </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="panel">
-          <Empty>No one-shot timers yet.</Empty>
-        </div>
-      )}
-      {!data.sessions.length ? (
-        <div className="panel">
-          <p className="small muted">
-            No session templates yet.
-          </p>
-        </div>
-      ) : !oneFormOpen ? (
-        <div className="row controls">
-          <button
-            type="button"
-            onClick={() => {
-              resetOneForm();
-              setOneFormOpen(true);
-            }}
-          >
-            <Plus size={16} />
-            New one-shot
-          </button>
-        </div>
-      ) : (
-        <form className="panel form-panel" onSubmit={submitOneShot}>
-          <h2>New one-shot</h2>
-          <label>
-            One-shot template
-            <Dropdown
-              value={oneTemplateId}
-              onChange={(value) => {
-                const chosen = data.sessions.find(
-                  (s) => s.id === value,
-                );
-                setOneTemplateId(value);
-                if (chosen) setOneTitle(chosen.title);
-              }}
-              options={[
-                { value: '', label: 'Pick a session…' },
-                ...data.sessions.map((s) => ({
-                  value: s.id,
-                  label: `${s.title} · ${s.duration_minutes} min`,
-                })),
-              ]}
-            />
-          </label>
-          <label className="grow">
-            One-shot name
-            <input
-              required
-              maxLength={160}
-              value={oneTitle}
-              onChange={(e) => setOneTitle(e.target.value)}
-              placeholder="e.g. Evening deep work"
-            />
-          </label>
-          <label>
-            Start at
-            <input
-              type="datetime-local"
-              required
-              value={oneWhen}
-              onChange={(e) => setOneWhen(e.target.value)}
-            />
-          </label>
-          {oneProblem && (
-            <p className="error small" role="alert">
-              {oneProblem}
-            </p>
+            </form>
           )}
-          <div
-            className="row controls"
-            style={{ justifyContent: 'flex-end' }}
-          >
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                resetOneForm();
-                setOneFormOpen(false);
-              }}
-            >
-              Cancel
-            </button>
-            <button disabled={busy}>Create one-shot</button>
-          </div>
-        </form>
-      )}
         </section>
       )}
       {(!only || only === 'allowances') && (
@@ -972,208 +947,211 @@ export function PlanningSections({
           <div className="section-heading section-start">
             <h2>Allowances</h2>
           </div>
-      <p className="small muted section-desc">
-        Daily or weekly time budgets. Blocks always lift on reset.
-      </p>
-      {allowances.length ? (
-        <div className="session-list">
-          {allowances.map((a) => {
-            const exhausted = allowanceExhausted(a);
-            const remaining = allowanceRemainingMs(a);
-            return (
-              <div className="panel" key={a.id}>
-                <h3>{a.title}</h3>
+          <p className="small muted section-desc">
+            Daily or weekly time budgets. Blocks always lift on reset.
+          </p>
+          {allowances.length ? (
+            <div className="session-list">
+              {allowances.map((a) => {
+                const exhausted = allowanceExhausted(a);
+                const remaining = allowanceRemainingMs(a);
+                return (
+                  <div className="panel" key={a.id}>
+                    <h3>{a.title}</h3>
+                    <p className="small muted">
+                      {a.kind === 'site' ? 'Site' : 'App'} · {a.target} ·{' '}
+                      {allowancePeriodLabel(a)}
+                    </p>
+                    <p className="small muted">
+                      {exhausted
+                        ? 'Budget used up; blocked until reset.'
+                        : `${formatAllowanceMinutes(remaining)} left of ${formatAllowanceMinutes(a.budget_minutes * 60_000)}`}
+                    </p>
+                    <div className="row controls">
+                      {exhausted && (
+                        <span className="status-pill">Exhausted</span>
+                      )}
+                      {!a.enabled && <span className="status-pill">Off</span>}
+                    </div>
+                    <div className="row controls">
+                      <label className="check-label">
+                        <input
+                          type="checkbox"
+                          checked={a.enabled}
+                          disabled={busy}
+                          onChange={async () => {
+                            await execute({
+                              type: 'update_allowance',
+                              allowance: { ...a, enabled: !a.enabled },
+                            });
+                          }}
+                        />
+                        Enabled
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => startAllowEdit(a)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={async () => {
+                          await execute({ type: 'delete_allowance', id: a.id });
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="panel">
+              <Empty>No allowances yet.</Empty>
+            </div>
+          )}
+          {!allowFormOpen ? (
+            <div className="row controls">
+              <button
+                type="button"
+                onClick={() => {
+                  resetAllowForm();
+                  setAllowFormOpen(true);
+                }}
+              >
+                <Plus size={16} />
+                New allowance
+              </button>
+            </div>
+          ) : (
+            <form className="panel form-panel" onSubmit={submitAllowance}>
+              <h2>{allowEditingId ? 'Edit allowance' : 'New allowance'}</h2>
+              <label className="grow">
+                Allowance name
+                <input
+                  required
+                  maxLength={160}
+                  value={allowTitle}
+                  onChange={(e) => setAllowTitle(e.target.value)}
+                  placeholder="e.g. YouTube"
+                />
+              </label>
+              <label>
+                Budget for
+                <Dropdown
+                  value={allowKind}
+                  onChange={(value) => {
+                    setAllowKind(value as 'site' | 'app');
+                    setAllowProblem('');
+                  }}
+                  options={[
+                    { value: 'site', label: 'A site' },
+                    { value: 'app', label: 'An app' },
+                  ]}
+                />
+              </label>
+              <label className="grow">
+                {allowKind === 'site' ? 'Site' : 'App id'}
+                <input
+                  required
+                  value={allowTarget}
+                  onChange={(e) => setAllowTarget(e.target.value)}
+                  placeholder={
+                    allowKind === 'site'
+                      ? 'e.g. youtube.com or *.example.com'
+                      : 'e.g. com.example.game'
+                  }
+                />
+              </label>
+              {allowKind === 'site' && (
                 <p className="small muted">
-                  {a.kind === 'site' ? 'Site' : 'App'} · {a.target} ·{' '}
-                  {allowancePeriodLabel(a)}
+                  Domain only; no paths or searches.
                 </p>
-                <p className="small muted">
-                  {exhausted
-                    ? 'Budget used up; blocked until reset.'
-                    : `${formatAllowanceMinutes(remaining)} left of ${formatAllowanceMinutes(a.budget_minutes * 60_000)}`}
-                </p>
-                <div className="row controls">
-                  {exhausted && (
-                    <span className="status-pill">Exhausted</span>
-                  )}
-                  {!a.enabled && <span className="status-pill">Off</span>}
-                </div>
-                <div className="row controls">
-                  <label className="check-label">
-                    <input
-                      type="checkbox"
-                      checked={a.enabled}
-                      disabled={busy}
-                      onChange={async () => {
-                        await execute({
-                          type: 'update_allowance',
-                          allowance: { ...a, enabled: !a.enabled },
-                        });
-                      }}
-                    />
-                    Enabled
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={busy}
-                    onClick={() => startAllowEdit(a)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={busy}
-                    onClick={async () => {
-                      await execute({ type: 'delete_allowance', id: a.id });
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+              )}
+              <div className="simple-grid allowance-grid">
+                <label>
+                  Budget (minutes)
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    max={allowPeriod === 'day' ? 1440 : 10080}
+                    value={allowBudget}
+                    onChange={(e) => setAllowBudget(Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  Period
+                  <Dropdown
+                    value={allowPeriod}
+                    onChange={(value) =>
+                      setAllowPeriod(value as 'day' | 'week')
+                    }
+                    options={[
+                      { value: 'day', label: 'Daily' },
+                      { value: 'week', label: 'Weekly' },
+                    ]}
+                  />
+                </label>
+                <label>
+                  Reset
+                  <Dropdown
+                    value={allowMode}
+                    onChange={(value) =>
+                      setAllowMode(value as 'rolling' | 'fixed')
+                    }
+                    options={[
+                      {
+                        value: 'rolling',
+                        label: 'Rolling (last 24h / 7 days)',
+                      },
+                      {
+                        value: 'fixed',
+                        label: 'Fixed (calendar day / Monday week)',
+                      },
+                    ]}
+                  />
+                </label>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="panel">
-          <Empty>No allowances yet.</Empty>
-        </div>
-      )}
-      {!allowFormOpen ? (
-        <div className="row controls">
-          <button
-            type="button"
-            onClick={() => {
-              resetAllowForm();
-              setAllowFormOpen(true);
-            }}
-          >
-            <Plus size={16} />
-            New allowance
-          </button>
-        </div>
-      ) : (
-        <form className="panel form-panel" onSubmit={submitAllowance}>
-          <h2>{allowEditingId ? 'Edit allowance' : 'New allowance'}</h2>
-          <label className="grow">
-            Allowance name
-            <input
-              required
-              maxLength={160}
-              value={allowTitle}
-              onChange={(e) => setAllowTitle(e.target.value)}
-              placeholder="e.g. YouTube"
-            />
-          </label>
-          <label>
-            Budget for
-            <Dropdown
-              value={allowKind}
-              onChange={(value) => {
-                setAllowKind(value as 'site' | 'app');
-                setAllowProblem('');
-              }}
-              options={[
-                { value: 'site', label: 'A site' },
-                { value: 'app', label: 'An app' },
-              ]}
-            />
-          </label>
-          <label className="grow">
-            {allowKind === 'site' ? 'Site' : 'App id'}
-            <input
-              required
-              value={allowTarget}
-              onChange={(e) => setAllowTarget(e.target.value)}
-              placeholder={
-                allowKind === 'site'
-                  ? 'e.g. youtube.com or *.example.com'
-                  : 'e.g. com.example.game'
-              }
-            />
-          </label>
-          {allowKind === 'site' && (
-            <p className="small muted">
-              Domain only; no paths or searches.
-            </p>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={allowEnabled}
+                  onChange={(e) => setAllowEnabled(e.target.checked)}
+                />
+                Enabled
+              </label>
+              {allowProblem && (
+                <p className="error small" role="alert">
+                  {allowProblem}
+                </p>
+              )}
+              <div
+                className="row controls"
+                style={{ justifyContent: 'flex-end' }}
+              >
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    resetAllowForm();
+                    setAllowFormOpen(false);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button disabled={busy}>
+                  {allowEditingId ? 'Save allowance' : 'Create allowance'}
+                </button>
+              </div>
+            </form>
           )}
-          <div className="simple-grid allowance-grid">
-            <label>
-              Budget (minutes)
-              <input
-                type="number"
-                required
-                min={1}
-                max={allowPeriod === 'day' ? 1440 : 10080}
-                value={allowBudget}
-                onChange={(e) => setAllowBudget(Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Period
-              <Dropdown
-                value={allowPeriod}
-                onChange={(value) =>
-                  setAllowPeriod(value as 'day' | 'week')
-                }
-                options={[
-                  { value: 'day', label: 'Daily' },
-                  { value: 'week', label: 'Weekly' },
-                ]}
-              />
-            </label>
-            <label>
-              Reset
-              <Dropdown
-                value={allowMode}
-                onChange={(value) =>
-                  setAllowMode(value as 'rolling' | 'fixed')
-                }
-                options={[
-                  { value: 'rolling', label: 'Rolling (last 24h / 7 days)' },
-                  {
-                    value: 'fixed',
-                    label: 'Fixed (calendar day / Monday week)',
-                  },
-                ]}
-              />
-            </label>
-          </div>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={allowEnabled}
-              onChange={(e) => setAllowEnabled(e.target.checked)}
-            />
-            Enabled
-          </label>
-          {allowProblem && (
-            <p className="error small" role="alert">
-              {allowProblem}
-            </p>
-          )}
-          <div
-            className="row controls"
-            style={{ justifyContent: 'flex-end' }}
-          >
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                resetAllowForm();
-                setAllowFormOpen(false);
-              }}
-            >
-              Cancel
-            </button>
-            <button disabled={busy}>
-              {allowEditingId ? 'Save allowance' : 'Create allowance'}
-            </button>
-          </div>
-        </form>
-      )}
         </section>
       )}
     </>

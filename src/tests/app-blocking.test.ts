@@ -35,12 +35,10 @@ test('blocked folders reject roots and accept mixed lists', () => {
   expect(blockedFolderInputError('C:\\')).toContain('root');
   expect(blockedFolderInputError('C:')).toContain('root');
   expect(blockedFolderInputError('')).toBe('');
-  expect(blockedFolderInputError('C:\\Games\n\n/Applications/Games')).toBe(
-    '',
+  expect(blockedFolderInputError('C:\\Games\n\n/Applications/Games')).toBe('');
+  expect(blockedFolderInputError('C:\\Games\nC:\\Windows')).toContain(
+    'C:\\Windows',
   );
-  expect(
-    blockedFolderInputError('C:\\Games\nC:\\Windows'),
-  ).toContain('C:\\Windows');
 });
 
 test('window-title rules reject overlong rules and accept substrings', () => {

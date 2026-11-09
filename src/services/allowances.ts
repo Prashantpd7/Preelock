@@ -66,7 +66,10 @@ export function allowanceRemainingMs(
   allowance: Allowance,
   now: Date = new Date(),
 ): number {
-  return Math.max(0, allowanceBudgetMs(allowance) - allowanceUsedMs(allowance, now));
+  return Math.max(
+    0,
+    allowanceBudgetMs(allowance) - allowanceUsedMs(allowance, now),
+  );
 }
 
 /** Exhausted means enabled AND used up: disabling or deleting

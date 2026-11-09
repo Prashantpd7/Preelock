@@ -104,7 +104,8 @@ export function cleanYouTubeChannel(raw: string): string | null {
   if (s.startsWith('@')) return cleanHandle(s.slice(1));
   if (UC_ID.test(s)) return s;
   for (const prefix of ['c:', 'user:']) {
-    if (s.startsWith(prefix)) return cleanLegacy(prefix, s.slice(prefix.length));
+    if (s.startsWith(prefix))
+      return cleanLegacy(prefix, s.slice(prefix.length));
   }
   const lower = s.toLowerCase();
   const withoutScheme = lower.replace(/^https?:\/\//, '');
@@ -132,10 +133,7 @@ export function cleanYouTubeChannel(raw: string): string | null {
   if (first.startsWith('@')) return cleanHandle(first.slice(1));
   if (first === 'channel' && segments[1] && UC_ID.test(segments[1]))
     return segments[1];
-  if (
-    (first === 'c' || first === 'user') &&
-    segments[1]
-  )
+  if ((first === 'c' || first === 'user') && segments[1])
     return cleanLegacy(first + ':', segments[1]);
   return null;
 }
@@ -212,11 +210,7 @@ export function blockedFolderInputError(value: string): string {
     });
     if (hasControl || folder.length > 1024)
       return `Invalid blocked folder: ${folder}`;
-    if (
-      folder === '/' ||
-      folder === '\\' ||
-      /^[a-z]:[\\/]?$/i.test(folder)
-    )
+    if (folder === '/' || folder === '\\' || /^[a-z]:[\\/]?$/i.test(folder))
       return `A whole drive or filesystem root cannot be blocked: ${folder}`;
     if (isSystemBlockedFolder(folder))
       return `System folders cannot be blocked: ${folder}`;

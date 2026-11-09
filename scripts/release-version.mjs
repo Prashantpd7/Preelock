@@ -15,4 +15,8 @@ const versions = [
 if (!/^\d+\.\d+\.\d+$/.test(version) || versions.some((v) => v !== version)) {
   throw new Error('App and lockfile versions must match before release');
 }
+const tag = process.env.RELEASE_TAG || '';
+if (tag && tag !== `v${version}`) {
+  throw new Error(`Release tag ${tag} does not match app version v${version}`);
+}
 process.stdout.write(`version=${version}\n`);

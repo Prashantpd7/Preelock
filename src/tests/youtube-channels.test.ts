@@ -10,9 +10,9 @@ test('cleanYouTubeChannel normalizes every entry form, mirroring Rust', () => {
     '@somehandle',
   );
   expect(cleanYouTubeChannel('youtube.com/@handle/videos')).toBe('@handle');
-  expect(cleanYouTubeChannel('youtube.com/channel/UCabcdefghijklmnopqrstuv')).toBe(
-    'UCabcdefghijklmnopqrstuv',
-  );
+  expect(
+    cleanYouTubeChannel('youtube.com/channel/UCabcdefghijklmnopqrstuv'),
+  ).toBe('UCabcdefghijklmnopqrstuv');
   expect(cleanYouTubeChannel('UCabcdefghijklmnopqrstuv')).toBe(
     'UCabcdefghijklmnopqrstuv',
   );
@@ -53,6 +53,10 @@ test('normalizeYouTubeChannelInput cleans lines and reports the bad ones', () =>
   expect(errors).toEqual(['***']);
 });
 test('youTubeChannelInputError is quiet for good input', () => {
-  expect(youTubeChannelInputError('@alpha\nyoutube.com/channel/UCabcdefghijklmnopqrstuv')).toBe('');
+  expect(
+    youTubeChannelInputError(
+      '@alpha\nyoutube.com/channel/UCabcdefghijklmnopqrstuv',
+    ),
+  ).toBe('');
   expect(youTubeChannelInputError('@alpha\n***')).toContain('***');
 });

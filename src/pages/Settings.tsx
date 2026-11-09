@@ -389,7 +389,9 @@ export function Settings() {
                     max={300}
                     value={draft.grace_seconds ?? 60}
                     disabled={disabled}
-                    onChange={(e) => change('grace_seconds', Number(e.target.value))}
+                    onChange={(e) =>
+                      change('grace_seconds', Number(e.target.value))
+                    }
                   />{' '}
                   sec
                 </label>
@@ -741,15 +743,15 @@ export function Settings() {
             </p>
             {confirm !== 'reset_preferences' &&
               confirm !== 'delete_statistics' && (
-              <label>
-                Type {confirm === 'restore' ? 'RESTORE' : 'DELETE HISTORY'}
-                <input
-                  aria-label="Confirmation"
-                  value={typed}
-                  onChange={(e) => setTyped(e.target.value)}
-                />
-              </label>
-            )}
+                <label>
+                  Type {confirm === 'restore' ? 'RESTORE' : 'DELETE HISTORY'}
+                  <input
+                    aria-label="Confirmation"
+                    value={typed}
+                    onChange={(e) => setTyped(e.target.value)}
+                  />
+                </label>
+              )}
             <button
               className={
                 confirm === 'delete_history' || confirm === 'delete_statistics'

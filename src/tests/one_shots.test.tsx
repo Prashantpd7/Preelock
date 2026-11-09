@@ -5,10 +5,7 @@ import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
 import { defaultFocus, type OneShot, type Session } from '../types';
-import {
-  oneShotFireAtMs,
-  validateOneShotForm,
-} from '../services/one_shots';
+import { oneShotFireAtMs, validateOneShotForm } from '../services/one_shots';
 
 vi.mock('../services/settings', () => ({
   settingsAction: vi.fn().mockResolvedValue({}),
@@ -193,7 +190,9 @@ it('creates a one-shot from a template at a future time', async () => {
     target: { value: '2020-01-01T09:00' },
   });
   await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
-  expect(await screen.findByText('Pick a future date and time.')).toBeInTheDocument();
+  expect(
+    await screen.findByText('Pick a future date and time.'),
+  ).toBeInTheDocument();
   expect(api.execute).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText('Start at'), {
     target: { value: '2099-01-01T09:00' },

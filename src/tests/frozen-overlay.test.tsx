@@ -64,9 +64,7 @@ describe('FrozenOverlay', () => {
     });
     expect(screen.getByLabelText('Time remaining')).toHaveTextContent('24:00');
     expect(screen.queryByRole('button')).toBeNull();
-    expect(
-      screen.getByText(/no way to end it early/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no way to end it early/i)).toBeInTheDocument();
   });
   it('shows the ended state when no frozen session is running', () => {
     useAppStore.setState({

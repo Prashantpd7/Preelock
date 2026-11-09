@@ -131,14 +131,18 @@ function AppLockPanelBody({
         <button
           type="button"
           aria-pressed={mode === 'timed'}
-          onClick={() => setMode((current) => (current === 'timed' ? null : 'timed'))}
+          onClick={() =>
+            setMode((current) => (current === 'timed' ? null : 'timed'))
+          }
         >
           Block for a set time
         </button>
         <button
           type="button"
           aria-pressed={mode === 'daily'}
-          onClick={() => setMode((current) => (current === 'daily' ? null : 'daily'))}
+          onClick={() =>
+            setMode((current) => (current === 'daily' ? null : 'daily'))
+          }
         >
           Block after daily limit
         </button>
@@ -187,7 +191,9 @@ function AppLockForm({
   const [siteInput, setSiteInput] = useState('');
   // Text state (not a number) so typed leading zeros can be stripped
   // before they stick in the field; parsed to a number on submit.
-  const [minutesText, setMinutesText] = useState(mode === 'timed' ? '60' : '30');
+  const [minutesText, setMinutesText] = useState(
+    mode === 'timed' ? '60' : '30',
+  );
   const [problem, setProblem] = useState('');
 
   // The picker defaults to the most-used app until the user picks one.
@@ -227,9 +233,7 @@ function AppLockForm({
     });
     if (ok) onDone();
     else
-      setProblem(
-        useAppStore.getState().error || 'Could not save the block.',
-      );
+      setProblem(useAppStore.getState().error || 'Could not save the block.');
   }
 
   return (

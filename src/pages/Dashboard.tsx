@@ -127,11 +127,10 @@ export function Dashboard() {
               </Link>
               <span className="small muted" style={{ marginLeft: '0.75rem' }}>
                 Browser blocked until the extension is connected — this
-                session&apos;s website rules were never applied, so the
-                browser app itself stays blocked. Killing the app or
-                removing the extension cannot end this block early; it
-                resumes when Preelock restarts. This does not prevent
-                uninstall or force-quit itself.
+                session&apos;s website rules were never applied, so the browser
+                app itself stays blocked. Killing the app or removing the
+                extension cannot end this block early; it resumes when Preelock
+                restarts. This does not prevent uninstall or force-quit itself.
               </span>
             </p>
           )}

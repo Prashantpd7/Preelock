@@ -151,7 +151,5 @@ it('shows a starting countdown instead of the timer during grace', async () => {
   );
   expect(await screen.findByText(/starting soon/i)).toBeInTheDocument();
   expect(screen.getByText(/Starts in \d+s/)).toBeInTheDocument();
-  expect(
-    screen.getByText(/nothing is blocked yet/i),
-  ).toBeInTheDocument();
+  expect(screen.getByText(/nothing is blocked yet/i)).toBeInTheDocument();
 });

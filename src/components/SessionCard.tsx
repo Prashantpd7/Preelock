@@ -306,8 +306,8 @@ export function SessionCard({
           )}
           {frozen && (
             <p className="small" role="status">
-              Frozen{frozenText ? `: ${frozenText}` : ''} · ends only
-              when the timer ends
+              Frozen{frozenText ? `: ${frozenText}` : ''} · ends only when the
+              timer ends
             </p>
           )}
           {live &&
@@ -316,8 +316,7 @@ export function SessionCard({
             !session.reward?.break_remaining_ms && (
               <p className="small" role="status">
                 {pomodoroLabel(session.pomodoro)} ·{' '}
-                {countdown(session.pomodoro.phase_remaining_ms)} to next
-                phase
+                {countdown(session.pomodoro.phase_remaining_ms)} to next phase
               </p>
             )}
           {live &&
@@ -364,19 +363,22 @@ export function SessionCard({
               Start session
             </button>
           )}
-        {session.status === 'running' && session.allow_pause && !committed && !frozen && (
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={(e) => {
-              e.stopPropagation();
-              void execute({ type: 'pause_session', id: session.id });
-            }}
-          >
-            <Pause size={15} />
-            Pause
-          </button>
-        )}
+        {session.status === 'running' &&
+          session.allow_pause &&
+          !committed &&
+          !frozen && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void execute({ type: 'pause_session', id: session.id });
+              }}
+            >
+              <Pause size={15} />
+              Pause
+            </button>
+          )}
         {session.status === 'paused' && (
           <button
             disabled={busy}
@@ -513,10 +515,9 @@ export function SessionCard({
             <section className="detail-block" aria-label="Lock">
               <h4>Lock</h4>
               <p className="small">
-                Ending, pausing, or deleting early needs every lock
-                below to pass. The lock lifts on its own when the
-                timer ends, so a forgotten password never locks you
-                out permanently.
+                Ending, pausing, or deleting early needs every lock below to
+                pass. The lock lifts on its own when the timer ends, so a
+                forgotten password never locks you out permanently.
               </p>
               {session.lock?.password_hash && (
                 <label>
@@ -536,9 +537,7 @@ export function SessionCard({
                     <code>{session.lock_state.challenge}</code>
                     <input
                       value={unlockChallenge}
-                      onChange={(e) =>
-                        setUnlockChallenge(e.target.value)
-                      }
+                      onChange={(e) => setUnlockChallenge(e.target.value)}
                       autoComplete="off"
                     />
                   </label>
@@ -548,8 +547,8 @@ export function SessionCard({
                   {lockDelayPending && (
                     <p className="small">
                       Delay for {lockDelayFor} unlocks in{' '}
-                      {lockDelay.minutesLeft} min. The block stays
-                      active during the delay.
+                      {lockDelay.minutesLeft} min. The block stays active during
+                      the delay.
                     </p>
                   )}
                   {lockDelayDone && (
@@ -572,8 +571,7 @@ export function SessionCard({
                             })
                           }
                         >
-                          Request end delay (
-                          {session.lock!.delay_minutes} min)
+                          Request end delay ({session.lock!.delay_minutes} min)
                         </button>
                         {session.status === 'running' &&
                           session.allow_pause &&
@@ -683,11 +681,10 @@ export function SessionCard({
             <section className="detail-block" aria-label="Frozen">
               <h4>Frozen</h4>
               <p className="small">
-                This session freezes the whole computer: every app
-                and website not on its allowlists is blocked, and it
-                cannot be paused, ended early, or deleted. There is
-                no emergency unlock — the lock ends on its own when
-                the timer runs out, on wall-clock time.
+                This session freezes the whole computer: every app and website
+                not on its allowlists is blocked, and it cannot be paused, ended
+                early, or deleted. There is no emergency unlock — the lock ends
+                on its own when the timer runs out, on wall-clock time.
               </p>
             </section>
           )}

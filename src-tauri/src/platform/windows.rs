@@ -1,5 +1,5 @@
 use super::{Application, Sample};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM},
     System::{
@@ -21,21 +21,13 @@ struct Camera {
     detector: windows::Media::FaceAnalysis::FaceDetector,
 }
 
-static CAMERA: OnceLock<Mutex<Option<Camera>>> = OnceLock::new();
-static CAMERA_STATUS: OnceLock<Mutex<String>> = OnceLock::new();
-
-fn camera_state() -> &'static Mutex<Option<Camera>> {
-    CAMERA.get_or_init(|| Mutex::new(None))
-}
-
-fn camera_status_state() -> &'static Mutex<String> {
-    CAMERA_STATUS.get_or_init(|| Mutex::new("not_requested".into()))
+thread_local! {
+    static CAMERA: RefCell<Option<Camera>> = const { RefCell::new(None) };
+    static CAMERA_STATUS: RefCell<String> = RefCell::new("not_requested".into());
 }
 
 fn set_camera_status(status: &str) {
-    if let Ok(mut current) = camera_status_state().lock() {
-        *current = status.into();
-    }
+    CAMERA_STATUS.with(|current| *current.borrow_mut() = status.into());
 }
 
 fn windows_error_status(error: &windows::core::Error) -> &'static str {
@@ -338,21 +330,18 @@ pub fn hide(sample: &Sample) -> bool {
     }
 }
 pub fn camera_permission() -> &'static str {
-    if let Ok(status) = camera_status_state().lock() {
-        return match status.as_str() {
-            "granted"
-            | "starting"
-            | "person_detected"
-            | "person_not_detected"
-            | "extended_absence"
-            | "camera_interrupted"
-            | "camera_stalled" => "granted",
-            "denied" => "denied",
-            "no_camera" => "unavailable",
-            _ => "not_requested",
-        };
-    }
-    "unknown"
+    CAMERA_STATUS.with(|status| match status.borrow().as_str() {
+        "granted"
+        | "starting"
+        | "person_detected"
+        | "person_not_detected"
+        | "extended_absence"
+        | "camera_interrupted"
+        | "camera_stalled" => "granted",
+        "denied" => "denied",
+        "no_camera" => "unavailable",
+        _ => "not_requested",
+    })
 }
 pub fn request_camera() -> Result<(), String> {
     if camera_start() {
@@ -365,138 +354,129 @@ pub fn camera_start() -> bool {
         set_camera_status("camera_unavailable");
         return false;
     }
-    let mut state = match camera_state().lock() {
-        Ok(state) => state,
-        Err(_) => {
+    CAMERA.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.is_some() {
+            return true;
+        }
+        use windows::Media::{
+            Capture::{MediaCapture, MediaCaptureInitializationSettings, StreamingCaptureMode},
+            FaceAnalysis::FaceDetector,
+        };
+        let settings = match MediaCaptureInitializationSettings::new() {
+            Ok(settings) => settings,
+            Err(_) => {
+                set_camera_status("camera_unavailable");
+                return false;
+            }
+        };
+        if settings
+            .SetStreamingCaptureMode(StreamingCaptureMode::Video)
+            .is_err()
+        {
             set_camera_status("camera_unavailable");
             return false;
         }
-    };
-    if state.is_some() {
-        return true;
-    }
-    use windows::Media::{
-        Capture::{MediaCapture, MediaCaptureInitializationSettings, StreamingCaptureMode},
-        FaceAnalysis::FaceDetector,
-    };
-    let settings = match MediaCaptureInitializationSettings::new() {
-        Ok(settings) => settings,
-        Err(_) => {
-            set_camera_status("camera_unavailable");
-            return false;
-        }
-    };
-    if settings
-        .SetStreamingCaptureMode(StreamingCaptureMode::Video)
-        .is_err()
-    {
-        set_camera_status("camera_unavailable");
-        return false;
-    }
-    let capture = match MediaCapture::new().and_then(|capture| {
-        capture
-            .InitializeWithSettingsAsync(&settings)?
-            .join()
-            .map(|_| capture)
-    }) {
-        Ok(capture) => capture,
-        Err(error) => {
-            set_camera_status(windows_error_status(&error));
-            return false;
-        }
-    };
-    let detector = match FaceDetector::CreateAsync().and_then(|operation| operation.join()) {
-        Ok(detector) => detector,
-        Err(_) => {
+        let capture = match MediaCapture::new().and_then(|capture| {
+            capture
+                .InitializeWithSettingsAsync(&settings)?
+                .join()
+                .map(|_| capture)
+        }) {
+            Ok(capture) => capture,
+            Err(error) => {
+                set_camera_status(windows_error_status(&error));
+                return false;
+            }
+        };
+        let detector = match FaceDetector::CreateAsync().and_then(|operation| operation.join()) {
+            Ok(detector) => detector,
+            Err(_) => {
+                let _ = capture.Close();
+                set_camera_status("analysis_error");
+                return false;
+            }
+        };
+        if capture
+            .StartPreviewAsync()
+            .and_then(|operation| operation.join())
+            .is_err()
+        {
             let _ = capture.Close();
-            set_camera_status("analysis_error");
+            set_camera_status("camera_unavailable");
             return false;
         }
-    };
-    if capture
-        .StartPreviewAsync()
-        .and_then(|operation| operation.join())
-        .is_err()
-    {
-        let _ = capture.Close();
-        set_camera_status("camera_unavailable");
-        return false;
-    }
-    *state = Some(Camera { capture, detector });
-    set_camera_status("starting");
-    true
+        *state = Some(Camera { capture, detector });
+        set_camera_status("starting");
+        true
+    })
 }
 pub fn camera_stop() {
-    if let Ok(mut state) = camera_state().lock() {
-        if let Some(camera) = state.take() {
+    CAMERA.with(|state| {
+        if let Some(camera) = state.borrow_mut().take() {
             let _ = camera
                 .capture
                 .StopPreviewAsync()
                 .and_then(|operation| operation.join());
             let _ = camera.capture.Close();
         }
-    }
+    });
     set_camera_status("off");
 }
 pub fn camera_status() -> String {
-    let mut state = match camera_state().lock() {
-        Ok(state) => state,
-        Err(_) => return "camera_error".into(),
-    };
-    let Some(camera) = state.as_ref() else {
-        return camera_status_state()
-            .lock()
-            .map(|status| status.clone())
-            .unwrap_or_else(|_| "camera_error".into());
-    };
-    let frame = match camera
-        .capture
-        .GetPreviewFrameAsync()
-        .and_then(|operation| operation.join())
-    {
-        Ok(frame) => frame,
-        Err(_) => {
-            drop(state);
-            set_camera_status("camera_interrupted");
-            return "camera_interrupted".into();
-        }
-    };
-    let bitmap = match frame.SoftwareBitmap() {
-        Ok(bitmap) => bitmap,
-        Err(_) => {
-            set_camera_status("camera_stalled");
-            return "camera_stalled".into();
-        }
-    };
-    let bitmap = match windows::Graphics::Imaging::SoftwareBitmap::Convert(
-        &bitmap,
-        windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
-    ) {
-        Ok(bitmap) => bitmap,
-        Err(_) => {
-            set_camera_status("analysis_error");
-            return "analysis_error".into();
-        }
-    };
-    let faces = match camera
-        .detector
-        .DetectFacesAsync(&bitmap)
-        .and_then(|operation| operation.join())
-        .and_then(|faces| faces.Size())
-    {
-        Ok(count) => count,
-        Err(_) => {
-            set_camera_status("analysis_error");
-            return "analysis_error".into();
-        }
-    };
-    let status = if faces > 0 {
-        "person_detected"
-    } else {
-        "person_not_detected"
-    };
-    set_camera_status(status);
-    status.into()
+    CAMERA.with(|state| {
+        let state = state.borrow();
+        let Some(camera) = state.as_ref() else {
+            return CAMERA_STATUS.with(|status| status.borrow().clone());
+        };
+        let frame = match camera
+            .capture
+            .GetPreviewFrameAsync()
+            .and_then(|operation| operation.join())
+        {
+            Ok(frame) => frame,
+            Err(_) => {
+                set_camera_status("camera_interrupted");
+                return "camera_interrupted".into();
+            }
+        };
+        let bitmap = match frame.SoftwareBitmap() {
+            Ok(bitmap) => bitmap,
+            Err(_) => {
+                set_camera_status("camera_stalled");
+                return "camera_stalled".into();
+            }
+        };
+        let bitmap = match windows::Graphics::Imaging::SoftwareBitmap::Convert(
+            &bitmap,
+            windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+        ) {
+            Ok(bitmap) => bitmap,
+            Err(_) => {
+                set_camera_status("analysis_error");
+                return "analysis_error".into();
+            }
+        };
+        let faces = match camera
+            .detector
+            .DetectFacesAsync(&bitmap)
+            .and_then(|operation| operation.join())
+            .and_then(|faces| faces.Size())
+        {
+            Ok(count) => count,
+            Err(_) => {
+                set_camera_status("analysis_error");
+                return "analysis_error".into();
+            }
+        };
+        let status = if faces > 0 {
+            "person_detected"
+        } else {
+            "person_not_detected"
+        };
+        set_camera_status(status);
+        status.into()
+    })
 }
 pub fn installed_browsers() -> Vec<super::Application> {
     use winreg::{enums::*, RegKey};
