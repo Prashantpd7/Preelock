@@ -53,9 +53,19 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - name: Compile Windows code and run Rust tests
-        run: |
-          npm run rust:check
-          npm run rust:test
+        run: npm run rust:check
+      - name: Run Windows library tests with test manifest
+        shell: pwsh
+        env:
+          RUSTFLAGS: >-
+            -C link-arg=/MANIFEST:EMBED
+            -C link-arg=/MANIFESTINPUT:${{ github.workspace }}\src-tauri\windows-test-manifest.xml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Run Windows binary tests with Tauri manifest
+        shell: pwsh
+        env:
+          RUSTFLAGS: ''
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin preelock
       - name: Build the Windows binary and MSIX
         shell: pwsh
         env:
