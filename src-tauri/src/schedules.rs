@@ -302,7 +302,7 @@ pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
             isdst: i32,
         }
         extern "C" {
-            fn localtime_s(tm: *mut Tm, timep: *const i64) -> i32;
+            fn _localtime64_s(tm: *mut Tm, timep: *const i64) -> i32;
         }
         let secs = now_ms.div_euclid(1000);
         let mut tm = Tm {
@@ -316,7 +316,7 @@ pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
             yday: 0,
             isdst: 0,
         };
-        let ok = unsafe { localtime_s(&mut tm, &secs) == 0 };
+        let ok = unsafe { _localtime64_s(&mut tm, &secs) == 0 };
         if ok {
             let weekday = tm.wday.rem_euclid(7) as u32;
             let minutes = (tm.hour.max(0) as u32) * 60 + (tm.min.max(0) as u32);
