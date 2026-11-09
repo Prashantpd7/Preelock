@@ -11,6 +11,7 @@ use std::path::Path;
 
 pub struct Engine {
     db: Database,
+    data_dir: std::path::PathBuf,
     data: Snapshot,
     anchor: u64,
     sample_anchor: u64,
@@ -355,6 +356,7 @@ impl Engine {
         let now = clock::continuous_ms();
         let engine = Self {
             db,
+            data_dir: path.parent().ok_or("Invalid database location.")?.to_path_buf(),
             data,
             anchor: now,
             sample_anchor: now,
@@ -1531,7 +1533,10 @@ impl Engine {
             );
         }
         let has_usage = !buckets.is_empty();
-        if has_usage {
+        if has_usage
+            && (crate::background::desktop_alive(&self.data_dir)
+                || !crate::background::tracker_alive(&self.data_dir))
+        {
             self.db.record_screen_time(&buckets)?;
             for bucket in &buckets {
                 crate::screen_time::add_usage(
@@ -1543,6 +1548,9 @@ impl Engine {
                     bucket.ms,
                 );
             }
+        }
+        if self.has_active() {
+            return Ok(());
         }
         // Screen Time limits remain active outside focus sessions. The app
         // budget is enforced by hiding the frontmost app; site limits are
@@ -1689,12 +1697,15 @@ impl Engine {
             self.stop_test();
         }
         self.commit(None)?;
+        if crate::background::tracker_alive(&self.data_dir) {
+            self.data.screen_time_usage = self.db.load_screen_time_usage()?;
+        }
         let running = self
             .data
             .sessions
             .iter()
             .any(|s| s.status == Status::Running);
-        if self.native && !running {
+        if self.native {
             let sample_tick = clock::continuous_ms();
             let sample_delta = sample_tick.saturating_sub(self.screen_time_anchor);
             self.screen_time_anchor = sample_tick;

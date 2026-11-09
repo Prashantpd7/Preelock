@@ -144,6 +144,7 @@ if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $assets -Force | Out-Null
 
 Copy-Item $BuiltExecutable (Join-Path $staging "Preelock.exe")
+Copy-Item $BuiltExecutable (Join-Path $staging "PreelockBackground.exe")
 
 # Bundled web resources, at the same relative paths used by the NSIS build.
 foreach ($entry in $config.bundle.resources.PSObject.Properties) {

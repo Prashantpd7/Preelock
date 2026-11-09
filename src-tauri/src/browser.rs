@@ -5,9 +5,11 @@ use crate::{
     focus::{FocusConfig, Mode, WebsiteBlocking},
     platform,
 };
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs::File,
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -109,8 +111,10 @@ impl Policy {
         };
         let has_youtube_rules = !c.youtube_blocked_channels.is_empty() || c.youtube_study_mode;
         // DEBUG 2026-11-03: log YouTube channels to diagnose empty policy
-        eprintln!("[preelock-debug] Policy::new youtube_blocked_channels={:?} study_mode={} has_rules={}",
-            c.youtube_blocked_channels, c.youtube_study_mode, has_youtube_rules);
+        eprintln!(
+            "[preelock-debug] Policy::new youtube_blocked_channels={:?} study_mode={} has_rules={}",
+            c.youtube_blocked_channels, c.youtube_study_mode, has_youtube_rules
+        );
         let blocking = (!matches!(&c.website_blocking, WebsiteBlocking::None)
             && c.general_internet)
             || has_youtube_rules;
@@ -336,6 +340,7 @@ pub struct Bridge {
     auth_key: Arc<Mutex<String>>,
     server: Arc<tiny_http::Server>,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    _ownership: File,
     /// Browser ids known to this machine, captured once at startup. Used to
     /// disambiguate extension reports (Comet looks exactly like Chrome).
     installed: Vec<String>,
@@ -343,6 +348,11 @@ pub struct Bridge {
 impl Bridge {
     pub fn start(dir: &Path) -> Result<Self, String> {
         Self::start_at(dir, PORT)
+    }
+
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.server.unblock();
     }
     fn start_at(dir: &Path, port: u16) -> Result<Self, String> {
         let path = dir.join("browser-token");
@@ -371,10 +381,38 @@ impl Bridge {
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Browser pairing token is invalid. Quit and remove only browser-token to reset pairing.".into());
         }
-        let server = Arc::new(
-            tiny_http::Server::http(("127.0.0.1", port))
-                .map_err(|e| format!("Browser bridge unavailable: {e}"))?,
-        );
+        let ownership = File::create(dir.join("bridge.lock")).map_err(|e| e.to_string())?;
+        let mut ownership_error = String::new();
+        let mut ownership_acquired = false;
+        for _ in 0..20 {
+            match ownership.try_lock_exclusive() {
+                Ok(()) => {
+                    ownership_acquired = true;
+                    break;
+                }
+                Err(error) => {
+                    ownership_error = error.to_string();
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        if !ownership_acquired {
+            return Err(format!(
+                "Browser bridge ownership unavailable: {ownership_error}"
+            ));
+        }
+        let mut last_error = String::new();
+        let server = (0..20)
+            .find_map(|_| match tiny_http::Server::http(("127.0.0.1", port)) {
+                Ok(server) => Some(server),
+                Err(error) => {
+                    last_error = error.to_string();
+                    std::thread::sleep(Duration::from_millis(100));
+                    None
+                }
+            })
+            .map(Arc::new)
+            .ok_or_else(|| format!("Browser bridge unavailable: {last_error}"))?;
         let port = server
             .server_addr()
             .to_ip()
@@ -553,6 +591,7 @@ impl Bridge {
             auth_key,
             server,
             stop,
+            _ownership: ownership,
             installed,
         })
     }
@@ -652,7 +691,7 @@ impl Bridge {
                 youtube_study_mode: false,
                 youtube_allow_watch_later: false,
                 expires_at: clock::now() + 65_000,
-                observe_activity: false,
+                observe_activity: true,
                 track_activity: true,
                 session_cause: None,
                 rule_causes: Vec::new(),

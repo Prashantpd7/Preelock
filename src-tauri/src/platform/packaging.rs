@@ -7,7 +7,8 @@
 //! development machine; the Windows adapter supplies the real inputs.
 
 /// TaskId declared by `desktop:StartupTask` in the MSIX manifest.
-pub const STARTUP_TASK_ID: &str = "Preelock";
+pub const STARTUP_TASK_ID: &str = "VYSTRIQ";
+pub const BACKGROUND_STARTUP_TASK_ID: &str = "PreelockBackground";
 
 /// `State` values reported by `Windows.ApplicationModel.StartupTask`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

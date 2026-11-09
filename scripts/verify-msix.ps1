@@ -117,11 +117,15 @@ try {
     Check ([version]$families[0].MinVersion -ge [version]"10.0.17763.0") "Minimum OS is Windows 10 1809 or newer (WebView2 requirement)"
 
     $startup = @($manifest.SelectNodes("//*[local-name()='StartupTask']"))
-    Check ($startup.Count -eq 1) "Exactly one startupTask is declared"
-    if ($startup.Count -eq 1) {
-        Check ($startup[0].TaskId -eq "VYSTRIQ") "startupTask TaskId matches the app's startup task id"
-        Check ($startup[0].DisplayName -ceq "Preelock") "Startup display name is Preelock"
-        Check ($startup[0].Enabled -eq "false") "startupTask is disabled by default (opt-in only)"
+    Check ($startup.Count -eq 2) "Exactly two startupTasks are declared"
+    if ($startup.Count -eq 2) {
+        $mainTask = @($startup | Where-Object { $_.TaskId -eq "VYSTRIQ" })
+        $backgroundTask = @($startup | Where-Object { $_.TaskId -eq "PreelockBackground" })
+        Check ($mainTask.Count -eq 1) "Main startupTask is declared"
+        Check ($backgroundTask.Count -eq 1) "Background startupTask is declared"
+        Check ($mainTask[0].DisplayName -ceq "Preelock") "Startup display name is Preelock"
+        Check ($backgroundTask[0].Executable -eq "PreelockBackground.exe") "Background task uses the independent executable"
+        Check ($mainTask[0].Enabled -eq "false" -and $backgroundTask[0].Enabled -eq "false") "startupTasks are disabled by default (opt-in only)"
     }
 
     # Visual assets required by the manifest and by Partner Center.

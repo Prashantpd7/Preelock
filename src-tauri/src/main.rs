@@ -5,6 +5,16 @@ fn main() {
     // exactly as before (see `cli::is_cli_invocation` — unknown
     // flags are treated as launcher arguments, not CLI commands).
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let background_executable = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        })
+        .is_some_and(|stem| stem == "preelockbackground");
+    if background_executable || preelock_lib::background::is_invocation(&args) {
+        std::process::exit(preelock_lib::background::run());
+    }
     if preelock_lib::cli::is_cli_invocation(&args) {
         std::process::exit(preelock_lib::cli::run(&args));
     }

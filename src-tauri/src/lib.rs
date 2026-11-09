@@ -1,14 +1,15 @@
 mod allowances;
 mod applocks;
+pub mod background;
 pub mod attention;
 mod blockreasons;
 mod blockedpage;
-mod browser;
+pub mod browser;
 mod camera;
 pub mod capabilities;
 pub mod cli;
 mod clock;
-mod database;
+pub mod database;
 mod desktop_settings;
 mod engine;
 pub mod focus;
@@ -21,7 +22,7 @@ pub mod platform;
 pub mod pomodoro;
 mod rewards;
 mod schedules;
-mod screen_time;
+pub mod screen_time;
 mod sessions;
 mod settings;
 mod setup;
@@ -591,6 +592,8 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             migrate_legacy_data(&dir)?;
             std::fs::create_dir_all(&dir)?;
+            background::ensure_running(&dir).map_err(std::io::Error::other)?;
+            background::touch_desktop(&dir);
             // Open-at-login is strictly session/schedule-conditional: the
             // app should only auto-open after a restart if there was an
             // ACTIVE session when the PC shut down, or if any schedule
@@ -666,6 +669,7 @@ pub fn run() {
             let mut tray_menu = initial_menu;
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
+                background::touch_desktop(&cli_dir);
                 let data = {
                     let state = handle.state::<Mutex<Engine>>();
                     let mut engine = match state.lock() {

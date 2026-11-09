@@ -85,3 +85,11 @@ pub fn packaged() -> bool {
 pub fn packaged() -> bool {
     false
 }
+#[cfg(target_os = "windows")]
+pub fn enable_background_startup() -> Result<(), String> {
+    settings_windows::enable_background_startup()
+}
+#[cfg(not(target_os = "windows"))]
+pub fn enable_background_startup() -> Result<(), String> {
+    Ok(())
+}

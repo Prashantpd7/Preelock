@@ -71,6 +71,15 @@
             Enabled="false"
             DisplayName="__DISPLAY_NAME__" />
         </desktop:Extension>
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="PreelockBackground.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="PreelockBackground"
+            Enabled="false"
+            DisplayName="__DISPLAY_NAME__ background tracker" />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>
