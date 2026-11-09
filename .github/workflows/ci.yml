@@ -59,7 +59,7 @@ jobs:
         name: Run Windows binary tests with Tauri manifest
         shell: pwsh
         env:
-          RUSTFLAGS: ""
+          RUSTFLAGS: ''
         run: cargo test --manifest-path src-tauri/Cargo.toml --bin preelock
       - if: runner.os != 'Windows'
         run: npm run rust:test
