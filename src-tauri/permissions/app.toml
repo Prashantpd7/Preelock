@@ -37,3 +37,13 @@ commands.allow = ["open_setup"]
 identifier = "settings-tools"
 description = "Manage local settings, explicit camera tests, native file dialogs and notifications."
 commands.allow = ["settings_action"]
+
+[[permission]]
+identifier = "read-app-icons"
+description = "Read installed apps' icons for the Screen Time list."
+commands.allow = ["get_app_icon"]
+
+[[permission]]
+identifier = "dismiss-blocked-app"
+description = "Dismiss the informational blocked-app page."
+commands.allow = ["dismiss_blocked_app_page"]

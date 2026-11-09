@@ -166,8 +166,10 @@ it('blocks cached navigations after activation without waiting for network reque
   const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
   onUpdated(10, { url: 'https://www.youtube.com/watch?v=cached' }, { id: 10 });
   await send({ type: 'sync' }); // drains the worker queue
+  // The blocked page now carries the resolved cause as query params;
+  // this test policy has no session_cause, so it falls back to unknown.
   expect(chrome.tabs.update).toHaveBeenCalledWith(10, {
-    url: 'chrome-extension://test-extension/blocked.html',
+    url: 'chrome-extension://test-extension/blocked.html?h=www.youtube.com&k=unknown',
   });
   chrome.tabs.update.mockClear();
   session.policy.expires_at = Date.now() - 1;
@@ -176,6 +178,31 @@ it('blocks cached navigations after activation without waiting for network reque
   expect(chrome.tabs.update).not.toHaveBeenCalled();
 });
 
+it('reports channel_blocked for a DNR-blocked channel page tab', async () => {
+  const channelPolicy = () => ({
+    id: 'test-session',
+    mode: 'blocklist',
+    domains: [],
+    youtube_blocked_channels: ['@blocked'],
+    expires_at: Date.now() + 60000,
+    observe_activity: true,
+  });
+  chrome.tabs.query = async () => [
+    { id: 9, url: 'https://www.youtube.com/@blocked' },
+  ];
+  const request = vi.fn(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.applied_id) expect(rules.length).toBeGreaterThan(0);
+    return response(channelPolicy());
+  });
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  const acknowledgement = JSON.parse(request.mock.calls.at(-1)[1].body);
+  expect(acknowledgement.channel_blocked).toBe(true);
+  expect(acknowledgement.active_domain).toBe('www.youtube.com');
+  expect(JSON.stringify(request.mock.calls)).not.toContain('@blocked');
+});
 it('sends an authenticated goodbye when disconnecting', async () => {
   const request = vi.fn(async () => response(policy()));
   vi.stubGlobal('fetch', request);
@@ -193,7 +220,7 @@ it('sends an authenticated goodbye when disconnecting', async () => {
   expect(body.disconnect).toBe(true);
   expect(body.client).toBe('test-client');
   expect(body.applied_id).toBe('');
-  expect(body.v).toBe(3);
+  expect(body.v).toBe(6);
 });
 
 it('reports the extension version on every sync', async () => {
@@ -202,7 +229,7 @@ it('reports the extension version on every sync', async () => {
   await import('./worker.js');
   await send({ type: 'sync' });
   const body = JSON.parse(request.mock.calls[0][1].body);
-  expect(body.v).toBe(3);
+  expect(body.v).toBe(6);
 });
 
 it('uses the chosen Comet identity when Chrome is installed too', async () => {
@@ -214,4 +241,41 @@ it('uses the chosen Comet identity when Chrome is installed too', async () => {
   expect(JSON.parse(request.mock.calls[0][1].body).browser).toBe(
     'ai.perplexity.comet',
   );
+});
+
+it('passes the resolved block cause to the blocked page', async () => {
+  const endsAt = Date.now() + 2 * 3600 * 1000;
+  const causalPolicy = () => ({
+    id: 'test-session',
+    mode: 'blocklist',
+    domains: ['example.com'],
+    extra_blocked: ['youtube.com'],
+    rule_causes: [
+      { rule: 'youtube.com', cause: { kind: 'timed_lock', ends_at_ms: endsAt } },
+    ],
+    session_cause: { kind: 'session', title: 'Deep work' },
+    expires_at: Date.now() + 60000,
+    observe_activity: true,
+  });
+  vi.stubGlobal('fetch', vi.fn(async () => response(causalPolicy())));
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+  // Extra-rule hit: the per-rule cause (timed lock) wins over the session cause.
+  onUpdated(20, { url: 'https://www.youtube.com/watch?v=x' }, { id: 20 });
+  await send({ type: 'sync' }); // drains the worker queue
+  expect(chrome.tabs.update).toHaveBeenCalledWith(20, {
+    url:
+      'chrome-extension://test-extension/blocked.html' +
+      `?h=www.youtube.com&k=timed_lock&e=${endsAt}`,
+  });
+  chrome.tabs.update.mockClear();
+  // Session domain rule: the session cause applies.
+  onUpdated(21, { url: 'https://example.com/' }, { id: 21 });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(21, {
+    url:
+      'chrome-extension://test-extension/blocked.html' +
+      '?h=example.com&k=session&t=Deep+work',
+  });
 });

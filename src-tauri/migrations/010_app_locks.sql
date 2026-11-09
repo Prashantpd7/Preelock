@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS app_locks (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+PRAGMA user_version=10;

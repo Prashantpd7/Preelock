@@ -13,7 +13,16 @@ import { countdown } from '../services/analytics';
 import { api, desktop } from '../services/api';
 import { Modal } from './SettingsControls';
 import { BrowserSetup } from './BrowserSetup';
-import { sameBrowser, sessionBrowsers } from '../types';
+import {
+  frozenLabel,
+  lockDelayStatus,
+  lockHasGate,
+  lockLabel,
+  pomodoroLabel,
+  sameBrowser,
+  sessionBrowsers,
+  tamperNote,
+} from '../types';
 import type { FocusSetup, Session } from '../types';
 function prettyApp(id: string, names?: Record<string, string>) {
   if (names?.[id]) return names[id];
@@ -56,6 +65,9 @@ export function SessionCard({
   const [allowingCamera, setAllowingCamera] = useState(false);
   const [checking, setChecking] = useState(false);
   const [showBrowserSetup, setShowBrowserSetup] = useState(false);
+  // Step 10 unlock proofs, entered in the details lock form.
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlockChallenge, setUnlockChallenge] = useState('');
   // Which browser the connect guide targets: the first unpaired one.
   const [guideBrowser, setGuideBrowser] = useState('');
   // Connection status for this session's own browser, fetched when the
@@ -105,6 +117,21 @@ export function SessionCard({
     }
   }
   const live = ['running', 'paused', 'preparing'].includes(session.status);
+  const tamper = tamperNote(session);
+  const lockText = lockLabel(session.lock);
+  // Step 12 Frozen Turkey: badge text, and whether this session
+  // can ever be paused (it cannot — the backend rejects it).
+  const frozen = !!session.focus?.frozen?.enabled;
+  const frozenText = frozenLabel(session.focus);
+  const gated = live && lockHasGate(session.lock);
+  const lockDelay = lockDelayStatus(session.lock_state);
+  const lockDelayPending = gated && lockDelay.kind === 'pending';
+  const lockDelayDone = gated && lockDelay.kind === 'done';
+  const lockDelayFor = session.lock_state?.delay_for ?? null;
+  const proofs = {
+    password: unlockPassword || undefined,
+    challenge_answer: unlockChallenge || undefined,
+  };
   const committed = session.focus && session.focus.mode !== 'standard';
   const report = session.report;
   const attention = session.attention;
@@ -132,7 +159,11 @@ export function SessionCard({
     (!focusCfg.general_internet ||
       (focusCfg.domains?.length ?? 0) > 0 ||
       (focusCfg.mode !== 'standard' && !!focusCfg.browser_app) ||
-      (focusCfg.attention?.work_domains?.length ?? 0) > 0);
+      (focusCfg.attention?.work_domains?.length ?? 0) > 0 ||
+      // Step 12: a frozen session with a picked browser needs
+      // that browser connected (backend preflight requires it);
+      // with no picked browser, no browser check applies.
+      (!!focusCfg.frozen?.enabled && !!focusCfg.browser_app));
   const cameraPermission = setup?.camera_permission;
   const cameraBlocked =
     cameraPermission === 'denied' || cameraPermission === 'restricted';
@@ -263,6 +294,46 @@ export function SessionCard({
               Force quit during session
             </p>
           )}
+          {tamper && (
+            <p className="small" role="note">
+              {tamper}
+            </p>
+          )}
+          {lockText && (
+            <p className="small" role="status">
+              Locked: {lockText}
+            </p>
+          )}
+          {frozen && (
+            <p className="small" role="status">
+              Frozen{frozenText ? `: ${frozenText}` : ''} · ends only
+              when the timer ends
+            </p>
+          )}
+          {live &&
+            session.focus?.pomodoro?.enabled &&
+            session.pomodoro &&
+            !session.reward?.break_remaining_ms && (
+              <p className="small" role="status">
+                {pomodoroLabel(session.pomodoro)} ·{' '}
+                {countdown(session.pomodoro.phase_remaining_ms)} to next
+                phase
+              </p>
+            )}
+          {live &&
+            session.focus?.reward?.enabled &&
+            session.reward &&
+            (session.reward.credit_ms > 0 ||
+              session.reward.pending_delay_ms > 0 ||
+              session.reward.break_remaining_ms > 0) && (
+              <p className="small" role="status">
+                {session.reward.break_remaining_ms > 0
+                  ? `Reward break · ${countdown(session.reward.break_remaining_ms)} left`
+                  : session.reward.pending_delay_ms > 0
+                    ? `Break starts in ${countdown(session.reward.pending_delay_ms)}`
+                    : `Earned break credit: ${countdown(session.reward.credit_ms)}`}
+              </p>
+            )}
         </div>
         {live && (
           <span
@@ -293,7 +364,7 @@ export function SessionCard({
               Start session
             </button>
           )}
-        {session.status === 'running' && session.allow_pause && !committed && (
+        {session.status === 'running' && session.allow_pause && !committed && !frozen && (
           <button
             className="secondary"
             disabled={busy}
@@ -318,6 +389,43 @@ export function SessionCard({
             Resume
           </button>
         )}
+        {session.status === 'running' &&
+          session.focus?.reward?.enabled &&
+          (session.reward?.credit_ms ?? 0) > 0 &&
+          !(session.reward?.break_remaining_ms ?? 0) &&
+          !(session.reward?.pending_delay_ms ?? 0) &&
+          (!session.pomodoro || session.pomodoro.phase === 'focus') && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void execute({
+                  type: 'take_reward_break',
+                  id: session.id,
+                });
+              }}
+            >
+              <Timer size={15} />
+              Take break
+            </button>
+          )}
+        {session.status === 'running' &&
+          (session.reward?.pending_delay_ms ?? 0) > 0 && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void execute({
+                  type: 'cancel_delayed_break',
+                  id: session.id,
+                });
+              }}
+            >
+              Cancel break
+            </button>
+          )}
         {showStartedAt && session.started_at != null && (
           <span
             className="started-at"
@@ -400,6 +508,188 @@ export function SessionCard({
                 value={session.focused_ms}
               />
             </>
+          )}
+          {gated && (
+            <section className="detail-block" aria-label="Lock">
+              <h4>Lock</h4>
+              <p className="small">
+                Ending, pausing, or deleting early needs every lock
+                below to pass. The lock lifts on its own when the
+                timer ends, so a forgotten password never locks you
+                out permanently.
+              </p>
+              {session.lock?.password_hash && (
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={unlockPassword}
+                    onChange={(e) => setUnlockPassword(e.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
+              )}
+              {(session.lock?.challenge_length ?? 0) > 0 &&
+                session.lock_state?.challenge && (
+                  <label>
+                    Type this challenge exactly:{' '}
+                    <code>{session.lock_state.challenge}</code>
+                    <input
+                      value={unlockChallenge}
+                      onChange={(e) =>
+                        setUnlockChallenge(e.target.value)
+                      }
+                      autoComplete="off"
+                    />
+                  </label>
+                )}
+              {(session.lock?.delay_minutes ?? 0) > 0 && (
+                <>
+                  {lockDelayPending && (
+                    <p className="small">
+                      Delay for {lockDelayFor} unlocks in{' '}
+                      {lockDelay.minutesLeft} min. The block stays
+                      active during the delay.
+                    </p>
+                  )}
+                  {lockDelayDone && (
+                    <p className="small">
+                      Delay done — you can {lockDelayFor} now.
+                    </p>
+                  )}
+                  <div className="row controls">
+                    {!lockDelayPending && !lockDelayDone && (
+                      <>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            void execute({
+                              type: 'request_lock_delay',
+                              id: session.id,
+                              for_action: 'end',
+                            })
+                          }
+                        >
+                          Request end delay (
+                          {session.lock!.delay_minutes} min)
+                        </button>
+                        {session.status === 'running' &&
+                          session.allow_pause &&
+                          !committed &&
+                          !frozen && (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy}
+                              onClick={() =>
+                                void execute({
+                                  type: 'request_lock_delay',
+                                  id: session.id,
+                                  for_action: 'pause',
+                                })
+                              }
+                            >
+                              Request pause delay
+                            </button>
+                          )}
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            void execute({
+                              type: 'request_lock_delay',
+                              id: session.id,
+                              for_action: 'delete',
+                            })
+                          }
+                        >
+                          Request delete delay
+                        </button>
+                      </>
+                    )}
+                    {lockDelayPending && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void execute({
+                            type: 'cancel_lock_delay',
+                            id: session.id,
+                          })
+                        }
+                      >
+                        Cancel delay
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+              <div className="row controls">
+                {session.status === 'running' &&
+                  session.allow_pause &&
+                  !committed &&
+                  !frozen && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        void execute({
+                          type: 'pause_session',
+                          id: session.id,
+                          ...proofs,
+                        })
+                      }
+                    >
+                      Pause with proofs
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void execute({
+                      type: 'end_session',
+                      id: session.id,
+                      ...proofs,
+                    })
+                  }
+                >
+                  End early with proofs
+                </button>
+                <button
+                  type="button"
+                  className="secondary danger"
+                  disabled={busy}
+                  onClick={() =>
+                    void execute({
+                      type: 'delete_session',
+                      id: session.id,
+                      ...proofs,
+                    })
+                  }
+                >
+                  Delete with proofs
+                </button>
+              </div>
+            </section>
+          )}
+          {frozen && live && (
+            <section className="detail-block" aria-label="Frozen">
+              <h4>Frozen</h4>
+              <p className="small">
+                This session freezes the whole computer: every app
+                and website not on its allowlists is blocked, and it
+                cannot be paused, ended early, or deleted. There is
+                no emergency unlock — the lock ends on its own when
+                the timer runs out, on wall-clock time.
+              </p>
+            </section>
           )}
           <section className="detail-block" aria-label="About this session">
             <h4>About this session</h4>

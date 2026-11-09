@@ -163,6 +163,42 @@ export function focusedMsByDay(
   return byDay;
 }
 
+// Step 13: per-target block-attempt counts, most-blocked first,
+// ties broken by target name so the list is stable.
+export interface AttemptCount {
+  target: string;
+  kind: 'app' | 'site';
+  count: number;
+}
+export function attemptCounts(
+  attempts: { target: string; kind: 'app' | 'site' }[],
+): AttemptCount[] {
+  const counts = new Map<string, AttemptCount>();
+  for (const attempt of attempts) {
+    const key = `${attempt.kind}:${attempt.target}`;
+    const entry = counts.get(key) ?? {
+      target: attempt.target,
+      kind: attempt.kind,
+      count: 0,
+    };
+    entry.count += 1;
+    counts.set(key, entry);
+  }
+  return [...counts.values()].sort(
+    (a, b) => b.count - a.count || a.target.localeCompare(b.target),
+  );
+}
+// Step 13: website-block aggregate — the sum of the per-session
+// browser_blocks counters. The extension reports one aggregate
+// counter, not per-domain counts, so this total (not a per-site
+// breakdown) is the honest website figure.
+export function websiteBlocksTotal(sessions: Session[]): number {
+  return sessions.reduce(
+    (sum, session) => sum + (session.report?.browser_blocks ?? 0),
+    0,
+  );
+}
+
 // Calendar days covered by a range, in the user's local timezone. All time
 // starts on the local date of the first tracked session.
 export function periodDays(

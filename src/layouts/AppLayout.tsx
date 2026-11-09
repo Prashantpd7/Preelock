@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { FirstRunPermissions } from '../components/PermissionsGuide';
 import { BreakBar } from '../components/BreakBar';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -5,8 +6,8 @@ import {
   LayoutDashboard,
   Timer,
   ListTodo,
-  Activity,
   ChartNoAxesColumn,
+  Clock3,
   Settings,
   X,
 } from 'lucide-react';
@@ -16,24 +17,24 @@ import { useApplication } from '../hooks/useApplication';
 import { Dashboard } from '../pages/Dashboard';
 import { Sessions } from '../pages/Sessions';
 import { Tasks } from '../pages/Tasks';
-import { Activity as ActivityPage } from '../pages/Activity';
 import { Analytics } from '../pages/Analytics';
+import { ScreenTime } from '../pages/ScreenTime';
 import { Settings as SettingsPage } from '../pages/Settings';
 import logo from '../assets/preelock-logo.png';
 const navigation = [
   ['/', 'Dashboard', LayoutDashboard],
   ['/sessions', 'Focus Sessions', Timer],
   ['/tasks', 'Tasks', ListTodo],
-  ['/activity', 'Activity', Activity],
   ['/analytics', 'Analytics', ChartNoAxesColumn],
+  ['/screen-time', 'Screen Time', Clock3],
   ['/settings', 'Settings', Settings],
 ] as const;
 const pagePaths = [
   '/',
   '/sessions',
   '/tasks',
-  '/activity',
   '/analytics',
+  '/screen-time',
   '/settings',
 ];
 export function AppLayout() {
@@ -42,6 +43,12 @@ export function AppLayout() {
   const activePath = pagePaths.includes(pathname) ? pathname : '/';
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
+  // Pages stay mounted in hidden divs, so the window scroll position
+  // otherwise persists across navigation and a newly opened page can
+  // land mid-scroll with a heading half-cut at the viewport top.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [activePath]);
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -93,11 +100,11 @@ export function AppLayout() {
               <div hidden={activePath !== '/tasks'}>
                 <Tasks />
               </div>
-              <div hidden={activePath !== '/activity'}>
-                <ActivityPage />
-              </div>
               <div hidden={activePath !== '/analytics'}>
                 <Analytics />
+              </div>
+              <div hidden={activePath !== '/screen-time'}>
+                <ScreenTime />
               </div>
               {activePath === '/settings' && <SettingsPage />}
             </>

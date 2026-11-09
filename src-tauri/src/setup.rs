@@ -100,12 +100,14 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
         "worker.js",
         "identity.js",
         "rules.js",
+        "youtube.js",
         "self-test.js",
         "popup.html",
         "popup.css",
         "popup.js",
         "blocked.html",
         "blocked.css",
+        "blocked.js",
     ] {
         let bytes = std::fs::read(source.join(file)).map_err(|e| e.to_string())?;
         let dest = target.join(file);
@@ -211,7 +213,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, target, browser_id);
-        return Err("Desktop setup is unavailable.".into());
+        Err("Desktop setup is unavailable.".into())
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {

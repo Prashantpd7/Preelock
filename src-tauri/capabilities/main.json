@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Only the local main window can access the focus application commands.",
-  "windows": ["main"],
+  "description": "Only the local main and blocked-app windows can access the focus application commands.",
+  "windows": ["main", "blocked-app"],
   "permissions": [
     "read-state",
     "settings-tools",
@@ -11,6 +11,8 @@
     "focus-setup",
     "camera-consent",
     "browser-pairing-reset",
-    "open-setup"
+    "open-setup",
+    "read-app-icons",
+    "dismiss-blocked-app"
   ]
 }

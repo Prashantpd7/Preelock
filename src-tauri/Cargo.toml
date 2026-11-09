@@ -24,6 +24,10 @@ log = "0.4"
 env_logger = "0.11"
 url = "2"
 tiny_http = "0.12"
+# Step 10 lock framework: iterated SHA-256 password hashes. Already
+# in the lockfile via Tauri/Wry, so this only adds it to preelock's
+# own dependency list, with no new crate versions.
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

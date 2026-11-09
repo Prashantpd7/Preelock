@@ -30,6 +30,7 @@ fn main() {
             "open_setup",
             "request_camera",
             "reset_browser_pairing",
+            "get_app_icon",
         ]),
     ))
     .expect("Tauri build configuration failed");

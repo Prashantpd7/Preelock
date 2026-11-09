@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: https:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'"
     }
   },
   "bundle": {
@@ -55,12 +55,14 @@
       "../browser-extension/icon128.png": "browser-extension/icon128.png",
       "../browser-extension/worker.js": "browser-extension/worker.js",
       "../browser-extension/rules.js": "browser-extension/rules.js",
+      "../browser-extension/youtube.js": "browser-extension/youtube.js",
       "../browser-extension/self-test.js": "browser-extension/self-test.js",
       "../browser-extension/popup.html": "browser-extension/popup.html",
       "../browser-extension/popup.css": "browser-extension/popup.css",
       "../browser-extension/popup.js": "browser-extension/popup.js",
       "../browser-extension/blocked.html": "browser-extension/blocked.html",
       "../browser-extension/blocked.css": "browser-extension/blocked.css",
+      "../browser-extension/blocked.js": "browser-extension/blocked.js",
       "../browser-extension/identity.js": "browser-extension/identity.js"
     },
     "publisher": "Prashantpd7",

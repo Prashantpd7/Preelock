@@ -18,7 +18,10 @@ export const preferenceDefaults: Required<Preferences> = {
   break_minutes: 5,
   break_alert: true,
   notifications_enabled: true,
+  warning_minutes: '5',
+  grace_seconds: 60,
   saved_setups: [],
+  category_overrides: {},
 };
 export type SettingsAction =
   | {

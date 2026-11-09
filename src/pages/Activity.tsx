@@ -36,11 +36,9 @@ export function Activity() {
     .reverse();
   return (
     <>
-      <PageHeading
-        eyebrow=""
-        title="Activity"
-        description="Your past sessions."
-      />
+      <div className="activity-heading">
+        <PageHeading title="Activity" />
+      </div>
       <div className="segmented" role="group" aria-label="Date range">
         {ANALYTICS_RANGES.map((r) => (
           <button

@@ -3,17 +3,26 @@ import { ArrowLeft, Plus, RefreshCw, Timer } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { api, desktop } from '../services/api';
 import { setupProblem, splitDomains } from '../services/focusSetup';
-import { PageHeading, Empty } from '../components/ui';
-import { SessionCard } from '../components/SessionCard';
+import { PageHeading } from '../components/ui';
+import { Dropdown } from '../components/Dropdown';
 import { BrowserSetup } from '../components/BrowserSetup';
-import { domainInputError, normalizeDomainInput } from '../services/domains';
+import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
+import { PlanningSections } from '../components/PlanningSections';
+import { Activity } from './Activity';
+import {
+  cleanDomain,
+  cleanYouTubeChannel,
+  domainInputError,
+  normalizeDomainInput,
+  normalizeYouTubeChannelInput,
+  youTubeChannelInputError,
+} from '../services/domains';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import {
   defaultFocus,
   sameBrowser,
   type AttentionPolicy,
   type FocusConfig,
-  type Session,
   type SavedSetup,
 } from '../types';
 const CAMERA_GUIDE =
@@ -29,18 +38,50 @@ export function Sessions() {
   const [workApps, setWorkApps] = useState<string[]>([]),
     [blockSites, setBlockSites] = useState('');
   const [blockSitesError, setBlockSitesError] = useState('');
+  const [ytBlocked, setYtBlocked] = useState('');
+  const [ytBlockedError, setYtBlockedError] = useState('');
+  const [ytAllowed, setYtAllowed] = useState('');
+  const [ytAllowedError, setYtAllowedError] = useState('');
+  const [ytMode, setYtMode] = useState<'none' | 'block' | 'study'>('none');
+  const [ytWatchLater, setYtWatchLater] = useState(false);
   const [blockModeOverride, setBlockModeOverride] = useState<
     'none' | 'blocklist' | 'allowlist' | null
   >(null);
-  const [web, setWeb] = useState(false),
-    [guide, setGuide] = useState(false),
+  const [guide, setGuide] = useState(false),
     [rechecking, setRechecking] = useState(false),
     [problem, setProblem] = useState('');
+  // Confirmation popup: "Start session" creates the session and starts
+  // it immediately; "Cancel" discards the wizard state — nothing is
+  // saved, and old sessions can no longer be reused from this page.
+  function resetWizard() {
+    setTitle('');
+    setStep(0);
+    setMaxStep(0);
+    setCreating(false);
+    setConfirmOpen(false);
+    setProblem('');
+  }
+  async function confirmStartSession() {
+    const before = new Set(data.sessions.map((s) => s.id));
+    const ok = await execute({
+      type: 'create_session',
+      title,
+      minutes,
+      allow_pause: !strict,
+      focus: selected,
+    });
+    if (!ok) return;
+    const created = useAppStore
+      .getState()
+      .data.sessions.find((s) => !before.has(s.id));
+    resetWizard();
+    if (created) await execute({ type: 'start_session', id: created.id });
+  }
   // One browser per session: shown when the user tries to pick a second.
   const [browserWarn, setBrowserWarn] = useState('');
   const [maxStep, setMaxStep] = useState(0);
   const [creating, setCreating] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   function applySavedSetup(preset: SavedSetup) {
     const f = structuredClone(preset.focus);
     // Saved before Manual check-ins was removed: use Apps only instead.
@@ -58,71 +99,49 @@ export function Sessions() {
     const savedDomains = f.domains ?? [];
     setBlockSites(savedDomains.join('\n'));
     setBlockSitesError('');
-    if (savedDomains.length) {
+    setYtBlocked((f.youtube_blocked_channels ?? []).join('\n'));
+    setYtBlockedError('');
+    setYtAllowed((f.youtube_allowed_channels ?? []).join('\n'));
+    setYtAllowedError('');
+    setYtMode(
+      f.youtube_study_mode
+        ? 'study'
+        : (f.youtube_blocked_channels?.length ?? 0) > 0
+          ? 'block'
+          : 'none',
+    );
+    setYtWatchLater(!!f.youtube_allow_watch_later);
+    // Channel rules live under website blocking too: a setup saved
+    // with only channel rules still opens the blocking section.
+    const hasYouTube =
+      (f.youtube_blocked_channels?.length ?? 0) > 0 ||
+      (f.youtube_allowed_channels?.length ?? 0) > 0 ||
+      !!f.youtube_study_mode ||
+      !!f.youtube_allow_watch_later;
+    if (savedDomains.length || hasYouTube) {
       const wb = f.website_blocking ?? 'auto';
+      const effectiveWb = hasYouTube && wb === 'none' ? 'blocklist' : wb;
       setBlockModeOverride(
-        wb === 'auto' ? (f.mode === 'strict' ? 'allowlist' : 'blocklist') : wb,
+        effectiveWb === 'auto'
+          ? (f.mode === 'strict' ? 'allowlist' : 'blocklist')
+          : effectiveWb,
       );
     } else {
       setBlockModeOverride(f.mode === 'strict' ? 'allowlist' : null);
     }
-    setWeb(
-      !!f.browser_app ||
-        f.domains.length > 0 ||
-        !!f.attention?.work_domains.length,
-    );
     setStep(0);
     setMaxStep(0);
-    setEditingId(null);
     setProblem('');
     setCreating(true);
-  }
-  function startEdit(s: Session) {
-    const f = s.focus;
-    const strictMode = f?.mode === 'strict';
-    setTitle(s.title);
-    setMinutes(s.duration_minutes);
-    setFocus({
-      ...structuredClone(defaultFocus),
-      ...f,
-      attention: {
-        ...(structuredClone(defaultFocus).attention as AttentionPolicy),
-        ...f?.attention,
-        // Sessions saved before Manual check-ins was removed: Apps only.
-        verification:
-          (f?.attention?.verification as string) === 'manual_checkpoints'
-            ? 'activity_only'
-            : (f?.attention?.verification ?? 'activity_only'),
-      },
-    });
-    setWorkApps(f?.attention?.work_apps ? [...f.attention.work_apps] : []);
-    const editDomains = f?.domains ?? [];
-    setBlockSites(editDomains.join('\n'));
-    setBlockSitesError('');
-    if (editDomains.length) {
-      const wb = f?.website_blocking ?? 'auto';
-      setBlockModeOverride(
-        wb === 'auto' ? (strictMode ? 'allowlist' : 'blocklist') : wb,
-      );
-    } else {
-      setBlockModeOverride(strictMode ? 'allowlist' : null);
-    }
-    setWeb(
-      !!f?.browser_app ||
-        (f?.domains?.length ?? 0) > 0 ||
-        (f?.attention?.work_domains?.length ?? 0) > 0,
-    );
-    setGuide(false);
-    setProblem('');
-    setStep(0);
-    setMaxStep(0);
-    setEditingId(s.id);
-    setCreating(true);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
   const attention = focus.attention!;
+  // Pomodoro config for the wizard: a session saved before step 7 has
+  // none, so fall back to the defaults until the user touches it.
+  const pomodoro = focus.pomodoro ?? defaultFocus.pomodoro!;
   const update = (patch: Partial<FocusConfig>) =>
     setFocus((c) => ({ ...c, ...patch }));
+  const updatePomodoro = (patch: Partial<typeof pomodoro>) =>
+    update({ pomodoro: { ...pomodoro, ...patch } });
   const updateAttention = (patch: Partial<AttentionPolicy>) =>
     setFocus((c) => ({ ...c, attention: { ...c.attention!, ...patch } }));
   const strict = focus.mode === 'strict';
@@ -131,11 +150,16 @@ export function Sessions() {
   const blockMode = blockModeOverride ?? (strict ? 'allowlist' : 'none');
   const setBlockMode = (mode: 'none' | 'blocklist' | 'allowlist') =>
     setBlockModeOverride(blockMode === mode ? 'none' : mode);
+  // YouTube channel rules mirror the website blocking choice: the two
+  // options are mutually exclusive, and unticking the active one clears
+  // the choice. Typed text is kept, so re-ticking restores it.
+  const setYtModeChoice = (mode: 'block' | 'study') =>
+    setYtMode(ytMode === mode ? 'none' : mode);
   const { setup, error, loading, refresh } = useFocusSetup(
-    web && focus.browser_app ? focus.browser_app : undefined,
+    focus.browser_app || undefined,
   );
   const browsers = setup?.browsers ?? [];
-  const browserId = web ? focus.browser_app || browsers[0]?.id || '' : '';
+  const browserId = focus.browser_app || browsers[0]?.id || '';
   // "Connected" counts only when the paired extension reports that it
   // lives in the browser picked above. A connection from another browser —
   // or one that cannot say which browser it is in — does not count.
@@ -145,11 +169,47 @@ export function Sessions() {
     (!browserId || sameBrowser(browserId, setup.browser.client_browser));
   const selected: FocusConfig = {
     ...focus,
+    pomodoro,
+    // Rewards and Frozen are no longer offered in the wizard: force
+    // both off (a saved setup could still carry them enabled).
+    reward: { ...defaultFocus.reward!, enabled: false },
+    frozen: { ...defaultFocus.frozen!, enabled: false },
     apps: strict ? workApps : focus.apps,
+    blocked_folders: [],
+    blocked_titles: [],
     browser_app: browserId,
-    general_internet: web ? focus.general_internet : true,
-    domains: web && blockMode !== 'none' ? splitDomains(blockSites) : [],
-    website_blocking: web ? blockMode : 'none',
+    general_internet: focus.general_internet,
+    // Submit the cleaned rules, not the raw text: a pasted URL's port or
+    // query is stripped by cleanDomain, and the submit guard above has
+    // already rejected entries that clean to nothing.
+    domains:
+      blockMode !== 'none'
+        ? splitDomains(blockSites).flatMap((entry) => {
+            const cleaned = cleanDomain(entry);
+            return cleaned ? [cleaned] : [];
+          })
+        : [],
+    // YouTube channel rules: the block list is not submitted in
+    // study mode (the allowed list decides what plays), but its
+    // textarea state is kept, so turning study mode off restores
+    // what was typed.
+    youtube_blocked_channels:
+      ytMode === 'block'
+        ? splitDomains(ytBlocked).flatMap((entry) => {
+            const cleaned = cleanYouTubeChannel(entry);
+            return cleaned ? [cleaned] : [];
+          })
+        : [],
+    youtube_allowed_channels:
+      ytMode === 'study'
+        ? splitDomains(ytAllowed).flatMap((entry) => {
+            const cleaned = cleanYouTubeChannel(entry);
+            return cleaned ? [cleaned] : [];
+          })
+        : [],
+    youtube_study_mode: ytMode === 'study',
+    youtube_allow_watch_later: ytWatchLater,
+    website_blocking: blockMode,
     camera:
       setup?.platform !== 'windows' &&
       attention.verification === 'camera_and_activity',
@@ -163,14 +223,6 @@ export function Sessions() {
       work_domains: [],
     },
   };
-  // App-only Strict sessions do not require an unused browser connection.
-  const isLiveStatus = (s: (typeof data.sessions)[number]) =>
-    ['running', 'paused', 'preparing'].includes(s.status);
-  // Every session stays as a reusable card; live ones sort first.
-  const sessions = data.sessions
-    .slice()
-    .reverse()
-    .sort((a, b) => Number(isLiveStatus(b)) - Number(isLiveStatus(a)));
   const apps =
     setup?.applications.filter(
       (a) =>
@@ -227,7 +279,6 @@ export function Sessions() {
                 if (step === 0) {
                   setCreating(false);
                   setMaxStep(0);
-                  setEditingId(null);
                 } else setStep(step - 1);
               }}
             >
@@ -245,15 +296,54 @@ export function Sessions() {
                 setMaxStep(1);
                 return;
               }
+              // In blocklist mode a channel rule counts as a rule too:
+              // a block-listed channel, or study mode on its own
+              // (which blocks every channel until one is allowed).
+              // Allowlist mode still needs a domain list.
+              const hasYouTubeRule = ytBlocked.trim() || ytMode === 'study';
               if (
-                web &&
                 selected.general_internet &&
                 blockMode !== 'none' &&
-                !blockSites.trim()
+                !blockSites.trim() &&
+                !(blockMode === 'blocklist' && hasYouTubeRule)
               ) {
                 setProblem(
-                  'Add at least one website above, or turn off "I need websites for this task".',
+                  'Add at least one website above, or turn off website blocking.',
                 );
+                return;
+              }
+              // Guard on the entries actually submitted (split on lines
+              // and commas), not just the per-line error: a comma list
+              // that the line checker flags is still valid input.
+              const badEntry =
+                blockMode !== 'none'
+                  ? splitDomains(blockSites).find(
+                      (entry) => cleanDomain(entry) === null,
+                    )
+                  : undefined;
+              if (badEntry) {
+                setProblem(`Invalid website: ${badEntry}`);
+                return;
+              }
+              // Guards on the channel lists actually submitted.
+              const badBlocked =
+                blockMode !== 'none' && ytMode === 'block'
+                  ? splitDomains(ytBlocked).find(
+                      (entry) => cleanYouTubeChannel(entry) === null,
+                    )
+                  : undefined;
+              if (badBlocked) {
+                setProblem(`Invalid YouTube channel: ${badBlocked}`);
+                return;
+              }
+              const badAllowed =
+                blockMode !== 'none'
+                  ? splitDomains(ytAllowed).find(
+                      (entry) => cleanYouTubeChannel(entry) === null,
+                    )
+                  : undefined;
+              if (badAllowed) {
+                setProblem(`Invalid YouTube channel: ${badAllowed}`);
                 return;
               }
               const issue = setupProblem(selected, setup, step === 2);
@@ -267,24 +357,8 @@ export function Sessions() {
                 setMaxStep(2);
                 return;
               }
-              if (
-                await execute({
-                  type: 'create_session',
-                  title,
-                  minutes,
-                  allow_pause: !strict,
-                  focus: selected,
-                })
-              ) {
-                setTitle('');
-                setStep(0);
-                setMaxStep(0);
-                setCreating(false);
-                if (editingId) {
-                  setEditingId(null);
-                  await execute({ type: 'end_session', id: editingId });
-                }
-              }
+              // The confirmation popup creates and starts the session.
+              setConfirmOpen(true);
             }}
           >
             <div className="wizard-steps" aria-label="Setup progress">
@@ -332,16 +406,17 @@ export function Sessions() {
                 </div>
                 <label>
                   Type of work
-                  <select
+                  <Dropdown
                     value={attention.task}
-                    onChange={(e) => updateAttention({ task: e.target.value })}
-                  >
-                    <option value="other">General work</option>
-                    <option value="coding">Coding</option>
-                    <option value="reading">Reading / study</option>
-                    <option value="lecture">Watching a lesson</option>
-                    <option value="writing">Writing</option>
-                  </select>
+                    onChange={(value) => updateAttention({ task: value })}
+                    options={[
+                      { value: 'other', label: 'General work' },
+                      { value: 'coding', label: 'Coding' },
+                      { value: 'reading', label: 'Reading / study' },
+                      { value: 'lecture', label: 'Watching a lesson' },
+                      { value: 'writing', label: 'Writing' },
+                    ]}
+                  />
                 </label>
                 <fieldset>
                   <legend>How should we check your focus?</legend>
@@ -504,7 +579,6 @@ export function Sessions() {
                             });
                           }
                           if (e.target.checked && isBrowser) {
-                            setWeb(true);
                             update({ browser_app: app.id });
                           }
                         }}
@@ -518,65 +592,13 @@ export function Sessions() {
                     </p>
                   )}
                 </div>
-                <label className="check-label consent">
-                  <input
-                    type="checkbox"
-                    checked={web}
-                    onChange={(e) => {
-                      setWeb(e.target.checked);
-                      if (!e.target.checked)
-                        setWorkApps(
-                          workApps.filter(
-                            (id) => !browsers.some((b) => b.id === id),
-                          ),
-                        );
-                    }}
-                  />
-                  I need websites for this task
-                </label>
-                {web && (
-                  <div className="setup-guide">
-                    <label>
-                      Which browser?
-                      <select
-                        value={browserId}
-                        onChange={(e) => {
-                          const picked = e.target.value;
-                          const other = workApps.find(
-                            (id) =>
-                              id !== picked &&
-                              browsers.some((b) => b.id === id),
-                          );
-                          if (picked && other) {
-                            const otherName =
-                              browsers.find((b) => b.id === other)?.name ??
-                              'another browser';
-                            const pickedName =
-                              browsers.find((b) => b.id === picked)?.name ??
-                              'this browser';
-                            setBrowserWarn(
-                              `Only one browser per session. Uncheck ${otherName} to use ${pickedName} instead.`,
-                            );
-                            return;
-                          }
-                          setBrowserWarn('');
-                          update({ browser_app: picked });
-                        }}
-                      >
-                        <option value="">Choose a browser</option>
-                        {browsers.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                <div className="setup-guide">
                     {browserWarn && (
                       <p role="alert" className="camera-warn">
                         {browserWarn}
                       </p>
                     )}
-                    <div className="setting-row divider-top">
+                    <div className="setting-row">
                       <span>Browser extension</span>
                       <div className="row">
                         <button
@@ -660,8 +682,12 @@ export function Sessions() {
                               setBlockSites(next.text);
                               setBlockSitesError(domainInputError(next.text));
                             }}
-                            placeholder="youtube.com"
+                            placeholder={"youtube.com\ninstagram.com\nfacebook.com"}
                           />
+                          <p className="small muted">
+                            One per line. These websites will be blocked
+                            during the session.
+                          </p>
                           {blockSitesError && (
                             <p className="error small" role="alert">
                               {blockSitesError}
@@ -695,8 +721,12 @@ export function Sessions() {
                               setBlockSites(next.text);
                               setBlockSitesError(domainInputError(next.text));
                             }}
-                            placeholder="github.com"
+                            placeholder={"github.com\nstackoverflow.com\ndocs.python.org"}
                           />
+                          <p className="small muted">
+                            One per line. Only these websites stay open —
+                            everything else is blocked.
+                          </p>
                           {blockSitesError && (
                             <p className="error small" role="alert">
                               {blockSitesError}
@@ -705,8 +735,110 @@ export function Sessions() {
                         </>
                       )}
                     </div>
+                    {blockMode !== 'none' && (
+                      <div className="blocking-section">
+                        <p className="blocking-heading">YouTube blocking</p>
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytMode === 'block'}
+                            onChange={() => setYtModeChoice('block')}
+                          />
+                          <strong>Block these channels</strong>
+                        </label>
+                        {ytMode === 'block' && (
+                          <>
+                            <textarea
+                              rows={3}
+                              className="blocking-sites"
+                              aria-label="Channels to block"
+                              value={ytBlocked}
+                              onChange={(e) => {
+                                setYtBlocked(e.target.value);
+                                setYtBlockedError(
+                                  youTubeChannelInputError(e.target.value),
+                                );
+                              }}
+                              onBlur={() => {
+                                const next =
+                                  normalizeYouTubeChannelInput(ytBlocked);
+                                setYtBlocked(next.text);
+                                setYtBlockedError(
+                                  youTubeChannelInputError(next.text),
+                                );
+                              }}
+                              placeholder={'@mkbhd\n@veritasium'}
+                            />
+                            <p className="small muted">
+                              One per line. Videos from these channels
+                              will not play.
+                            </p>
+                            {ytBlockedError && (
+                              <p className="error small" role="alert">
+                                {ytBlockedError}
+                              </p>
+                            )}
+                          </>
+                        )}
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytMode === 'study'}
+                            onChange={() => setYtModeChoice('study')}
+                          />
+                          <strong>
+                            Block all except these
+                          </strong>
+                        </label>
+                        {ytMode === 'study' && (
+                          <>
+                            <textarea
+                              rows={3}
+                              className="blocking-sites"
+                              aria-label="Allowed channels"
+                              value={ytAllowed}
+                              onChange={(e) => {
+                                setYtAllowed(e.target.value);
+                                setYtAllowedError(
+                                  youTubeChannelInputError(e.target.value),
+                                );
+                              }}
+                              onBlur={() => {
+                                const next =
+                                  normalizeYouTubeChannelInput(ytAllowed);
+                                setYtAllowed(next.text);
+                                setYtAllowedError(
+                                  youTubeChannelInputError(next.text),
+                                );
+                              }}
+                              placeholder={'@khanacademy\n@freecodecamp'}
+                            />
+                            <p className="small muted">
+                              One per line. Only these channels will play.
+                            </p>
+                            {ytAllowedError && (
+                              <p className="error small" role="alert">
+                                {ytAllowedError}
+                              </p>
+                            )}
+                          </>
+                        )}
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytWatchLater}
+                            onChange={(e) =>
+                              setYtWatchLater(e.target.checked)
+                            }
+                          />
+                          <strong>
+                            Allow Watch Later playlist even when YouTube
+                            is blocked
+                          </strong>
+                        </label>
+                      </div>
+                    )}
                   </div>
-                )}
               </>
             )}
             {step === 2 && (
@@ -751,22 +883,108 @@ export function Sessions() {
                 <div className="setup-guide">
                   <label>
                     Wait before labeling a distraction
-                    <select
-                      value={attention.grace_seconds}
-                      onChange={(e) =>
+                    <Dropdown
+                      value={String(attention.grace_seconds)}
+                      onChange={(value) =>
                         updateAttention({
-                          grace_seconds: Number(e.target.value),
+                          grace_seconds: Number(value),
                         })
                       }
-                    >
-                      <option value={3}>3 seconds</option>
-                      <option value={10}>10 seconds (recommended)</option>
-                      <option value={20}>20 seconds</option>
-                    </select>
+                      options={[
+                        { value: '3', label: '3 seconds' },
+                        { value: '10', label: '10 seconds (recommended)' },
+                        { value: '20', label: '20 seconds' },
+                      ]}
+                    />
                   </label>
                 </div>
               </>
             )}
+            {step === 2 && (
+              <div className="setup-guide">
+                <label className="check-label">
+                  <input
+                    type="checkbox"
+                    checked={pomodoro.enabled}
+                    onChange={(e) =>
+                      updatePomodoro({ enabled: e.target.checked })
+                    }
+                  />
+                  Use Pomodoro focus/break cycles
+                </label>
+                {pomodoro.enabled && (
+                  <>
+                    <p className="muted">
+                      Focus in timed phases with real breaks in
+                      between. Blocking relaxes during breaks, and
+                      break time never counts toward your session
+                      target.
+                    </p>
+                    <div className="simple-grid">
+                      <label>
+                        Focus (minutes)
+                        <input
+                          type="number"
+                          min={1}
+                          max={180}
+                          value={pomodoro.focus_minutes}
+                          onChange={(e) =>
+                            updatePomodoro({
+                              focus_minutes: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Short break (minutes)
+                        <input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={pomodoro.short_break_minutes}
+                          onChange={(e) =>
+                            updatePomodoro({
+                              short_break_minutes: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Long break (minutes)
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={pomodoro.long_break_minutes}
+                          onChange={(e) =>
+                            updatePomodoro({
+                              long_break_minutes: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Focus cycles before a long break
+                        <input
+                          type="number"
+                          min={2}
+                          max={8}
+                          value={pomodoro.cycles_before_long_break}
+                          onChange={(e) =>
+                            updatePomodoro({
+                              cycles_before_long_break: Number(
+                                e.target.value,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {step === 2 && (
               <label className="check-label block-apps">
                 <input
@@ -789,65 +1007,53 @@ export function Sessions() {
               style={{ justifyContent: 'flex-end' }}
             >
               <button disabled={busy || !desktop}>
-                {step === 2
-                  ? editingId
-                    ? 'Save changes'
-                    : 'Create session'
-                  : 'Continue'}
+                {step === 2 ? 'Create session' : 'Continue'}
               </button>
             </div>
           </form>
         </>
       ) : (
-        <div className="panel new-session-card">
-          <span className="focus-orbit">
-            <Timer size={30} />
-          </span>
-          <h2>Start a new focus session</h2>
-          <p className="muted">
-            Choose what matters, set your time,
-            <br />
-            and give it your full attention.
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              setProblem('');
-              setEditingId(null);
-              setMinutes(data.preferences.default_minutes);
-              setStep(0);
-              setMaxStep(0);
-              setCreating(true);
-            }}
-          >
-            <Plus size={16} />
-            New session
-          </button>
+        <div className="focus-planning-grid">
+          <div className="panel new-session-card">
+            <span className="focus-orbit">
+              <Timer size={30} />
+            </span>
+            <h2>Start a new focus session</h2>
+            <p className="muted">
+              Choose what matters, set your time,
+              <br />
+              and give it your full attention.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setProblem('');
+                setMinutes(data.preferences.default_minutes);
+                setStep(0);
+                setMaxStep(0);
+                setCreating(true);
+              }}
+            >
+              <Plus size={16} />
+              New session
+            </button>
+          </div>
+          <PlanningSections only="schedules" />
+          <PlanningSections only="oneshots" />
+          <PlanningSections only="allowances" />
         </div>
       )}
-      <div className="section-heading">
-        <h2>Your sessions</h2>
-      </div>
-      <div className="session-list">
-        {sessions.length ? (
-          sessions.map((s) => (
-            <SessionCard
-              session={s}
-              key={s.id}
-              onEdit={startEdit}
-              appNames={Object.fromEntries(
-                (setup?.applications ?? []).map((a) => [a.id, a.name]),
-              )}
-              setup={setup}
-              onSetupRefresh={refresh}
-            />
-          ))
-        ) : (
-          <div className="panel">
-            <Empty>No session yet.</Empty>
-          </div>
-        )}
-      </div>
+      <Activity />
+      {confirmOpen && (
+        <SessionConfirmDialog
+          title={title}
+          minutes={minutes}
+          strict={strict}
+          busy={busy}
+          onStart={() => void confirmStartSession()}
+          onCancel={resetWizard}
+        />
+      )}
     </>
   );
 }

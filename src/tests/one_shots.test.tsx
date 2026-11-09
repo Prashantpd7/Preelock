@@ -1,0 +1,210 @@
+import { beforeEach, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { App } from '../App';
+import { api, emptySnapshot } from '../services/api';
+import { useAppStore } from '../state/store';
+import { defaultFocus, type OneShot, type Session } from '../types';
+import {
+  oneShotFireAtMs,
+  validateOneShotForm,
+} from '../services/one_shots';
+
+vi.mock('../services/settings', () => ({
+  settingsAction: vi.fn().mockResolvedValue({}),
+  preferenceDefaults: {
+    theme: 'dark',
+    default_minutes: 25,
+    saved_setups: [],
+    reminder_days: [],
+  },
+}));
+vi.mock('../services/api', () => ({
+  desktop: true,
+  emptySnapshot: {
+    sessions: [],
+    tasks: [],
+    schedules: [],
+    one_shots: [],
+    preferences: { theme: 'dark', default_minutes: 25 },
+  },
+  api: {
+    snapshot: vi.fn(),
+    execute: vi.fn(),
+    focusSetup: vi.fn(),
+    capabilities: vi.fn(),
+    blockAttempts: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+const templateSession: Session = {
+  id: 'sess-1',
+  title: 'Write outline',
+  duration_minutes: 25,
+  remaining_ms: 25 * 60_000,
+  focused_ms: 0,
+  allow_pause: true,
+  status: 'ready',
+  started_at: null,
+  ended_at: null,
+  deadline_ms: null,
+  focus: structuredClone(defaultFocus),
+};
+
+function oneShot(overrides: Partial<OneShot>): OneShot {
+  return {
+    id: 'one-1',
+    title: 'Write outline',
+    minutes: 25,
+    allow_pause: true,
+    focus: structuredClone(defaultFocus),
+    fire_at_ms: Date.now() + 3_600_000,
+    created_at: 1,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  localStorage.setItem('preelock-permissions-v2', 'seen');
+  window.location.hash = '#/sessions';
+  vi.clearAllMocks();
+  vi.mocked(api.snapshot).mockImplementation(async () =>
+    structuredClone(useAppStore.getState().data),
+  );
+  vi.mocked(api.capabilities).mockResolvedValue([]);
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    platform: 'macos',
+    native_available: true,
+    applications: [],
+    camera_permission: 'not_requested',
+    pairing_token: 'test-token',
+    browser: {
+      available: true,
+      connected: false,
+      applied_id: '',
+      error: '',
+      blocks: 0,
+      cleanup_pending: false,
+      extension_stale: false,
+    },
+  });
+});
+
+it('validates the one-shot form: template, title and a future time', () => {
+  const base = {
+    title: 'Write outline',
+    templateId: 'sess-1',
+    fireAtMs: 2_000_000,
+    nowMs: 1_000_000,
+  };
+  expect(validateOneShotForm(base)).toBe('');
+  expect(validateOneShotForm({ ...base, templateId: '' })).toContain(
+    'template',
+  );
+  expect(validateOneShotForm({ ...base, title: '  ' })).toContain('title');
+  expect(validateOneShotForm({ ...base, fireAtMs: null })).toContain(
+    'date and time',
+  );
+  expect(validateOneShotForm({ ...base, fireAtMs: 1_000_000 })).toContain(
+    'future',
+  );
+  expect(validateOneShotForm({ ...base, fireAtMs: 999_999 })).toContain(
+    'future',
+  );
+  expect(oneShotFireAtMs('')).toBeNull();
+  expect(oneShotFireAtMs('not-a-date')).toBeNull();
+});
+
+it('explains that an enabled schedule turns on open at login', async () => {
+  useAppStore.setState({
+    data: {
+      ...structuredClone(emptySnapshot),
+      sessions: [templateSession],
+    },
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  expect(
+    await screen.findByText(/Needs open at login to run/),
+  ).toBeInTheDocument();
+});
+
+it('lists pending one-shots and cancels one', async () => {
+  const pending = oneShot({});
+  const snapshot = {
+    ...structuredClone(emptySnapshot),
+    sessions: [templateSession],
+    one_shots: [pending],
+  };
+  useAppStore.setState({
+    data: snapshot,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  vi.mocked(api.execute).mockResolvedValue({
+    ...snapshot,
+    one_shots: [],
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  expect(await screen.findByText('Start once at')).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Cancel timer' }),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Cancel timer' }));
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'delete_one_shot',
+    id: 'one-1',
+  });
+});
+
+it('creates a one-shot from a template at a future time', async () => {
+  const snapshot = {
+    ...structuredClone(emptySnapshot),
+    sessions: [templateSession],
+    one_shots: [],
+  };
+  useAppStore.setState({
+    data: snapshot,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  vi.mocked(api.execute).mockResolvedValue({
+    ...snapshot,
+    one_shots: [oneShot({})],
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New one-shot' }));
+  await user.click(screen.getByLabelText('One-shot template'));
+  await user.click(
+    screen.getByRole('option', { name: 'Write outline · 25 min' }),
+  );
+  expect(screen.getByLabelText('One-shot name')).toHaveValue('Write outline');
+  // A past time is a validation error, not a backend call.
+  fireEvent.change(screen.getByLabelText('Start at'), {
+    target: { value: '2020-01-01T09:00' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
+  expect(await screen.findByText('Pick a future date and time.')).toBeInTheDocument();
+  expect(api.execute).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('Start at'), {
+    target: { value: '2099-01-01T09:00' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'create_one_shot',
+    title: 'Write outline',
+    minutes: 25,
+    allow_pause: true,
+    focus: templateSession.focus,
+    fire_at_ms: new Date('2099-01-01T09:00').getTime(),
+  });
+});

@@ -34,6 +34,14 @@ pub fn validate_preferences(mut p: Preferences) -> Result<Preferences, String> {
     }
     p.reminder_days.sort();
     p.reminder_days.dedup();
+    // Step 14: warning points normalize on save (deduped, sorted);
+    // an invalid list is a save error, never a silent default.
+    // Grace is a plain range check (0 = off).
+    let warnings = crate::notifications::parse_warning_minutes(&p.warning_minutes)?;
+    p.warning_minutes = crate::notifications::format_warning_minutes(&warnings);
+    if p.grace_seconds > 300 {
+        return Err("Grace period must be from 0 to 300 seconds (0 turns it off).".into());
+    }
     if p.saved_setups.len() > 30 {
         return Err("Keep up to 30 saved setups.".into());
     }
@@ -56,6 +64,12 @@ pub fn validate_preferences(mut p: Preferences) -> Result<Preferences, String> {
         preset.focus.activity_consent = false;
         preset.focus.camera = false;
     }
+    // Screen Time category corrections: keep only well-known
+    // categories with sane keys. A bad value must never fail a save —
+    // it is dropped, and the built-in mapping applies instead.
+    p.category_overrides.retain(|key, value| {
+        key.len() <= 500 && matches!(value.as_str(), "Distracting" | "Productive" | "Others")
+    });
     Ok(p)
 }
 #[derive(Serialize, Deserialize)]
@@ -482,6 +496,34 @@ mod tests {
         assert!(p.session_alert);
     }
     #[test]
+    fn category_overrides_load_empty_for_old_saves() {
+        let p: Preferences =
+            serde_json::from_str(r#"{"theme":"dark","default_minutes":25}"#).unwrap();
+        assert!(p.category_overrides.is_empty());
+    }
+    #[test]
+    fn category_overrides_survive_validation_and_bad_values_drop() {
+        let mut p = Preferences::default();
+        p.category_overrides
+            .insert("com.example.app".into(), "Distracting".into());
+        p.category_overrides
+            .insert("example.com".into(), "Productive".into());
+        p.category_overrides
+            .insert("bogus.example".into(), "Bogus".into());
+        let p = validate_preferences(p).unwrap();
+        assert_eq!(
+            p.category_overrides
+                .get("com.example.app")
+                .map(String::as_str),
+            Some("Distracting")
+        );
+        assert_eq!(
+            p.category_overrides.get("example.com").map(String::as_str),
+            Some("Productive")
+        );
+        assert!(!p.category_overrides.contains_key("bogus.example"));
+    }
+    #[test]
     fn rejects_invalid_preferences() {
         let p = Preferences {
             volume: 101,
@@ -541,6 +583,8 @@ mod tests {
                 minutes: 25,
                 allow_pause: true,
                 focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
             },
             1,
         )

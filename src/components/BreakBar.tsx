@@ -30,7 +30,7 @@ export function BreakBar() {
       window.clearInterval(timer);
     };
   }, []);
-  async function act(type: 'start_break' | 'end_break' | 'dismiss_break') {
+  async function act(type: 'end_break' | 'dismiss_break') {
     try {
       await settingsAction({ type });
       setInfo(await settingsAction({ type: 'status' }));
@@ -81,7 +81,6 @@ export function BreakBar() {
             >
               Not now
             </button>
-            <button onClick={() => void act('start_break')}>Start break</button>
             {lastFinished && (
               <button disabled={busy} onClick={() => void startAgain()}>
                 Start again

@@ -25,3 +25,12 @@ p {
 .hint {
   color: #a3afa6;
 }
+.reason {
+  font-size: 1.05rem;
+  color: #e5e9e3;
+  background: #1a201b;
+  border: 1px solid #2c352d;
+  border-radius: 12px;
+  padding: 0.9rem 1.2rem;
+  margin: 0 0 1.25rem;
+}

@@ -8,7 +8,11 @@ test('cleanDomain normalizes pasted and typed input', () => {
   expect(cleanDomain('https://web.whatsapp.com/')).toBe('web.whatsapp.com');
   expect(cleanDomain('github.com/')).toBe('github.com');
   expect(cleanDomain('  Docs.RS ')).toBe('docs.rs');
-  expect(cleanDomain('http://example.com:8080/path?q=1')).toBe('example.com');
+  expect(cleanDomain('http://example.com:8080/path?q=1')).toBe('example.com/path');
+  expect(cleanDomain('https://YouTube.com/Shorts/')).toBe('youtube.com/shorts');
+  expect(cleanDomain('*.example.com')).toBe('*.example.com');
+  expect(cleanDomain('search:Chess Videos')).toBe('search:chess videos');
+  expect(cleanDomain('youtube.com/shorts')).toBe('youtube.com/shorts');
   expect(cleanDomain('example.com.')).toBe('example.com');
 });
 test('cleanDomain guesses the .com domain for a single word', () => {
@@ -16,6 +20,8 @@ test('cleanDomain guesses the .com domain for a single word', () => {
   expect(cleanDomain('github')).toBe('github.com');
 });
 test('cleanDomain rejects unusable input', () => {
+  expect(cleanDomain('search:')).toBe(null);
+  expect(cleanDomain('search:x')).toBe(null);
   expect(cleanDomain('*.com')).toBe(null);
   expect(cleanDomain('not a domain!!!')).toBe(null);
   expect(cleanDomain('127.0.0.1')).toBe(null);

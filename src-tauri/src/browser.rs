@@ -1,5 +1,6 @@
 //! Authenticated loopback transport. Never changes DNS, proxy settings, firewall or OS policy.
 use crate::{
+    blockreasons::{BlockCause, RuleCause},
     clock,
     focus::{FocusConfig, Mode, WebsiteBlocking},
     platform,
@@ -16,7 +17,7 @@ pub const PORT: u16 = 47832;
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
-pub const EXTENSION_VERSION: u32 = 3;
+pub const EXTENSION_VERSION: u32 = 6;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
     #[serde(skip)]
@@ -24,10 +25,75 @@ pub struct Policy {
     pub id: String,
     pub mode: String,
     pub domains: Vec<String>,
+    /// Per-block exceptions (step 2): host/path rules that stay
+    /// accessible even when they match a block rule. Present only for
+    /// effective blocklist policies; empty in allowlist and offline
+    /// mode, where exceptions do not apply (see the precedence note in
+    /// focus.rs and browser-extension/rules.js). The extension checks
+    /// them after the adult overlay and before block/keyword rules.
+    pub exceptions: Vec<String>,
+    /// Keyword rules, as bare keywords (the `search:` prefix stripped).
+    /// The extension blocks search-engine result pages whose query
+    /// contains one of these; it never sees them as domains.
+    pub keywords: Vec<String>,
+    /// Adult-category domains, present only when the session's "Block
+    /// adult content" toggle is on. A block overlay: the extension
+    /// blocks them even in allowlist mode, and the engine counts them
+    /// as not relevant even when allowlisted. Empty in offline mode
+    /// (everything is blocked there anyway) and when blocking is off.
+    pub extra_blocked: Vec<String>,
+    /// YouTube channel rules (step 3), normalized stored keys (see
+    /// focus::normalize_youtube_channel). Carried whenever website
+    /// blocking is on; empty when blocking is off or offline (in
+    /// offline mode everything is blocked anyway). Channel pages are
+    /// enforced by DNR rules, watch pages by the youtube.js content
+    /// script; see browser-extension/rules.js for the full decision.
+    pub youtube_blocked_channels: Vec<String>,
+    pub youtube_allowed_channels: Vec<String>,
+    /// Study mode: only `youtube_allowed_channels` play, and the
+    /// extension blocks the YouTube homepage, Shorts, feeds and
+    /// search results. False unless blocking is on.
+    pub youtube_study_mode: bool,
+    /// Watch-Later exception (list=WL pages stay open). False unless
+    /// blocking is on. Extension-enforced only: query parameters are
+    /// invisible to the engine (see the note on FocusConfig in
+    /// focus.rs).
+    pub youtube_allow_watch_later: bool,
     pub expires_at: i64,
     pub observe_activity: bool,
+    /// Screen Time-only observation; does not enable or alter blocking rules.
+    pub track_activity: bool,
+    /// Why this session's own rules block (domains, keywords, adult
+    /// overlay entries from the session config). The extension's
+    /// blocked page shows this when the blocked site matched a
+    /// session rule rather than a per-rule cause below. Optional:
+    /// v6 clients ignore unknown fields, so the protocol stays 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_cause: Option<BlockCause>,
+    /// Per-rule causes for `extra_blocked` entries (allowance
+    /// exhaustion, app locks, adult overlay). The extension looks
+    /// the matched rule up here; rules without an entry fall back
+    /// to `session_cause`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_causes: Vec<RuleCause>,
+}
+/// Normalize a channel list for a policy, dropping invalid entries
+/// (policies come from validated configs, so this is normally the
+/// identity; see `Policy::new`).
+fn normalized_channels(values: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = values
+        .iter()
+        .filter_map(|v| crate::focus::normalize_youtube_channel(v).ok())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 impl Policy {
+    pub fn with_activity_tracking(mut self, enabled: bool) -> Self {
+        self.track_activity = enabled;
+        self
+    }
     fn applies_to(&self, browser: &str) -> bool {
         self.browsers.is_empty() || self.browsers.iter().any(|id| same_browser(id, browser))
     }
@@ -41,23 +107,141 @@ impl Policy {
                 _ => "allowlist",
             },
         };
+        let has_youtube_rules = !c.youtube_blocked_channels.is_empty() || c.youtube_study_mode;
+        // DEBUG 2026-11-03: log YouTube channels to diagnose empty policy
+        eprintln!("[preelock-debug] Policy::new youtube_blocked_channels={:?} study_mode={} has_rules={}",
+            c.youtube_blocked_channels, c.youtube_study_mode, has_youtube_rules);
+        let blocking = (!matches!(&c.website_blocking, WebsiteBlocking::None)
+            && c.general_internet)
+            || has_youtube_rules;
         let domains = match &c.website_blocking {
             WebsiteBlocking::None => Vec::new(),
-            _ => c.domains.clone(),
+            _ => c.website_host_rules(),
+        };
+        // Step 12 Frozen Turkey: a frozen policy is an allowlist
+        // whose domains are exactly the frozen allowed websites
+        // (default: none, so every site is blocked). This reuses
+        // the existing allowlist machinery — the extension needs
+        // no change — and it overrides the session's own website
+        // mode, exceptions, and keywords: while frozen, only the
+        // frozen list is open. The adult overlay below still
+        // applies on top, exactly as in ordinary allowlist mode.
+        let (policy_mode, domains, exceptions, keywords) = if c.frozen.enabled {
+            (
+                "allowlist",
+                c.frozen.website_host_rules(),
+                Vec::new(),
+                Vec::new(),
+            )
+        } else {
+            (
+                policy_mode,
+                domains,
+                if blocking && policy_mode == "blocklist" {
+                    c.exceptions.clone()
+                } else {
+                    Vec::new()
+                },
+                if blocking {
+                    c.website_keywords()
+                } else {
+                    Vec::new()
+                },
+            )
         };
         Self {
             browsers: c.session_browsers(),
             id: id.into(),
             observe_activity: c.activity_consent && c.attention.enabled,
-            mode: if !c.general_internet {
+            track_activity: false,
+            mode: if !c.general_internet && !has_youtube_rules {
                 "offline"
             } else {
                 policy_mode
             }
             .into(),
             domains,
+            exceptions,
+            keywords,
+            extra_blocked: if blocking && c.block_adult_content {
+                crate::focus::ADULT_DOMAINS
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            // The adult overlay blocks with its own cause, so the
+            // blocked page can name it.
+            rule_causes: if blocking && c.block_adult_content {
+                crate::focus::ADULT_DOMAINS
+                    .iter()
+                    .map(|d| RuleCause {
+                        rule: d.to_string(),
+                        cause: BlockCause::adult(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            session_cause: None,
+            // Policies are built from validated configs, so this is
+            // normally the identity; invalid entries are dropped
+            // defensively rather than breaking the whole policy.
+            youtube_blocked_channels: if blocking {
+                normalized_channels(&c.youtube_blocked_channels)
+            } else {
+                Vec::new()
+            },
+            youtube_allowed_channels: if blocking {
+                normalized_channels(&c.youtube_allowed_channels)
+            } else {
+                Vec::new()
+            },
+            youtube_study_mode: blocking && c.youtube_study_mode,
+            youtube_allow_watch_later: blocking && c.youtube_allow_watch_later,
             expires_at: clock::now() + remaining.min(65_000) as i64,
         }
+    }
+    /// Append allowance-exhausted site rules to `extra_blocked`
+    /// (step 8). The extension already treats `extra_blocked` as a
+    /// block overlay that outranks allowlist rules and per-block
+    /// exceptions (the step-1 adult mechanism), so no extension
+    /// change is needed — and exhausted rules block even when the
+    /// session itself has no website blocking or adult toggle on.
+    /// Adult entries already present are never duplicated.
+    pub fn with_exhausted_rules(mut self, rules: &[String]) -> Self {
+        for rule in rules {
+            if !self.extra_blocked.iter().any(|e| e == rule) {
+                self.extra_blocked.push(rule.clone());
+            }
+        }
+        self
+    }
+    /// Set why this session's own rules block (see `session_cause`).
+    pub fn with_session_cause(mut self, cause: BlockCause) -> Self {
+        self.session_cause = Some(cause);
+        self
+    }
+    /// Set per-rule causes for `extra_blocked` entries (see
+    /// `rule_causes`). When a rule already has a cause (e.g. the
+    /// adult overlay from `new`), the more specific one wins:
+    /// timed/daily lock > allowance > adult overlay (see
+    /// `blockreasons::cause_rank`).
+    pub fn with_rule_causes(mut self, causes: &[RuleCause]) -> Self {
+        for rc in causes {
+            match self.rule_causes.iter_mut().find(|e| e.rule == rc.rule) {
+                Some(existing)
+                    if crate::blockreasons::cause_rank(&rc.cause)
+                        < crate::blockreasons::cause_rank(&existing.cause) =>
+                {
+                    *existing = rc.clone();
+                }
+                None => self.rule_causes.push(rc.clone()),
+                _ => {}
+            }
+        }
+        self
     }
 }
 /// Connection state of one paired browser. The bridge pairs any number
@@ -74,10 +258,14 @@ struct ClientState {
     blocks: u64,
     active_domain: String,
     browser_focused: bool,
+    search_distracted: bool,
+    channel_blocked: bool,
 }
 #[derive(Default)]
 struct State {
     policy: Option<Policy>,
+    tracking_policy: Option<Policy>,
+    tracking_blocked_rules: Vec<String>,
     test_id: String,
     test_result: String,
     test_until: u64,
@@ -94,6 +282,17 @@ pub struct BrowserStatus {
     pub cleanup_pending: bool,
     pub active_domain: String,
     pub browser_focused: bool,
+    /// The extension reports the active tab is a search page whose query
+    /// matches a keyword rule. The engine counts this as not relevant;
+    /// the host alone would not reveal the query.
+    pub search_distracted: bool,
+    /// The extension reports the current tab is showing a channel-rule
+    /// block page (a DNR-blocked channel/surface page, or a watch page
+    /// the content script sent to the block page). The engine counts
+    /// this as not relevant, exactly like `search_distracted`. An
+    /// excepted page never reports this: exceptions override channel
+    /// rules, so the extension never flags one.
+    pub channel_blocked: bool,
     pub activity_fresh: bool,
     /// The connected extension copy predates the behavior the app shipped
     /// with (it was never reloaded after an app update).
@@ -122,6 +321,10 @@ struct Heartbeat {
     active_domain: String,
     #[serde(default)]
     browser_focused: bool,
+    #[serde(default)]
+    search_distracted: bool,
+    #[serde(default)]
+    channel_blocked: bool,
     #[serde(default)]
     disconnect: bool,
     #[serde(default)]
@@ -285,6 +488,14 @@ impl Bridge {
                     .policy
                     .as_ref()
                     .is_some_and(|p| p.observe_activity && p.applies_to(&resolved_browser));
+                let track = state
+                    .policy
+                    .as_ref()
+                    .is_some_and(|p| p.track_activity && p.applies_to(&resolved_browser))
+                    || state
+                        .tracking_policy
+                        .as_ref()
+                        .is_some_and(|p| p.applies_to(&resolved_browser));
                 let client = state.clients.entry(heartbeat.client).or_default();
                 client.browser = heartbeat.browser;
                 client.ext_v = heartbeat.v;
@@ -292,12 +503,14 @@ impl Bridge {
                 client.applied_id = heartbeat.applied_id;
                 client.error = heartbeat.error;
                 client.blocks = heartbeat.blocks;
-                client.active_domain = if observe {
+                client.active_domain = if observe || track {
                     heartbeat.active_domain.to_lowercase()
                 } else {
                     String::new()
                 };
-                client.browser_focused = observe && heartbeat.browser_focused;
+                client.browser_focused = (observe || track) && heartbeat.browser_focused;
+                client.search_distracted = observe && heartbeat.search_distracted;
+                client.channel_blocked = observe && heartbeat.channel_blocked;
                 if !heartbeat.test_id.is_empty()
                     && heartbeat.test_id == state.test_id
                     && !heartbeat.test_result.is_empty()
@@ -314,7 +527,12 @@ impl Bridge {
                 let policy = state
                     .policy
                     .clone()
-                    .filter(|p| p.expires_at > clock::now() && p.applies_to(&resolved_browser));
+                    .filter(|p| p.expires_at > clock::now() && p.applies_to(&resolved_browser))
+                    .or_else(|| {
+                        state.tracking_policy.clone().filter(|p| {
+                            p.expires_at > clock::now() && p.applies_to(&resolved_browser)
+                        })
+                    });
                 drop(state);
                 let mut res = tiny_http::Response::from_string(
                     serde_json::json!({"policy":policy,"test_id":test_id}).to_string(),
@@ -411,6 +629,54 @@ impl Bridge {
     pub fn publish(&self, policy: Option<Policy>) {
         if let Ok(mut state) = self.state.lock() {
             state.policy = policy;
+            if let Some(tracking) = state.tracking_policy.as_mut() {
+                tracking.expires_at = clock::now() + 65_000;
+            }
+        }
+    }
+    pub fn set_screen_time_tracking(&self, enabled: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            if !enabled {
+                state.tracking_blocked_rules.clear();
+            }
+            state.tracking_policy = enabled.then(|| Policy {
+                browsers: Vec::new(),
+                id: "screen-time-observation".into(),
+                mode: "blocklist".into(),
+                domains: Vec::new(),
+                exceptions: Vec::new(),
+                keywords: Vec::new(),
+                extra_blocked: state.tracking_blocked_rules.clone(),
+                youtube_blocked_channels: Vec::new(),
+                youtube_allowed_channels: Vec::new(),
+                youtube_study_mode: false,
+                youtube_allow_watch_later: false,
+                expires_at: clock::now() + 65_000,
+                observe_activity: false,
+                track_activity: true,
+                session_cause: None,
+                rule_causes: Vec::new(),
+            });
+        }
+    }
+    /// Replace the observe-only lease's exhausted website rules and
+    /// their per-rule block causes (see `rule_causes`).
+    pub fn set_screen_time_blocked_rules(&self, rules: &[String], causes: &[RuleCause]) {
+        if let Ok(mut state) = self.state.lock() {
+            state.tracking_blocked_rules = rules.to_vec();
+            if let Some(policy) = state.tracking_policy.as_mut() {
+                policy.extra_blocked = rules.to_vec();
+                policy.rule_causes = causes.to_vec();
+                policy.expires_at = clock::now() + 65_000;
+            }
+        }
+    }
+    /// Refresh the short-lived observe-only lease. This carries no block rules.
+    pub fn refresh_screen_time_tracking(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(policy) = state.tracking_policy.as_mut() {
+                policy.expires_at = clock::now() + 65_000;
+            }
         }
     }
     /// Status of the most recently seen browser connection, for callers
@@ -452,6 +718,8 @@ impl Bridge {
                         BrowserStatus {
                             active_domain: c.active_domain.clone(),
                             browser_focused: c.browser_focused,
+                            search_distracted: c.search_distracted,
+                            channel_blocked: c.channel_blocked,
                             activity_fresh: c.last_seen != 0
                                 && clock::continuous_ms().saturating_sub(c.last_seen) < 6_000,
                             available: true,
@@ -469,6 +737,8 @@ impl Bridge {
                     None => BrowserStatus {
                         active_domain: String::new(),
                         browser_focused: false,
+                        search_distracted: false,
+                        channel_blocked: false,
                         activity_fresh: false,
                         available: true,
                         connected: false,
@@ -516,6 +786,8 @@ pub fn unavailable(reason: &str) -> BrowserStatus {
     BrowserStatus {
         active_domain: String::new(),
         browser_focused: false,
+        search_distracted: false,
+        channel_blocked: false,
         activity_fresh: false,
         available: false,
         connected: false,
@@ -596,6 +868,171 @@ mod tests {
         let p = Policy::new("s", &c, 500_000);
         assert_eq!(p.mode, "offline");
         assert!(p.expires_at - clock::now() <= 65_000);
+    }
+    #[test]
+    fn frozen_policy_is_an_allowlist_of_only_the_frozen_websites() {
+        // Step 12: a frozen session's own blocklist, exceptions,
+        // and keywords are all replaced by the frozen allowlist;
+        // the adult overlay still applies on top of it.
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            block_adult_content: true,
+            domains: vec!["youtube.com".into(), "search:chess".into()],
+            exceptions: vec!["youtube.com".into()],
+            frozen: crate::frozen::FrozenConfig {
+                enabled: true,
+                allowed_apps: vec![],
+                allowed_websites: vec!["docs.example.com".into()],
+            },
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.mode, "allowlist");
+        assert_eq!(p.domains, vec!["docs.example.com"]);
+        assert!(p.exceptions.is_empty());
+        assert!(p.keywords.is_empty());
+        assert!(p.extra_blocked.contains(&"pornhub.com".to_string()));
+        // Default frozen: no websites allowed at all.
+        let c = FocusConfig {
+            frozen: crate::frozen::FrozenConfig {
+                enabled: true,
+                allowed_apps: vec![],
+                allowed_websites: vec![],
+            },
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.mode, "allowlist");
+        assert!(p.domains.is_empty());
+    }
+
+    #[test]
+    fn policy_splits_keywords_and_adult_overlay_from_host_rules() {
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            block_adult_content: true,
+            domains: vec![
+                "youtube.com/shorts".into(),
+                "*.example.com".into(),
+                "search:chess".into(),
+            ],
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.mode, "blocklist");
+        assert_eq!(p.domains, vec!["youtube.com/shorts", "*.example.com"]);
+        assert_eq!(p.keywords, vec!["chess"]);
+        assert!(p.extra_blocked.contains(&"pornhub.com".to_string()));
+        let off = FocusConfig {
+            website_blocking: WebsiteBlocking::None,
+            block_adult_content: true,
+            domains: vec!["search:chess".into()],
+            ..Default::default()
+        };
+        let p = Policy::new("s", &off, 60_000);
+        assert!(p.domains.is_empty());
+        assert!(p.keywords.is_empty());
+        assert!(p.extra_blocked.is_empty());
+    }
+    #[test]
+    fn policy_appends_exhausted_allowance_rules_to_the_overlay() {
+        // No website blocking and no adult toggle: an exhausted site
+        // still lands in extra_blocked, where the extension blocks
+        // it regardless of mode — no extension change needed.
+        let c = FocusConfig::default();
+        let p = Policy::new("s", &c, 60_000).with_exhausted_rules(&["youtube.com".into()]);
+        assert!(p.extra_blocked.contains(&"youtube.com".to_string()));
+        // Adult entries are never duplicated by the append.
+        let adult = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            block_adult_content: true,
+            ..Default::default()
+        };
+        let p = Policy::new("s", &adult, 60_000)
+            .with_exhausted_rules(&["pornhub.com".into(), "youtube.com".into()]);
+        assert_eq!(
+            p.extra_blocked
+                .iter()
+                .filter(|e| *e == "pornhub.com")
+                .count(),
+            1
+        );
+        assert!(p.extra_blocked.contains(&"youtube.com".to_string()));
+    }
+    #[test]
+    fn policy_carries_exceptions_only_for_blocklist() {
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            domains: vec!["youtube.com".into()],
+            exceptions: vec!["youtube.com".into()],
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.exceptions, vec!["youtube.com"]);
+        // Allowlist: exceptions are meaningless, so they are stripped.
+        let allow = FocusConfig {
+            website_blocking: WebsiteBlocking::Allowlist,
+            ..c.clone()
+        };
+        assert!(Policy::new("s", &allow, 60_000).exceptions.is_empty());
+        // Offline: everything is blocked, exceptions do NOT apply.
+        let mut off = c.clone();
+        off.general_internet = false;
+        let p = Policy::new("s", &off, 60_000);
+        assert_eq!(p.mode, "offline");
+        assert!(p.exceptions.is_empty());
+        // No website blocking: no exceptions either.
+        let mut none = c;
+        none.website_blocking = WebsiteBlocking::None;
+        assert!(Policy::new("s", &none, 60_000).exceptions.is_empty());
+    }
+    #[test]
+    fn policy_carries_normalized_youtube_channel_rules() {
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            youtube_blocked_channels: vec!["youtube.com/@Beta".into()],
+            youtube_allowed_channels: vec!["UCabcdefghijklmnopqrstuv".into()],
+            youtube_study_mode: true,
+            youtube_allow_watch_later: true,
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.youtube_blocked_channels, vec!["@beta"]);
+        assert_eq!(p.youtube_allowed_channels, vec!["UCabcdefghijklmnopqrstuv"]);
+        assert!(p.youtube_study_mode);
+        assert!(p.youtube_allow_watch_later);
+        // Invalid entries never break a policy; they are dropped.
+        let dirty = FocusConfig {
+            youtube_blocked_channels: vec!["youtube.com/watch?v=x".into()],
+            ..c.clone()
+        };
+        assert!(Policy::new("s", &dirty, 60_000)
+            .youtube_blocked_channels
+            .is_empty());
+        // YouTube rules are carried even without website blocking (fix 2026-11-03:
+        // a channel-only block must reach the extension).
+        let mut none = c.clone();
+        none.website_blocking = WebsiteBlocking::None;
+        let p = Policy::new("s", &none, 60_000);
+        assert_eq!(p.youtube_blocked_channels, vec!["@beta"]);
+        assert!(p.youtube_study_mode && p.youtube_allow_watch_later);
+        // Offline with no YouTube rules: still offline, no channels.
+        let mut off_no_yt = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            general_internet: false,
+            ..Default::default()
+        };
+        let p = Policy::new("s", &off_no_yt, 60_000);
+        assert_eq!(p.mode, "offline");
+        assert!(p.youtube_blocked_channels.is_empty());
+        assert!(!p.youtube_study_mode);
+        // Offline WITH YouTube rules: not offline mode, channels carried.
+        let mut off = c;
+        off.general_internet = false;
+        let p = Policy::new("s", &off, 60_000);
+        assert_ne!(p.mode, "offline");
+        assert_eq!(p.youtube_blocked_channels, vec!["@beta"]);
+        assert!(p.youtube_study_mode);
     }
     #[test]
     fn loopback_auth_activation_acknowledgement_and_cleanup() {

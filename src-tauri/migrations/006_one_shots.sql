@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS one_shots (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+PRAGMA user_version=6;

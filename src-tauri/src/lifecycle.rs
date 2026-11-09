@@ -52,6 +52,12 @@ pub fn initialize(database: &Path) -> Result<bool, String> {
 pub fn ending() -> bool {
     ENDING.load(Ordering::Acquire)
 }
+// Called from the macOS quit guard (desktop_settings.rs) and the
+// Windows settings path (platform/settings_windows.rs). Linux has
+// no call site, so this is dead code there only — never delete it
+// for a Linux-only warning, or the macOS/Windows builds lose their
+// orderly-shutdown marker.
+#[allow(dead_code)]
 pub extern "C" fn system_shutdown() {
     ENDING.store(true, Ordering::Release);
     // Never acquire the engine lock on the OS event thread: sampling may be

@@ -8,7 +8,7 @@ import {
   Toggle,
 } from '../components/SettingsControls';
 import { useAppStore } from '../state/store';
-import { desktop } from '../services/api';
+import { api, desktop } from '../services/api';
 import {
   preferenceDefaults,
   settingsAction,
@@ -43,7 +43,11 @@ export function Settings() {
   const [working, setWorking] = useState(false);
   const [info, setInfo] = useState<SettingsInfo>({});
   const [confirm, setConfirm] = useState<
-    'restore' | 'delete_history' | 'reset_preferences' | null
+    | 'restore'
+    | 'delete_history'
+    | 'reset_preferences'
+    | 'delete_statistics'
+    | null
   >(null);
   const [typed, setTyped] = useState('');
   const [preset, setPreset] = useState(false);
@@ -359,6 +363,37 @@ export function Settings() {
                   </div>
                 </SettingRow>
               )}
+              <SettingRow
+                title="Block warnings"
+                hint="Warn before a scheduled or one-shot block starts. Minutes, separated by commas. Leave blank for no warnings."
+              >
+                <input
+                  aria-label="Block warning minutes"
+                  className="time-input"
+                  type="text"
+                  inputMode="text"
+                  value={draft.warning_minutes ?? '5'}
+                  disabled={disabled || !notificationsOn}
+                  onChange={(e) => change('warning_minutes', e.target.value)}
+                />
+              </SettingRow>
+              <SettingRow
+                title="Grace period"
+                hint="Seconds after a scheduled or one-shot block starts before blocking begins. 0 turns grace off. Manual sessions start at once."
+              >
+                <label className="number-control">
+                  <input
+                    aria-label="Grace period seconds"
+                    type="number"
+                    min={0}
+                    max={300}
+                    value={draft.grace_seconds ?? 60}
+                    disabled={disabled}
+                    onChange={(e) => change('grace_seconds', Number(e.target.value))}
+                  />{' '}
+                  sec
+                </label>
+              </SettingRow>
               {switchRow(
                 'Focus reminder',
                 'reminder',
@@ -431,6 +466,50 @@ export function Settings() {
                   }
                 >
                   Export CSV
+                </button>
+              </SettingRow>
+              <SettingRow
+                title="Export statistics"
+                hint="Sessions, block attempts and allowance use as a JSON file."
+              >
+                <button
+                  className="secondary"
+                  disabled={disabled}
+                  onClick={async () => {
+                    setWorking(true);
+                    setNotice('');
+                    try {
+                      const json = await api.exportStatistics();
+                      const blob = new Blob([json], {
+                        type: 'application/json',
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `preelock-statistics-${new Date().toISOString().slice(0, 10)}.json`;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                      setNotice('Statistics exported.');
+                    } catch (e) {
+                      setNotice(String(e));
+                    } finally {
+                      setWorking(false);
+                    }
+                  }}
+                >
+                  Export JSON
+                </button>
+              </SettingRow>
+              <SettingRow
+                title="Delete block-attempt history"
+                hint="Removes block-attempt records only. Sessions, schedules, settings and locks stay."
+              >
+                <button
+                  className="danger secondary"
+                  disabled={disabled}
+                  onClick={() => setConfirm('delete_statistics')}
+                >
+                  Delete attempts
                 </button>
               </SettingRow>
               <SettingRow
@@ -644,7 +723,9 @@ export function Settings() {
               ? 'Restore backup?'
               : confirm === 'delete_history'
                 ? 'Delete session history?'
-                : 'Reset preferences?'
+                : confirm === 'delete_statistics'
+                  ? 'Delete block-attempt history?'
+                  : 'Reset preferences?'
           }
           onClose={() => setConfirm(null)}
         >
@@ -654,9 +735,12 @@ export function Settings() {
                 ? 'Replaces your history, tasks and preferences. A recovery backup is saved on this device first.'
                 : confirm === 'delete_history'
                   ? 'This permanently deletes session history and analytics. Export a backup first if you need a copy.'
-                  : 'Restores default preferences. Your history, tasks and saved setups stay.'}
+                  : confirm === 'delete_statistics'
+                    ? 'This permanently deletes block-attempt records only. Sessions, schedules, settings and locks stay.'
+                    : 'Restores default preferences. Your history, tasks and saved setups stay.'}
             </p>
-            {confirm !== 'reset_preferences' && (
+            {confirm !== 'reset_preferences' &&
+              confirm !== 'delete_statistics' && (
               <label>
                 Type {confirm === 'restore' ? 'RESTORE' : 'DELETE HISTORY'}
                 <input
@@ -667,14 +751,34 @@ export function Settings() {
               </label>
             )}
             <button
-              className={confirm === 'delete_history' ? 'danger' : ''}
+              className={
+                confirm === 'delete_history' || confirm === 'delete_statistics'
+                  ? 'danger'
+                  : ''
+              }
               disabled={
                 disabled ||
                 (confirm !== 'reset_preferences' &&
+                  confirm !== 'delete_statistics' &&
                   typed !==
                     (confirm === 'restore' ? 'RESTORE' : 'DELETE HISTORY'))
               }
               onClick={async () => {
+                if (confirm === 'delete_statistics') {
+                  setWorking(true);
+                  setNotice('');
+                  try {
+                    await api.deleteStatistics();
+                    await refresh();
+                    setNotice('Block-attempt history deleted.');
+                    setConfirm(null);
+                  } catch (e) {
+                    setNotice(String(e));
+                  } finally {
+                    setWorking(false);
+                  }
+                  return;
+                }
                 const ok = await run(
                   confirm === 'reset_preferences'
                     ? { type: confirm }
@@ -699,7 +803,9 @@ export function Settings() {
                 ? 'Choose backup'
                 : confirm === 'delete_history'
                   ? 'Delete history'
-                  : 'Reset preferences'}
+                  : confirm === 'delete_statistics'
+                    ? 'Delete attempts'
+                    : 'Reset preferences'}
             </button>
           </div>
         </Modal>

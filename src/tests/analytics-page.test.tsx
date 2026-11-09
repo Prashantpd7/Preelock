@@ -92,6 +92,13 @@ describe('Analytics page', () => {
     expect(cardValue('Focus time')).toBe('40m');
   });
 
+  it('shows the block-attempts section empty state', () => {
+    render(<Analytics />);
+    expect(screen.getByText('Block attempts')).toBeInTheDocument();
+    expect(screen.getByText(/No attempts yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Website blocks:/)).toBeInTheDocument();
+  });
+
   it('shows honest empty states with no sessions', () => {
     render(<Analytics />);
     expect(screen.getByText(/No sessions yet/)).toBeInTheDocument();

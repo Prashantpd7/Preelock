@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
-import { defaultFocus } from '../types';
+import { defaultFocus, type Session } from '../types';
 vi.mock('../services/settings', () => ({
   settingsAction: vi.fn().mockResolvedValue({}),
   preferenceDefaults: {
@@ -26,6 +26,7 @@ vi.mock('../services/api', () => ({
     execute: vi.fn(),
     focusSetup: vi.fn(),
     capabilities: vi.fn(),
+    blockAttempts: vi.fn().mockResolvedValue([]),
   },
 }));
 beforeEach(() => {
@@ -66,8 +67,8 @@ it('navigates all six routes and submits a task to the native boundary', async (
   for (const label of [
     'Focus Sessions',
     'Tasks',
-    'Activity',
     'Analytics',
+    'Screen Time',
     'Settings',
   ]) {
     await user.click(screen.getByRole('link', { name: label }));
@@ -112,8 +113,33 @@ it('creates a flexible session with app checks', async () => {
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('checkbox', { name: 'VS Code' }));
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
+  const createdSession: Session = {
+    id: 'new1',
+    title: 'Write outline',
+    duration_minutes: 25,
+    remaining_ms: 0,
+    focused_ms: 0,
+    allow_pause: true,
+    status: 'ready',
+    started_at: null,
+    ended_at: null,
+    deadline_ms: null,
+    focus: defaultFocus,
+  };
+  vi.mocked(api.execute).mockImplementation(async (action) =>
+    action.type === 'create_session'
+      ? { ...emptySnapshot, sessions: [createdSession] }
+      : emptySnapshot,
+  );
   await user.click(screen.getByRole('button', { name: 'Create session' }));
+  // Confirmation popup shows the summary before anything is created.
+  expect(
+    await screen.findByRole('button', { name: 'Start session' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Write outline')).toBeInTheDocument();
+  expect(screen.getByText('25 min · Standard mode')).toBeInTheDocument();
+  expect(api.execute).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Start session' }));
   expect(api.execute).toHaveBeenCalledWith({
     type: 'create_session',
     title: 'Write outline',
@@ -124,6 +150,14 @@ it('creates a flexible session with app checks', async () => {
       website_blocking: 'none',
       apps: [],
       domains: [],
+      exceptions: [],
+      blocked_folders: [],
+      blocked_titles: [],
+      block_adult_content: false,
+      youtube_blocked_channels: [],
+      youtube_allowed_channels: [],
+      youtube_study_mode: false,
+      youtube_allow_watch_later: false,
       general_internet: true,
       browser_app: '',
       activity_consent: true,
@@ -133,8 +167,30 @@ it('creates a flexible session with app checks', async () => {
         verification: 'activity_only',
         work_apps: ['com.microsoft.VSCode'],
       },
+      // Step 7: the wizard submits the Pomodoro config (disabled by
+      // default) as part of the focus snapshot.
+      pomodoro: {
+        ...defaultFocus.pomodoro,
+      },
+      // Step 9: same for the reward config (disabled by default).
+      reward: {
+        ...defaultFocus.reward,
+      },
+      // Step 12: same for the frozen config (disabled by default).
+      frozen: {
+        enabled: false,
+        allowed_apps: [],
+        allowed_websites: [],
+      },
     },
   });
+  // "Start session" starts the freshly created session immediately.
+  await waitFor(() =>
+    expect(api.execute).toHaveBeenCalledWith({
+      type: 'start_session',
+      id: 'new1',
+    }),
+  );
 });
 it('reports persistence errors without inventing success', async () => {
   vi.mocked(api.execute).mockRejectedValue(new Error('Disk is full.'));
@@ -160,9 +216,6 @@ it('shows Comet and stops unpaired website setup before session creation', async
   await user.type(screen.getByLabelText('Task name'), 'Read docs');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('checkbox', { name: 'Comet' }));
-  expect(screen.getByLabelText('Which browser?')).toHaveValue(
-    'ai.perplexity.comet',
-  );
   await user.click(
     screen.getByRole('checkbox', { name: 'Block all websites except these' }),
   );

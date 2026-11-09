@@ -15,18 +15,34 @@ export function setupProblem(
     (focus.mode === 'strict' && !!focus.browser_app) ||
     !focus.general_internet ||
     focus.domains.length > 0 ||
-    p.work_domains.length > 0;
+    p.work_domains.length > 0 ||
+    // YouTube channel rules need the extension too, so a session
+    // with only channel rules still requires a browser connection.
+    // The Watch-Later toggle alone is not a rule (see
+    // FocusConfig::network_required in focus.rs).
+    (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
+    (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
+    !!focus.youtube_study_mode;
+  // Step 12: a frozen session with a picked browser needs that
+  // browser connected (the backend preflight requires it), but a
+  // frozen session with no picked browser does not need one
+  // chosen — its policy applies to any browser, and the sampler
+  // blocks browser apps not in the frozen allowlist anyway.
+  const frozenNetwork = !!focus.frozen?.enabled && !!focus.browser_app;
+  const needsConnection = network || frozenNetwork;
   if (!setup?.native_available)
     return 'App checking is unavailable on this device.';
-  if (network && !focus.browser_app) return 'Choose your browser below.';
+  if (network && !focus.browser_app)
+    return 'No browser detected — open Comet, Chrome, Edge, Brave or Vivaldi, then refresh apps.';
   // A connection from a different browser than the one picked — or one
   // that cannot say which browser it is in — does not count.
   const browserMismatch =
     !setup?.browser.client_browser ||
     !sameBrowser(focus.browser_app, setup.browser.client_browser);
-  if (network && (!setup?.browser.connected || browserMismatch))
+  if (needsConnection && (!setup?.browser.connected || browserMismatch))
     return 'Connect the browser extension below, then check again.';
-  if (network && setup?.browser.error) return 'Reconnect the extension below.';
+  if (needsConnection && setup?.browser.error)
+    return 'Reconnect the extension below.';
   if (focus.website_blocking === 'allowlist' && focus.domains.length === 0)
     return 'List at least one website to keep open, or pick a different blocking option.';
   if (

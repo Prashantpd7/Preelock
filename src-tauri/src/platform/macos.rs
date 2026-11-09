@@ -10,6 +10,7 @@ unsafe extern "C" {
     fn preelock_camera_start() -> i32;
     fn preelock_camera_stop();
     fn preelock_camera_status() -> *mut c_char;
+    fn preelock_app_icon(identity: *const c_char) -> *mut c_char;
 }
 fn text(ptr: *mut c_char) -> Result<String, String> {
     if ptr.is_null() {
@@ -51,6 +52,16 @@ pub fn camera_stop() {
 }
 pub fn camera_status() -> String {
     text(unsafe { preelock_camera_status() }).unwrap_or_else(|_| "camera_error".into())
+}
+/// Base64 PNG (96px) of the app's real icon, or None when the app has no
+/// resolvable icon. Used by the Screen Time list; the frontend falls back
+/// to a letter tile on None.
+pub fn app_icon(identity: &str) -> Option<String> {
+    if identity.is_empty() {
+        return None;
+    }
+    let identity = std::ffi::CString::new(identity).ok()?;
+    text(unsafe { preelock_app_icon(identity.as_ptr()) }).ok()
 }
 /// Browsers installed on this Mac (whether running or not), so the user can
 /// pick their browser without having to open it first.

@@ -23,14 +23,45 @@ static NSString *displayNameForApp(NSRunningApplication *app) {
     }
     return app.localizedName ?: app.bundleIdentifier;
 }
+static NSString *executablePathForApp(NSRunningApplication *app) {
+    return app.executableURL.path ?: @"";
+}
+// Step 4: title of the frontmost app's window, via
+// CGWindowListCopyWindowInfo. The on-screen list is front-to-back, so
+// the first non-empty title owned by this pid is the front window's.
+// Returns @"" when the app has no titled window (e.g. a menu-bar-only
+// moment). The string is copied before releasing the window list.
+static NSString *frontmostWindowTitle(pid_t pid) {
+    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+    if (!list) return @"";
+    NSString *title = @"";
+    CFIndex count = CFArrayGetCount(list);
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef win = (CFDictionaryRef)CFArrayGetValueAtIndex(list, i);
+        CFNumberRef owner = (CFNumberRef)CFDictionaryGetValue(win, kCGWindowOwnerPID);
+        int64_t ownerPid = 0;
+        if (!owner || !CFNumberGetValue(owner, kCFNumberSInt64Type, &ownerPid) || ownerPid != pid) continue;
+        CFStringRef name = (CFStringRef)CFDictionaryGetValue(win, kCGWindowName);
+        if (name && CFStringGetLength(name) > 0) { title = [(__bridge NSString *)name copy]; break; }
+    }
+    CFRelease(list);
+    return title;
+}
 char *preelock_apps(void) {
     @autoreleasepool {
         __block char *result;
         onMain(^{
             NSMutableArray *apps = [NSMutableArray array];
             for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
-                if (app.activationPolicy == NSApplicationActivationPolicyRegular && app.bundleIdentifier)
-                    [apps addObject:@{@"id":app.bundleIdentifier, @"name":displayNameForApp(app)}];
+                if (app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+                // Step 4: processes without a bundle id (raw executables,
+                // dev binaries) are identified by their executable path,
+                // so they can be picked and matched by path/folder rules.
+                NSString *exe = executablePathForApp(app);
+                NSString *ident = app.bundleIdentifier.length ? app.bundleIdentifier : exe;
+                if (ident.length == 0) continue;
+                NSString *name = displayNameForApp(app) ?: [exe lastPathComponent];
+                [apps addObject:@{@"id":ident, @"name":name ?: @""}];
             }
             result = json(apps);
         });
@@ -42,7 +73,16 @@ char *preelock_sample(void) {
         __block char *result;
         onMain(^{
             NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
-            result = json(@{@"id": app.bundleIdentifier ?: @"", @"name":displayNameForApp(app) ?: @"", @"pid":@(app.processIdentifier), @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000))});
+            NSString *exe = executablePathForApp(app);
+            NSString *bundlePath = app.bundleURL.path ?: @"";
+            // Step 4: path is the bundle path for .app processes, the
+            // executable path otherwise; id falls back to the
+            // executable path for bundle-less processes (step 4.4), so
+            // path/folder rules and explicit path entries can match
+            // them. Title is the frontmost window's title (step 4.2).
+            NSString *ident = app.bundleIdentifier.length ? app.bundleIdentifier : exe;
+            NSString *path = bundlePath.length ? bundlePath : exe;
+            result = json(@{@"id": ident ?: @"", @"name":displayNameForApp(app) ?: @"", @"pid":@(app.processIdentifier), @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000)), @"path":path ?: @"", @"title":frontmostWindowTitle(app.processIdentifier)});
         });
         return result;
     }
@@ -249,4 +289,54 @@ int preelock_install_quit_guard(void (*callback)(void), void (*shutdown)(void)) 
         if (installed) { vyQuitRequest = callback; vySystemShutdown = shutdown; }
     });
     return installed;
+}
+
+// Screen Time row icons: the app's real icon as a base64 PNG string
+// (96px, so a 30-row list stays small), or NULL when no icon resolves.
+// `identity` is a bundle id (e.g. com.brave.Browser) or a file path
+// (bare executables such as the dev binary). A path inside an .app
+// bundle resolves to the bundle itself so the bundle icon is returned.
+// AppKit work runs on the main thread, like the other preelock_* calls.
+char *preelock_app_icon(const char *identity) {
+    @autoreleasepool {
+        if (!identity || !identity[0]) return NULL;
+        __block char *result = NULL;
+        onMain(^{
+            NSString *ident = [NSString stringWithUTF8String:identity];
+            NSString *path = nil;
+            if ([ident containsString:@"/"]) {
+                NSRange appRange = [ident rangeOfString:@".app/" options:NSBackwardsSearch];
+                if (appRange.location != NSNotFound) {
+                    path = [ident substringToIndex:appRange.location + 4];
+                } else {
+                    path = ident;
+                }
+            } else {
+                path = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:ident].path;
+            }
+            if (!path.length) return;
+            if (![NSFileManager.defaultManager fileExistsAtPath:path]) return;
+            NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:path];
+            if (!icon) return;
+            // Shrink to 96px (retina-sharp at the 40pt row tile) so the
+            // PNG stays small instead of shipping the full-size icon.
+            NSImage *small = [[NSImage alloc] initWithSize:NSMakeSize(96, 96)];
+            [small lockFocus];
+            [icon drawInRect:NSMakeRect(0, 0, 96, 96)
+                    fromRect:NSZeroRect
+                   operation:NSCompositingOperationSourceOver
+                    fraction:1.0
+              respectFlipped:YES
+                       hints:nil];
+            [small unlockFocus];
+            NSData *tiff = small.TIFFRepresentation;
+            if (!tiff) return;
+            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiff];
+            if (!rep) return;
+            NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            if (!png.length) return;
+            result = strdup([png base64EncodedStringWithOptions:0].UTF8String);
+        });
+        return result;
+    }
 }
