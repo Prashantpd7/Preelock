@@ -289,38 +289,40 @@ pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
     }
     #[cfg(windows)]
     {
-        #[repr(C)]
-        struct Tm {
-            sec: i32,
-            min: i32,
-            hour: i32,
-            mday: i32,
-            mon: i32,
-            year: i32,
-            wday: i32,
-            yday: i32,
-            isdst: i32,
-        }
-        extern "C" {
-            fn _localtime64_s(tm: *mut Tm, timep: *const i64) -> i32;
-        }
         let secs = now_ms.div_euclid(1000);
-        let mut tm = Tm {
-            sec: 0,
-            min: 0,
-            hour: 0,
-            mday: 0,
-            mon: 0,
-            year: 0,
-            wday: 0,
-            yday: 0,
-            isdst: 0,
-        };
-        let ok = unsafe { _localtime64_s(&mut tm, &secs) == 0 };
-        if ok {
-            let weekday = tm.wday.rem_euclid(7) as u32;
-            let minutes = (tm.hour.max(0) as u32) * 60 + (tm.min.max(0) as u32);
-            return (weekday, minutes);
+        const UNIX_TO_WINDOWS_EPOCH_SECS: i64 = 11_644_473_600;
+        let intervals = secs
+            .checked_add(UNIX_TO_WINDOWS_EPOCH_SECS)
+            .and_then(|value| value.checked_mul(10_000_000));
+        if let Some(intervals) = intervals.filter(|value| *value >= 0) {
+            let file_time = windows_sys::Win32::Foundation::FILETIME {
+                dwLowDateTime: intervals as u64 as u32,
+                dwHighDateTime: (intervals as u64 >> 32) as u32,
+            };
+            let mut utc = windows_sys::Win32::Foundation::SYSTEMTIME {
+                wYear: 0,
+                wMonth: 0,
+                wDayOfWeek: 0,
+                wDay: 0,
+                wHour: 0,
+                wMinute: 0,
+                wSecond: 0,
+                wMilliseconds: 0,
+            };
+            let mut local = utc;
+            let ok = unsafe {
+                windows_sys::Win32::System::Time::FileTimeToSystemTime(&file_time, &mut utc) != 0
+                    && windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime(
+                        std::ptr::null(),
+                        &utc,
+                        &mut local,
+                    ) != 0
+            };
+            if ok {
+                let weekday = local.wDayOfWeek as u32;
+                let minutes = local.wHour as u32 * 60 + local.wMinute as u32;
+                return (weekday, minutes);
+            }
         }
     }
     // Fallback (also the path when the OS call fails): UTC.
