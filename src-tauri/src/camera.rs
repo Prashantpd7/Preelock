@@ -41,6 +41,10 @@ impl Capture {
     }
     fn poll_with(&mut self, now: u64, device: &mut impl Device) -> String {
         if !device.allowed() {
+            if self.on {
+                self.stop_with(device);
+                return "permission_required".into();
+            }
             if crate::platform::camera_permission() == "not_requested" && device.start() {
                 self.on = true;
                 self.retry_at = now.saturating_add(5000);
@@ -48,10 +52,6 @@ impl Capture {
                 self.stop_with(device);
                 return "permission_required".into();
             }
-        }
-        if !device.allowed() && !self.on {
-            self.stop_with(device);
-            return "permission_required".into();
         }
         if !self.on && now >= self.retry_at {
             self.on = device.start();

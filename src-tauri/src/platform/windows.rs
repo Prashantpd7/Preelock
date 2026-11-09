@@ -134,10 +134,10 @@ unsafe extern "system" fn collect_hosted(hwnd: HWND, param: LPARAM) -> i32 {
         return 1;
     }
     let mut len = 0u32;
-    let err = unsafe { GetPackageFamilyName(handle, &mut len, std::ptr::null_mut()) };
+    let err = unsafe { GetPackageFamilyName(handle as isize, &mut len, std::ptr::null_mut()) };
     let pfn = if err == 122 && len > 1 {
         let mut buffer = vec![0u16; len as usize];
-        let ok = unsafe { GetPackageFamilyName(handle, &mut len, buffer.as_mut_ptr()) };
+        let ok = unsafe { GetPackageFamilyName(handle as isize, &mut len, buffer.as_mut_ptr()) };
         unsafe {
             CloseHandle(handle);
         }
