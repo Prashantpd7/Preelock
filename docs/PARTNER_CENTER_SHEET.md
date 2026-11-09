@@ -9,9 +9,9 @@ provide.
 
 | Field           | Value                                                                                                               |
 | --------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Package file    | `Preelock_0.5.2_x64.msix`                                                                                           |
-| SHA-256         | See `SHA256SUMS.txt` attached to the [v0.5.2 release](https://github.com/Prashantpd7/Preelock/releases/tag/v0.5.2). |
-| Package version | `1.5.2.0` (the fourth segment is reserved by the Store and left at 0)                                               |
+| Package file    | `Preelock-Windows-MSIX.msix`                                                                                        |
+| SHA-256         | See `SHA256SUMS.txt` attached to the [v0.5.3 release](https://github.com/Prashantpd7/Preelock/releases/tag/v0.5.3). |
+| Package version | `1.5.3.0` (the fourth segment is reserved by the Store and left at 0)                                               |
 | Architecture    | x64 only                                                                                                            |
 | Signature       | Unsigned. The Store re-signs accepted packages; do not upload a self-signed build.                                  |
 | Identity        | `Prashantpd7.VYSTRIQ` / `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`                                                   |

@@ -25,7 +25,7 @@ impossible to stop.
 
 ## Current release and downloads
 
-Product and extension version: `0.5.2`. Public name: **Preelock**; extension:
+Product and extension version: `0.5.3`. Public name: **Preelock**; extension:
 **Preelock Focus**. Repository: `Prashantpd7/Preelock`. Release builds are gated by
 `.github/workflows/release.yml`; do not claim artifacts exist before the run succeeds.
 See [REBRANDING.md](docs/REBRANDING.md) for stable identities, installer migration

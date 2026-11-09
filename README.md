@@ -10,13 +10,13 @@ starts with empty data.
 
 ## Download Preelock — Free for Windows and macOS
 
-Download the [Preelock v0.5.2 release](https://github.com/Prashantpd7/Preelock/releases/tag/v0.5.2):
+Download the [Preelock v0.5.3 release](https://github.com/Prashantpd7/Preelock/releases/tag/v0.5.3):
 
-- [Apple Silicon DMG](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.2/Preelock_0.5.2_aarch64.dmg)
-- [Intel DMG](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.2/Preelock_0.5.2_x64.dmg)
-- [Windows installer](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.2/Preelock_0.5.2_x64-setup.exe)
-- [Microsoft Store MSIX](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.2/Preelock_0.5.2_x64.msix)
-- [SHA-256 checksums](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.2/SHA256SUMS.txt)
+- [Apple Silicon DMG](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.3/Preelock-macOS-Apple-Silicon.dmg)
+- [Intel DMG](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.3/Preelock-macOS-Intel.dmg)
+- [Windows installer](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.3/Preelock-Windows-Setup.exe)
+- [Microsoft Store MSIX](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.3/Preelock-Windows-MSIX.msix)
+- [SHA-256 checksums](https://github.com/Prashantpd7/Preelock/releases/download/v0.5.3/SHA256SUMS.txt)
 
 [Earlier releases](https://github.com/Prashantpd7/Preelock/releases) retain their
 historical product names.

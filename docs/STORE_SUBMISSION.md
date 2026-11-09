@@ -1,6 +1,6 @@
 # Microsoft Store (MSIX) submission preparation
 
-Updated 23 October 2026 for Preelock 0.5.2 / MSIX 1.5.2.0. The existing
+Updated 23 October 2026 for Preelock 0.5.3 / MSIX 1.5.3.0. The existing
 Store identity, publisher, Application Id and startup TaskId are retained.
 The owner has reserved the new public name. No Partner Center submission is
 performed by these scripts or workflows.
@@ -194,9 +194,9 @@ build:
 powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
   -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=Preelock Local Test"
 powershell -File scripts/sign-msix-dev.ps1 `
-  -Package src-tauri/target/msix/Preelock_0.5.2_x64.msix `
+  -Package src-tauri/target/msix/Preelock_0.5.3_x64-validation.msix `
   -Subject "CN=Preelock Local Test" -TrustCertificate
-Add-AppxPackage -Path src-tauri/target/msix/Preelock_0.5.2_x64.msix
+Add-AppxPackage -Path src-tauri/target/msix/Preelock_0.5.3_x64-validation.msix
 Get-AppxPackage VYSTRIQ.LocalTest | Select-Object PackageFullName, InstallLocation
 ```
 
