@@ -24,7 +24,7 @@ def launch():
             assert process.poll() is None, "Installed app exited during startup"
             if database.exists():
                 with sqlite3.connect(database) as conn:
-                    if conn.execute("PRAGMA user_version").fetchone()[0] == 4:
+                    if conn.execute("PRAGMA user_version").fetchone()[0] == 10:
                         break
             time.sleep(1)
         else:

@@ -10,19 +10,19 @@ if ($signature.Status -notin @("NotSigned", "Valid")) {
 }
 $installDir = Join-Path $env:RUNNER_TEMP "Preelock-installed"
 if (Test-Path $installDir) { throw "Test destination already exists" }
-$legacyDatabase = Join-Path $env:APPDATA "com.vystriq.desktop/vystriq.sqlite"
+$legacyDatabase = Join-Path $env:APPDATA "com.preelock.desktop/preelock.sqlite"
 $database = Join-Path $env:APPDATA "com.preelock.desktop/preelock.sqlite"
 if ((Test-Path $legacyDatabase) -or (Test-Path $database)) {
     throw "Refusing to use existing app data"
 }
 # Exercise a real previous installer, then upgrade in place with seeded state.
 $legacyDir = Join-Path $env:RUNNER_TEMP "legacy-installer"
-gh release download v0.4.2 --repo Prashantpd7/Preelock --pattern '*Windows-x64.exe' --dir $legacyDir
+gh release download v0.5.2 --repo Prashantpd7/Preelock --pattern 'Preelock_0.5.2_x64-setup.exe' --dir $legacyDir
 if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
 $legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
 $legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "Legacy installation failed" }
-$legacyApp = Start-Process (Join-Path $installDir "vystriq.exe") `
+$legacyApp = Start-Process (Join-Path $installDir "preelock.exe") `
     -WorkingDirectory $installDir -PassThru
 try {
     Start-Sleep -Seconds 15
@@ -38,11 +38,11 @@ $token = Join-Path (Split-Path $legacyDatabase -Parent) "browser-token"
 $tokenHash = (Get-FileHash $token).Hash
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 New-Item $runKey -Force | Out-Null
-Set-ItemProperty $runKey -Name VYSTRIQ -Value ('"' + (Join-Path $installDir 'vystriq.exe') + '"')
+Set-ItemProperty $runKey -Name Preelock -Value ('"' + (Join-Path $installDir 'preelock.exe') + '"')
 $approvalKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 New-Item $approvalKey -Force | Out-Null
 $disabledState = [byte[]](3,0,0,0,0,0,0,0,0,0,0,0)
-New-ItemProperty $approvalKey -Name VYSTRIQ -PropertyType Binary -Value $disabledState -Force | Out-Null
+New-ItemProperty $approvalKey -Name Preelock -PropertyType Binary -Value $disabledState -Force | Out-Null
 $setup = Start-Process $installer.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$setup.WaitForExit(120000)) { throw "Installer timed out" }
 if ($setup.ExitCode -ne 0) { throw "NSIS failed: $($setup.ExitCode)" }
@@ -74,7 +74,7 @@ try {
     }
 }
 $token = Join-Path (Split-Path $database -Parent) "browser-token"
-python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==4; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
+python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==10; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
 if ($LASTEXITCODE -ne 0) { throw "Database validation failed" }
 python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.loads(c.execute('select payload from preferences where id=1').fetchone()[0])['theme']=='light'" $database
 if ($LASTEXITCODE -ne 0) { throw "Upgrade lost the saved preference" }
@@ -86,13 +86,11 @@ if ($startupValue -notlike '*preelock.exe*') {
 $approval = Get-ItemProperty $approvalKey
 $approvalState = if ($null -ne $approval.Preelock) {
     $approval.Preelock
-} else {
-    $approval.VYSTRIQ
 }
 if ($null -eq $approvalState -or $approvalState[0] -ne 3) {
     throw "Upgrade lost the disabled startup state"
 }
-Write-Output "Legacy 0.4.2 upgrade preserved the database, preference, pairing token and disabled startup state."
+Write-Output "Legacy v0.5.2 upgrade preserved the database, preference, pairing token and disabled startup state."
 $uninstallers = @(Get-ChildItem $installDir -Filter "*uninstall*.exe")
 if ($uninstallers.Count -ne 1) { throw "Expected one uninstaller" }
 $uninstall = Start-Process $uninstallers[0].FullName -ArgumentList "/S" -PassThru
