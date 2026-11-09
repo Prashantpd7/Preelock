@@ -124,7 +124,8 @@ try {
         Check ($mainTask.Count -eq 1) "Main startupTask is declared"
         Check ($backgroundTask.Count -eq 1) "Background startupTask is declared"
         Check ($mainTask[0].DisplayName -ceq "Preelock") "Startup display name is Preelock"
-        Check ($backgroundTask[0].Executable -eq "PreelockBackground.exe") "Background task uses the independent executable"
+        $backgroundExtension = $backgroundTask[0].ParentNode
+        Check ($backgroundExtension.Executable -eq "PreelockBackground.exe") "Background task uses the independent executable"
         Check ($mainTask[0].Enabled -eq "false" -and $backgroundTask[0].Enabled -eq "false") "startupTasks are disabled by default (opt-in only)"
     }
 
