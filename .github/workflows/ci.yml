@@ -47,7 +47,16 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run rust:check
-      - run: npm run rust:test
+      - if: runner.os == 'Windows'
+        name: Run Windows Rust tests with test manifest
+        shell: pwsh
+        env:
+          RUSTFLAGS: >-
+            -C link-arg=/MANIFEST:EMBED
+            -C link-arg=/MANIFESTINPUT:${{ github.workspace }}\src-tauri\windows-test-manifest.xml
+        run: npm run rust:test
+      - if: runner.os != 'Windows'
+        run: npm run rust:test
       - if: runner.os == 'macOS'
         run: npm run native:probe
       - run: npm run desktop:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
