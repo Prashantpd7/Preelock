@@ -47,20 +47,6 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run rust:check
-      - if: runner.os == 'Windows'
-        name: Remove stale Windows API-set DLL paths
-        shell: pwsh
-        run: |
-          $safePath = @(
-            $env:Path -split ';' |
-              Where-Object {
-                $_ -and
-                -not (
-                  Get-ChildItem -LiteralPath $_ -Filter 'api-ms-win-*.dll' -File -ErrorAction SilentlyContinue
-                )
-              }
-          )
-          "PATH=$($safePath -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm run rust:test
       - if: runner.os == 'macOS'
         run: npm run native:probe
