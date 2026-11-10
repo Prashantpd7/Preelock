@@ -665,6 +665,19 @@ impl Bridge {
         c.applied_id = id.into();
         c.error.clear();
     }
+    /// Test helper: set the activity report (domain + focus) a heartbeat
+    /// would have stored for this client.
+    #[cfg(test)]
+    pub fn set_activity(&self, client: &str, browser: &str, domain: &str, focused: bool) {
+        let mut s = self.state.lock().unwrap();
+        let c = s.clients.entry(client.into()).or_default();
+        c.browser = browser.into();
+        c.ext_v = EXTENSION_VERSION;
+        c.last_seen = clock::continuous_ms();
+        c.active_domain = domain.into();
+        c.browser_focused = focused;
+        c.error.clear();
+    }
     pub fn publish(&self, policy: Option<Policy>) {
         if let Ok(mut state) = self.state.lock() {
             state.policy = policy;
@@ -723,6 +736,83 @@ impl Bridge {
     pub fn status(&self) -> BrowserStatus {
         self.status_for("")
     }
+    /// Pick the best (freshest, current-version) client from the
+    /// candidates the caller already filtered.
+    fn best_client<'s>(
+        s: &'s State,
+        mut best: Option<&'s ClientState>,
+        matches: impl Fn(&ClientState) -> bool,
+    ) -> Option<&'s ClientState> {
+        for c in s.clients.values() {
+            if !matches(c) {
+                continue;
+            }
+            let stale = c.ext_v != EXTENSION_VERSION;
+            let better = match &best {
+                None => true,
+                Some(b) => {
+                    let b_stale = b.ext_v != EXTENSION_VERSION;
+                    (!stale && b_stale) || (stale == b_stale && c.last_seen > b.last_seen)
+                }
+            };
+            if better {
+                best = Some(c);
+            }
+        }
+        best
+    }
+    /// Build the public status for the chosen client. `installed` is the
+    /// bridge's installed-browser list used by `resolve_browser`;
+    /// `policy_none` is whether no session policy is currently published
+    /// (`cleanup_pending` needs it plus a non-empty applied id, exactly
+    /// as `status_for` reported it).
+    fn status_from_best(
+        best: Option<&ClientState>,
+        installed: &[String],
+        policy_none: bool,
+    ) -> BrowserStatus {
+        match best {
+            Some(c) => {
+                let connected =
+                    c.last_seen != 0 && clock::continuous_ms().saturating_sub(c.last_seen) < 45_000;
+                BrowserStatus {
+                    active_domain: c.active_domain.clone(),
+                    browser_focused: c.browser_focused,
+                    search_distracted: c.search_distracted,
+                    channel_blocked: c.channel_blocked,
+                    activity_fresh: c.last_seen != 0
+                        && clock::continuous_ms().saturating_sub(c.last_seen) < 6_000,
+                    available: true,
+                    connected,
+                    applied_id: c.applied_id.clone(),
+                    client_browser: resolve_browser(&c.browser, installed),
+                    extension_stale: connected && c.ext_v != EXTENSION_VERSION,
+                    error: c.error.clone(),
+                    blocks: c.blocks,
+                    cleanup_pending: policy_none && !c.applied_id.is_empty(),
+                    ext_v_debug: c.ext_v,
+                    raw_browser_debug: c.browser.clone(),
+                }
+            }
+            None => BrowserStatus {
+                active_domain: String::new(),
+                browser_focused: false,
+                search_distracted: false,
+                channel_blocked: false,
+                activity_fresh: false,
+                available: true,
+                connected: false,
+                applied_id: String::new(),
+                client_browser: String::new(),
+                extension_stale: false,
+                error: String::new(),
+                blocks: 0,
+                cleanup_pending: false,
+                ext_v_debug: 0,
+                raw_browser_debug: String::new(),
+            },
+        }
+    }
     /// Status of the connection in the given browser (platform browser
     /// id). An empty `browser_id` falls back to the most recently seen
     /// connection. When no paired extension reports that browser, the
@@ -730,67 +820,31 @@ impl Bridge {
     pub fn status_for(&self, browser_id: &str) -> BrowserStatus {
         match self.state.lock() {
             Ok(s) => {
-                let mut best: Option<&ClientState> = None;
-                for c in s.clients.values() {
+                let best = Self::best_client(&s, None, |c| {
                     let resolved = resolve_browser(&c.browser, &self.installed);
-                    let matches = browser_id.is_empty() || same_browser(browser_id, &resolved);
-                    // Prefer a client running the current extension version: a
-                    // stale worker (one that didn't restart after an update)
-                    // must not shadow a healthy one that synced slightly
-                    // earlier.
-                    let stale = c.ext_v != EXTENSION_VERSION;
-                    let better = match &best {
-                        None => true,
-                        Some(b) => {
-                            let b_stale = b.ext_v != EXTENSION_VERSION;
-                            (!stale && b_stale) || (stale == b_stale && c.last_seen > b.last_seen)
-                        }
-                    };
-                    if matches && better {
-                        best = Some(c);
-                    }
-                }
-                match best {
-                    Some(c) => {
-                        let connected = c.last_seen != 0
-                            && clock::continuous_ms().saturating_sub(c.last_seen) < 45_000;
-                        BrowserStatus {
-                            active_domain: c.active_domain.clone(),
-                            browser_focused: c.browser_focused,
-                            search_distracted: c.search_distracted,
-                            channel_blocked: c.channel_blocked,
-                            activity_fresh: c.last_seen != 0
-                                && clock::continuous_ms().saturating_sub(c.last_seen) < 6_000,
-                            available: true,
-                            connected,
-                            applied_id: c.applied_id.clone(),
-                            client_browser: resolve_browser(&c.browser, &self.installed),
-                            extension_stale: connected && c.ext_v != EXTENSION_VERSION,
-                            error: c.error.clone(),
-                            blocks: c.blocks,
-                            cleanup_pending: s.policy.is_none() && !c.applied_id.is_empty(),
-                            ext_v_debug: c.ext_v,
-                            raw_browser_debug: c.browser.clone(),
-                        }
-                    }
-                    None => BrowserStatus {
-                        active_domain: String::new(),
-                        browser_focused: false,
-                        search_distracted: false,
-                        channel_blocked: false,
-                        activity_fresh: false,
-                        available: true,
-                        connected: false,
-                        applied_id: String::new(),
-                        client_browser: String::new(),
-                        extension_stale: false,
-                        error: String::new(),
-                        blocks: 0,
-                        cleanup_pending: false,
-                        ext_v_debug: 0,
-                        raw_browser_debug: String::new(),
-                    },
-                }
+                    browser_id.is_empty() || same_browser(browser_id, &resolved)
+                });
+                Self::status_from_best(best, &self.installed, s.policy.is_none())
+            }
+            Err(_) => unavailable("Browser bridge failed."),
+        }
+    }
+    /// Status of the connected browser whose platform id matches the
+    /// given foreground app sample id (macOS bundle id or Windows
+    /// executable path), if any. Returns a not-connected status when the
+    /// foreground app is not a paired browser, so another paired
+    /// browser's report can never be attributed to this app.
+    pub fn status_for_app(&self, app_id: &str) -> BrowserStatus {
+        if app_id.is_empty() {
+            return unavailable("");
+        }
+        match self.state.lock() {
+            Ok(s) => {
+                let best = Self::best_client(&s, None, |c| {
+                    let resolved = resolve_browser(&c.browser, &self.installed);
+                    same_browser(app_id, &resolved)
+                });
+                Self::status_from_best(best, &self.installed, s.policy.is_none())
             }
             Err(_) => unavailable("Browser bridge failed."),
         }
@@ -1153,5 +1207,35 @@ mod tests {
         assert!(!bridge.status_for("com.brave.browser").connected);
         assert!(bridge.status_for("ai.perplexity.comet").connected);
         assert_eq!(bridge.connected_browsers(), vec!["ai.perplexity.comet"]);
+    }
+    #[test]
+    fn status_for_app_scopes_the_report_to_the_foreground_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let chrome = "11111111-1111-1111-1111-111111111111";
+        let comet = "22222222-2222-2222-2222-222222222222";
+        // The most recently seen client (Comet) reports its own domain;
+        // the Chrome client reports instagram.com and is focused.
+        bridge.set_activity(chrome, "com.google.chrome", "instagram.com", true);
+        bridge.set_activity(comet, "ai.perplexity.comet", "comet.example.com", true);
+        // status_for_app scopes by the foreground app instead.
+        let s = bridge.status_for_app("com.google.Chrome");
+        assert_eq!(s.client_browser, "com.google.chrome");
+        assert_eq!(s.active_domain, "instagram.com");
+        assert!(s.browser_focused);
+        assert!(s.activity_fresh);
+        assert!(s.connected);
+        // A non-browser foreground app matches nothing.
+        let s = bridge.status_for_app("com.microsoft.VSCode");
+        assert!(!s.connected);
+        assert!(s.active_domain.is_empty());
+        assert!(s.client_browser.is_empty());
+        // Windows exe-path foreground app matches the same client.
+        let s = bridge.status_for_app(r"C:\Program Files\Google\Chrome\Application\chrome.exe");
+        assert_eq!(s.client_browser, "com.google.chrome");
+        assert_eq!(s.active_domain, "instagram.com");
+        // The foreground Comet app does not leak Chrome's domain.
+        let s = bridge.status_for_app("ai.perplexity.comet");
+        assert_eq!(s.active_domain, "comet.example.com");
     }
 }

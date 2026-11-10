@@ -1078,23 +1078,6 @@ select {
 .simple-session > label {
   margin: 18px 0;
 }
-.new-session-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  text-align: center;
-  padding: 56px 24px;
-  margin-bottom: 32px;
-}
-.new-session-card h2 {
-  margin: 0;
-  font-size: 20px;
-}
-.new-session-card .muted {
-  line-height: 1.7;
-  max-width: 440px;
-}
 /* Focus Sessions planning grid: the new-session card plus the three
    planning sections (Schedules, Start once at, Allowances) as a 2x2
    grid where the single new-session card used to be. 16px gaps match
@@ -1102,33 +1085,15 @@ select {
    it. Both rows are equal height (grid-auto-rows: 1fr) and every card
    is a flex column with its action button pinned to the bottom, so
    all four cards are the same size and every button is visible
-   without scrolling. The new-session card's padding and icon are
-   tightened to match the planning cards, and the empty-state boxes
-   are shorter. */
+   without scrolling. The new-session card uses the exact same
+   structure as the planning cards (heading, description,
+   empty-state box, pinned button), so it shares their rules. */
 .focus-planning-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: 1fr;
   gap: 16px;
   margin-bottom: 32px;
-}
-.focus-planning-grid .new-session-card {
-  margin-bottom: 0;
-  padding: 20px 24px;
-  gap: 12px;
-  justify-content: center;
-}
-.focus-planning-grid .focus-orbit {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto;
-}
-/* Left-align the button like the other three cards' buttons, and pin
-   it to the bottom so it sits at the same height as theirs. The icon,
-   title, and description stay centered — only the button moves. */
-.focus-planning-grid .new-session-card > button {
-  align-self: flex-start;
-  margin-top: auto;
 }
 .focus-planning-card {
   display: flex;

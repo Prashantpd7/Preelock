@@ -33,10 +33,18 @@ import {
 // in a 2x2 grid next to the new-session card, in the same order, with
 // the same forms, lists, and behavior. `only` renders a single section
 // as one grid card; with no `only`, all three render (as before).
+// `onNewSchedule` / `onNewOneShot` open the session wizard in
+// schedule / one-shot mode instead of the inline template form; the
+// inline form is still used for editing, and when no callback is
+// passed (standalone use) the New button opens it as before.
 export function PlanningSections({
   only,
+  onNewSchedule,
+  onNewOneShot,
 }: {
   only?: 'schedules' | 'oneshots' | 'allowances';
+  onNewSchedule?: () => void;
+  onNewOneShot?: () => void;
 } = {}) {
   const { data, execute, busy } = useAppStore();
   // Scheduled blocks (step 5): the list and form live on the
@@ -554,15 +562,18 @@ export function PlanningSections({
               <Empty>No schedules yet.</Empty>
             </div>
           )}
-          {!data.sessions.length ? (
-            <div className="panel">
-              <p className="small muted">Create a session template first.</p>
-            </div>
-          ) : !schedFormOpen ? (
+          {!schedFormOpen ? (
             <div className="row controls">
               <button
                 type="button"
                 onClick={() => {
+                  // New schedules always start from the session wizard
+                  // now — no saved session is needed first. The inline
+                  // form below is only for editing an existing one.
+                  if (onNewSchedule) {
+                    onNewSchedule();
+                    return;
+                  }
                   resetSchedForm();
                   setSchedFormOpen(true);
                 }}
@@ -860,15 +871,17 @@ export function PlanningSections({
               <Empty>No one-shot timers yet.</Empty>
             </div>
           )}
-          {!data.sessions.length ? (
-            <div className="panel">
-              <p className="small muted">No session templates yet.</p>
-            </div>
-          ) : !oneFormOpen ? (
+          {!oneFormOpen ? (
             <div className="row controls">
               <button
                 type="button"
                 onClick={() => {
+                  // New one-shots always start from the session wizard
+                  // now — no saved session is needed first.
+                  if (onNewOneShot) {
+                    onNewOneShot();
+                    return;
+                  }
                   resetOneForm();
                   setOneFormOpen(true);
                 }}

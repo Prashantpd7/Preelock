@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
+import { PlanningSections } from '../components/PlanningSections';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
 import { defaultFocus, type OneShot, type Session } from '../types';
@@ -160,7 +161,93 @@ it('lists pending one-shots and cancels one', async () => {
   });
 });
 
-it('creates a one-shot from a template at a future time', async () => {
+it('creates a one-shot from the wizard at a future time', async () => {
+  const snapshot = {
+    ...structuredClone(emptySnapshot),
+    sessions: [templateSession],
+    one_shots: [],
+  };
+  useAppStore.setState({
+    data: snapshot,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'com.microsoft.VSCode', name: 'VS Code' }],
+  });
+  vi.mocked(api.execute).mockResolvedValue({
+    ...snapshot,
+    one_shots: [oneShot({})],
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New one-shot' }));
+  // The wizard opens — same steps as starting a session.
+  await user.type(screen.getByLabelText('Task name'), 'Write outline');
+  await user.click(screen.getByRole('radio', { name: /Apps only/ }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('checkbox', { name: 'VS Code' }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  // One-shot mode ends in the timing popup, not "Start session?".
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Start once at' }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText('One-shot name')).toHaveValue('Write outline');
+  expect(
+    screen.queryByRole('button', { name: 'Start session' }),
+  ).not.toBeInTheDocument();
+  // A past time is a validation error, not a backend call.
+  fireEvent.change(screen.getByLabelText('Start at'), {
+    target: { value: '2020-01-01T09:00' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
+  expect(
+    await screen.findByText('Pick a future date and time.'),
+  ).toBeInTheDocument();
+  expect(api.execute).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('Start at'), {
+    target: { value: '2099-01-01T09:00' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'create_one_shot',
+      title: 'Write outline',
+      minutes: 25,
+      allow_pause: true,
+      fire_at_ms: new Date('2099-01-01T09:00').getTime(),
+    }),
+  );
+  const call = vi.mocked(api.execute).mock.calls[0][0];
+  expect(call.type).toBe('create_one_shot');
+  if (call.type === 'create_one_shot') {
+    expect(call.focus.attention?.work_apps).toEqual(['com.microsoft.VSCode']);
+  }
+});
+
+it('shows the New one-shot button even with no sessions, and it opens the wizard', async () => {
+  useAppStore.setState({
+    data: structuredClone(emptySnapshot),
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  expect(
+    screen.queryByText(/No session templates yet/),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'New one-shot' }));
+  expect(await screen.findByLabelText('Task name')).toBeInTheDocument();
+});
+
+it('still opens the template form when rendered without the wizard callback', async () => {
   const snapshot = {
     ...structuredClone(emptySnapshot),
     sessions: [templateSession],
@@ -177,33 +264,11 @@ it('creates a one-shot from a template at a future time', async () => {
     one_shots: [oneShot({})],
   });
   const user = userEvent.setup();
-  render(<App />);
-  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  render(<PlanningSections only="oneshots" />);
   await user.click(screen.getByRole('button', { name: 'New one-shot' }));
   await user.click(screen.getByLabelText('One-shot template'));
   await user.click(
     screen.getByRole('option', { name: 'Write outline · 25 min' }),
   );
   expect(screen.getByLabelText('One-shot name')).toHaveValue('Write outline');
-  // A past time is a validation error, not a backend call.
-  fireEvent.change(screen.getByLabelText('Start at'), {
-    target: { value: '2020-01-01T09:00' },
-  });
-  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
-  expect(
-    await screen.findByText('Pick a future date and time.'),
-  ).toBeInTheDocument();
-  expect(api.execute).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText('Start at'), {
-    target: { value: '2099-01-01T09:00' },
-  });
-  await user.click(screen.getByRole('button', { name: 'Create one-shot' }));
-  expect(api.execute).toHaveBeenCalledWith({
-    type: 'create_one_shot',
-    title: 'Write outline',
-    minutes: 25,
-    allow_pause: true,
-    focus: templateSession.focus,
-    fire_at_ms: new Date('2099-01-01T09:00').getTime(),
-  });
 });

@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
+import { PlanningSections } from '../components/PlanningSections';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
 import { defaultFocus, type Schedule, type Session } from '../types';
@@ -176,7 +177,91 @@ it('lists schedules with a lock indicator and disables locked toggles', async ()
   expect(screen.getByRole('checkbox', { name: 'Enabled' })).toBeDisabled();
 });
 
-it('creates a schedule from a template and snapshots its focus', async () => {
+it('creates a schedule from the wizard and snapshots its focus', async () => {
+  const snapshot = {
+    ...structuredClone(emptySnapshot),
+    sessions: [templateSession],
+    schedules: [],
+  };
+  useAppStore.setState({
+    data: snapshot,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'com.microsoft.VSCode', name: 'VS Code' }],
+  });
+  vi.mocked(api.execute).mockResolvedValue({
+    ...snapshot,
+    schedules: [schedule({})],
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  await user.click(screen.getByRole('button', { name: 'New schedule' }));
+  // The wizard opens — same steps as starting a session.
+  await user.type(screen.getByLabelText('Task name'), 'Write outline');
+  await user.click(screen.getByRole('radio', { name: /Apps only/ }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('checkbox', { name: 'VS Code' }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  // Schedule mode ends in the schedule popup, not "Start session?".
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Schedule session' }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText('Schedule name')).toHaveValue('Write outline');
+  expect(
+    screen.queryByRole('button', { name: 'Start session' }),
+  ).not.toBeInTheDocument();
+  // No day selected is a validation error, not a backend call.
+  for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) {
+    await user.click(screen.getByRole('checkbox', { name: day }));
+  }
+  await user.click(screen.getByRole('button', { name: 'Create schedule' }));
+  expect(await screen.findByText('Pick at least one day.')).toBeInTheDocument();
+  expect(api.execute).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('checkbox', { name: 'Mon' }));
+  await user.click(screen.getByRole('button', { name: 'Create schedule' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'create_schedule',
+      title: 'Write outline',
+      days: [1],
+      start_time: '09:00',
+      end_time: '10:00',
+      enabled: true,
+      lock_changes: false,
+    }),
+  );
+  const call = vi.mocked(api.execute).mock.calls[0][0];
+  expect(call.type).toBe('create_schedule');
+  if (call.type === 'create_schedule') {
+    expect(call.focus.attention?.work_apps).toEqual(['com.microsoft.VSCode']);
+  }
+});
+
+it('shows the New schedule button even with no sessions, and it opens the wizard', async () => {
+  useAppStore.setState({
+    data: structuredClone(emptySnapshot),
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  expect(
+    screen.queryByText(/Create a session template first/),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'New schedule' }));
+  expect(await screen.findByLabelText('Task name')).toBeInTheDocument();
+});
+
+it('still opens the template form when rendered without the wizard callback', async () => {
   const snapshot = {
     ...structuredClone(emptySnapshot),
     sessions: [templateSession],
@@ -193,48 +278,11 @@ it('creates a schedule from a template and snapshots its focus', async () => {
     schedules: [schedule({})],
   });
   const user = userEvent.setup();
-  render(<App />);
-  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  render(<PlanningSections only="schedules" />);
   await user.click(screen.getByRole('button', { name: 'New schedule' }));
   await user.click(screen.getByLabelText('Template session'));
   await user.click(
     screen.getByRole('option', { name: 'Write outline · 25 min' }),
   );
   expect(screen.getByLabelText('Schedule name')).toHaveValue('Write outline');
-  // No day selected is a validation error, not a backend call.
-  for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) {
-    await user.click(screen.getByRole('checkbox', { name: day }));
-  }
-  await user.click(screen.getByRole('button', { name: 'Create schedule' }));
-  expect(await screen.findByText('Pick at least one day.')).toBeInTheDocument();
-  expect(api.execute).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('checkbox', { name: 'Mon' }));
-  await user.click(screen.getByRole('button', { name: 'Create schedule' }));
-  expect(api.execute).toHaveBeenCalledWith({
-    type: 'create_schedule',
-    title: 'Write outline',
-    days: [1],
-    start_time: '09:00',
-    end_time: '10:00',
-    focus: templateSession.focus,
-    enabled: true,
-    lock_changes: false,
-  });
-});
-
-it('shows guidance when no session exists to use as a template', async () => {
-  useAppStore.setState({
-    data: structuredClone(emptySnapshot),
-    loading: false,
-    error: null,
-    busy: false,
-  });
-  render(<App />);
-  await screen.findByRole('heading', { name: 'Focus Sessions' });
-  expect(
-    await screen.findByText(/Create a session template first/),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole('button', { name: 'New schedule' }),
-  ).not.toBeInTheDocument();
 });

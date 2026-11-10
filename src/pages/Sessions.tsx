@@ -1,12 +1,15 @@
 import { useState } from 'react';
-import { ArrowLeft, Plus, RefreshCw, Timer } from 'lucide-react';
+import { ArrowLeft, Plus, RefreshCw } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { api, desktop } from '../services/api';
 import { setupProblem, splitDomains } from '../services/focusSetup';
-import { PageHeading } from '../components/ui';
+import { Empty, PageHeading } from '../components/ui';
 import { Dropdown } from '../components/Dropdown';
 import { BrowserSetup } from '../components/BrowserSetup';
 import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
+import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
+import type { ScheduleCreateFields } from '../components/ScheduleConfirmDialog';
+import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
 import { PlanningSections } from '../components/PlanningSections';
 import { Activity } from './Activity';
 import {
@@ -53,12 +56,31 @@ export function Sessions() {
   // Confirmation popup: "Start session" creates the session and starts
   // it immediately; "Cancel" discards the wizard state — nothing is
   // saved, and old sessions can no longer be reused from this page.
+  // The wizard can also run in schedule or one-shot mode (opened from
+  // the planning cards): same steps, but the final popup collects the
+  // timing and creates a schedule / one-shot instead of a session.
+  const [wizardMode, setWizardMode] = useState<
+    'start' | 'schedule' | 'oneshot'
+  >('start');
+  const [scheduleConfirmOpen, setScheduleConfirmOpen] = useState(false);
+  const [oneShotConfirmOpen, setOneShotConfirmOpen] = useState(false);
+  function startWizard(mode: 'start' | 'schedule' | 'oneshot') {
+    setProblem('');
+    setMinutes(data.preferences.default_minutes);
+    setStep(0);
+    setMaxStep(0);
+    setWizardMode(mode);
+    setCreating(true);
+  }
   function resetWizard() {
     setTitle('');
     setStep(0);
     setMaxStep(0);
     setCreating(false);
     setConfirmOpen(false);
+    setScheduleConfirmOpen(false);
+    setOneShotConfirmOpen(false);
+    setWizardMode('start');
     setProblem('');
   }
   async function confirmStartSession() {
@@ -76,6 +98,39 @@ export function Sessions() {
       .data.sessions.find((s) => !before.has(s.id));
     resetWizard();
     if (created) await execute({ type: 'start_session', id: created.id });
+  }
+  // Schedule / one-shot mode: the wizard's FocusConfig is the snapshot,
+  // exactly as creating from a template session would copy it.
+  async function confirmCreateSchedule(fields: ScheduleCreateFields) {
+    const ok = await execute({
+      type: 'create_schedule',
+      title: fields.title,
+      days: fields.days,
+      start_time: fields.start_time,
+      end_time: fields.end_time,
+      focus: selected,
+      enabled: fields.enabled,
+      lock_changes: fields.lock_changes,
+      ...(fields.lock ? { lock: fields.lock } : {}),
+      ...(fields.lock_password
+        ? { lock_password: fields.lock_password }
+        : {}),
+    });
+    if (ok) resetWizard();
+  }
+  async function confirmCreateOneShot(fields: {
+    title: string;
+    fire_at_ms: number;
+  }) {
+    const ok = await execute({
+      type: 'create_one_shot',
+      title: fields.title,
+      minutes,
+      allow_pause: !strict,
+      focus: selected,
+      fire_at_ms: fields.fire_at_ms,
+    });
+    if (ok) resetWizard();
   }
   // One browser per session: shown when the user tries to pick a second.
   const [browserWarn, setBrowserWarn] = useState('');
@@ -134,6 +189,8 @@ export function Sessions() {
     setStep(0);
     setMaxStep(0);
     setProblem('');
+    // Saved setups always start a session now, never a schedule.
+    setWizardMode('start');
     setCreating(true);
   }
   const attention = focus.attention!;
@@ -359,8 +416,16 @@ export function Sessions() {
                 setMaxStep(2);
                 return;
               }
-              // The confirmation popup creates and starts the session.
-              setConfirmOpen(true);
+              // The final popup depends on how the wizard was opened:
+              // start the session now, or set the timing for a
+              // schedule / one-shot built from this setup.
+              if (wizardMode === 'schedule') {
+                setScheduleConfirmOpen(true);
+              } else if (wizardMode === 'oneshot') {
+                setOneShotConfirmOpen(true);
+              } else {
+                setConfirmOpen(true);
+              }
             }}
           >
             <div className="wizard-steps" aria-label="Setup progress">
@@ -1006,39 +1071,41 @@ export function Sessions() {
               style={{ justifyContent: 'flex-end' }}
             >
               <button disabled={busy || !desktop}>
-                {step === 2 ? 'Create session' : 'Continue'}
+                {step === 2 && wizardMode === 'start'
+                  ? 'Create session'
+                  : 'Continue'}
               </button>
             </div>
           </form>
         </>
       ) : (
         <div className="focus-planning-grid">
-          <div className="panel new-session-card">
-            <span className="focus-orbit">
-              <Timer size={30} />
-            </span>
-            <h2>Start a new focus session</h2>
-            <p className="muted">
-              Choose what matters, set your time,
-              <br />
-              and give it your full attention.
+          <div className="panel new-session-card focus-planning-card">
+            <div className="section-heading section-start">
+              <h2>Start a new focus session</h2>
+            </div>
+            <p className="small muted section-desc">
+              Choose what matters, set your time, and give it your full
+              attention.
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                setProblem('');
-                setMinutes(data.preferences.default_minutes);
-                setStep(0);
-                setMaxStep(0);
-                setCreating(true);
-              }}
-            >
-              <Plus size={16} />
-              New session
-            </button>
+            <div className="panel">
+              <Empty>No active session</Empty>
+            </div>
+            <div className="row controls">
+              <button type="button" onClick={() => startWizard('start')}>
+                <Plus size={16} />
+                New session
+              </button>
+            </div>
           </div>
-          <PlanningSections only="schedules" />
-          <PlanningSections only="oneshots" />
+          <PlanningSections
+            only="schedules"
+            onNewSchedule={() => startWizard('schedule')}
+          />
+          <PlanningSections
+            only="oneshots"
+            onNewOneShot={() => startWizard('oneshot')}
+          />
           <PlanningSections only="allowances" />
         </div>
       )}
@@ -1051,6 +1118,26 @@ export function Sessions() {
           busy={busy}
           onStart={() => void confirmStartSession()}
           onCancel={resetWizard}
+        />
+      )}
+      {scheduleConfirmOpen && (
+        <ScheduleConfirmDialog
+          title={title}
+          minutes={minutes}
+          strict={strict}
+          busy={busy}
+          onCreate={(fields) => void confirmCreateSchedule(fields)}
+          onCancel={() => setScheduleConfirmOpen(false)}
+        />
+      )}
+      {oneShotConfirmOpen && (
+        <OneShotConfirmDialog
+          title={title}
+          minutes={minutes}
+          strict={strict}
+          busy={busy}
+          onCreate={(fields) => void confirmCreateOneShot(fields)}
+          onCancel={() => setOneShotConfirmOpen(false)}
         />
       )}
     </>

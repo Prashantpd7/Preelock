@@ -155,6 +155,21 @@ fn purge_expired_one_shots(data: &mut Snapshot, now_ms: i64) -> bool {
     data.one_shots.retain(|shot| shot.fire_at_ms > now_ms);
     data.one_shots.len() != before
 }
+/// Whether the always-on sampler (`sample_screen_time`) owns interval
+/// recording on this tick. It records while the desktop is alive, or
+/// while no background tracker exists to take over.
+fn always_on_path_owns_recording(data_dir: &Path) -> bool {
+    crate::background::desktop_alive(data_dir) || !crate::background::tracker_alive(data_dir)
+}
+/// Whether the session tick path owns interval recording on this tick.
+/// It records only while the desktop is gone AND a background tracker is
+/// running. The two gates are exact logical complements, so exactly one
+/// path records any given interval: a website replaces the browser app
+/// for the interval within that one path, and the interval is written
+/// once, never twice.
+fn session_path_owns_recording(data_dir: &Path) -> bool {
+    !crate::background::desktop_alive(data_dir) && crate::background::tracker_alive(data_dir)
+}
 /// "Why am I blocked" app page trigger: record the blocked app +
 /// its true reason so the `blocked-app` overlay window can show it
 /// instead of the app just silently vanishing. A free function (not
@@ -478,6 +493,15 @@ impl Engine {
         self.bridge
             .as_ref()
             .map(|b| b.status_for(browser_id))
+            .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+    }
+    /// Status of the connected browser matching the foreground app sample
+    /// id, if any. Site attribution uses this so another paired browser's
+    /// report can never be credited to the foreground app.
+    pub fn browser_status_for_app(&self, app_id: &str) -> browser::BrowserStatus {
+        self.bridge
+            .as_ref()
+            .map(|b| b.status_for_app(app_id))
             .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
     }
     /// Browser ids with a live extension connection.
@@ -1555,34 +1579,17 @@ impl Engine {
             return Ok(());
         }
         let sample = platform::sample()?;
-        let day_ms = crate::screen_time::local_day_start_ms(now);
+        // Site attribution is scoped to the connected browser that
+        // matches the foreground app, so another paired browser's report
+        // can never be credited to this interval. The allowance accrual
+        // below keeps using the most-recently-seen connection exactly as
+        // before (its own frontmost check handles apps).
+        let browser_for_site = self.browser_status_for_app(&sample.id);
         let browser = self.browser_status();
-        let mut buckets = Vec::new();
-        if sample.idle_ms < 60_000 && !sample.id.is_empty() {
-            crate::screen_time::add_usage(
-                &mut buckets,
-                day_ms,
-                "app",
-                &sample.id,
-                &sample.name,
-                delta,
-            );
-        }
-        if browser.activity_fresh && browser.browser_focused && !browser.active_domain.is_empty() {
-            crate::screen_time::add_usage(
-                &mut buckets,
-                day_ms,
-                "site",
-                &browser.active_domain,
-                &browser.active_domain,
-                delta,
-            );
-        }
+        let buckets = crate::screen_time::sample_buckets(now, delta, &sample, &browser_for_site);
+        let day_ms = crate::screen_time::local_day_start_ms(now);
         let has_usage = !buckets.is_empty();
-        if has_usage
-            && (crate::background::desktop_alive(&self.data_dir)
-                || !crate::background::tracker_alive(&self.data_dir))
-        {
+        if has_usage && always_on_path_owns_recording(&self.data_dir) {
             self.db.record_screen_time(&buckets)?;
             for bucket in &buckets {
                 crate::screen_time::add_usage(
@@ -2047,40 +2054,25 @@ impl Engine {
                                 &usage,
                             );
                         }
+                        // Exactly one process writes a given interval: the
+                        // always-on sampler in `sample_screen_time` owns
+                        // recording while the desktop is alive, so this
+                        // session sampler records only when the desktop is
+                        // gone and a background tracker is running (the
+                        // mirror image of the always-on sampler's gate).
+                        // The buckets follow the same mutual-exclusion
+                        // rule as the always-on sampler: a website
+                        // replaces the browser application for the
+                        // interval, never adds to it.
+                        let session_path_records = session_path_owns_recording(&self.data_dir);
                         let day_ms = crate::screen_time::local_day_start_ms(now);
-                        let mut buckets = Vec::new();
+                        let buckets =
+                            crate::screen_time::sample_buckets(now, delta, &sample, &browser);
                         if s.status == Status::Running
                             && !in_break
-                            && delta <= 3000
-                            && sample.idle_ms < 60_000
-                            && !sample.id.is_empty()
+                            && session_path_records
+                            && !buckets.is_empty()
                         {
-                            crate::screen_time::add_usage(
-                                &mut buckets,
-                                day_ms,
-                                "app",
-                                &sample.id,
-                                &sample.name,
-                                delta,
-                            );
-                        }
-                        if s.status == Status::Running
-                            && !in_break
-                            && delta <= 3000
-                            && browser.activity_fresh
-                            && browser.browser_focused
-                            && !browser.active_domain.is_empty()
-                        {
-                            crate::screen_time::add_usage(
-                                &mut buckets,
-                                day_ms,
-                                "site",
-                                &browser.active_domain,
-                                &browser.active_domain,
-                                delta,
-                            );
-                        }
-                        if !buckets.is_empty() {
                             self.db.record_screen_time(&buckets)?;
                             for bucket in buckets {
                                 crate::screen_time::add_usage(
@@ -3787,5 +3779,33 @@ mod tests {
         assert!(e.failed.is_some());
         assert_eq!(e.data.sessions[0].status, Status::Interrupted);
         assert!(e.browser_status().cleanup_pending);
+    }
+
+    #[test]
+    fn screen_time_recording_ownership_is_exactly_one_process_per_interval() {
+        // The always-on sampler and the session sampler must be exact
+        // complements: whichever one owns a tick, the other skips it, so
+        // an interval is written once (the whole point of the
+        // browser/website mutual-exclusion accounting).
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        // Neither heartbeat exists: no tracker, so the always-on path owns.
+        assert!(!crate::background::desktop_alive(data));
+        assert!(!crate::background::tracker_alive(data));
+        assert!(always_on_path_owns_recording(data));
+        assert!(!session_path_owns_recording(data));
+        // Desktop alive + tracker alive: always-on path owns.
+        crate::background::touch_desktop(data);
+        std::fs::write(data.join("background-heartbeat"), b"x").unwrap();
+        assert!(crate::background::desktop_alive(data));
+        assert!(crate::background::tracker_alive(data));
+        assert!(always_on_path_owns_recording(data));
+        assert!(!session_path_owns_recording(data));
+        // Desktop gone, tracker alive (background process): session path owns.
+        std::fs::remove_file(data.join("desktop-heartbeat")).unwrap();
+        assert!(!crate::background::desktop_alive(data));
+        assert!(crate::background::tracker_alive(data));
+        assert!(!always_on_path_owns_recording(data));
+        assert!(session_path_owns_recording(data));
     }
 }
