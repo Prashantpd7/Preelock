@@ -4860,16 +4860,22 @@ mod tests {
         // warning evaluation uses: next start minus 5 minutes).
         let now = clock::now();
         let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
-        assert!(engine.evaluate_warnings(at_warning).unwrap());
+        assert!(engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
         // Same tick again, and after a restart reload from disk:
         // the point never fires twice.
-        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
         drop(engine);
         let mut restored = Engine::open(&path).unwrap();
         assert_eq!(restored.data.schedules[0].warning_fired.len(), 1);
-        assert!(!restored.evaluate_warnings(at_warning).unwrap());
+        assert!(!restored
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(restored.data.schedules[0].warning_fired.len(), 1);
     }
 
@@ -4926,9 +4932,13 @@ mod tests {
         engine.data.schedules.push(schedule);
         let now = clock::now();
         let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
-        assert!(engine.evaluate_warnings(at_warning).unwrap());
+        assert!(engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
-        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
     }
 
@@ -4950,9 +4960,13 @@ mod tests {
         // starts), so flooring `now` to the minute would probe up to
         // 59s early and the warning would not be due yet.
         let at_warning = fire_at - 5 * 60_000;
-        assert!(engine.evaluate_warnings(at_warning).unwrap());
+        assert!(engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
-        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
     }
 
@@ -4967,10 +4981,28 @@ mod tests {
         let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
         // Master toggle OFF: nothing fires and nothing is marked,
         // so re-enabling before the block starts still warns.
-        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
         assert!(engine.data.schedules[0].warning_fired.is_empty());
         engine.data.preferences.notifications_enabled = true;
         engine.data.schedules[0].enabled = false;
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
+        assert!(engine.data.schedules[0].warning_fired.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_headless_warnings_defer_without_app_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("warn-win-headless.sqlite")).unwrap();
+        engine.data.preferences.warning_minutes = "5".into();
+        engine.data.schedules.push(upcoming_schedule(10));
+        let now = clock::now();
+        let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
+        assert!(!crate::desktop_settings::can_notify());
         assert!(!engine.evaluate_warnings(at_warning).unwrap());
         assert!(engine.data.schedules[0].warning_fired.is_empty());
     }
