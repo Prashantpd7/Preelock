@@ -47,8 +47,29 @@ pub struct Attribution<'a> {
 /// is never added to it, so an interval can never land in both buckets.
 /// Returns `None` for intervals that must not be credited at all (idle
 /// over 60 s, an empty foreground id, a zero/gap delta).
+/// The lock screen is never user activity: on macOS the frontmost
+/// app while locked is the login window, on Windows it is LogonUI.
+/// The idle rule below already drops locked intervals once idle
+/// passes 60 s, but the first minute after locking would otherwise
+/// be credited to the login window as application usage. Only
+/// these two identities are excluded — every other protected app
+/// (Finder, System Preferences, Preelock itself) is real foreground
+/// usage and keeps its credit; hiding protection is a separate
+/// concern (`focus::protected`) and is untouched.
+fn is_lock_screen_app(app_id: &str) -> bool {
+    if app_id.eq_ignore_ascii_case("com.apple.loginwindow") {
+        return true;
+    }
+    let leaf = app_id.rsplit(['/', '\\']).next().unwrap_or(app_id);
+    leaf.eq_ignore_ascii_case("logonui.exe")
+}
+
 pub fn attribute_interval(input: &Attribution<'_>) -> Option<ScreenTimeBucket> {
-    if input.delta == 0 || input.delta > 3000 || input.app_id.is_empty() || input.idle_ms >= 60_000
+    if input.delta == 0
+        || input.delta > 3000
+        || input.app_id.is_empty()
+        || input.idle_ms >= 60_000
+        || is_lock_screen_app(input.app_id)
     {
         return None;
     }
@@ -369,6 +390,39 @@ mod tests {
         );
         let buckets = sample_buckets(1, 1000, &s, &b);
         assert_one(&buckets, "app", "com.google.Chrome", 1000);
+    }
+
+    #[test]
+    fn lock_screen_samples_are_never_credited() {
+        // M5: the lock screen is never user activity. macOS reports
+        // the login window as foreground; Windows reports LogonUI.
+        // Either would otherwise collect up to a minute of credit
+        // before the 60 s idle rule kicks in.
+        let b = status("com.google.chrome", "instagram.com", true, true);
+        let loginwindow = sample("com.apple.loginwindow", "Login Window", 0);
+        assert!(sample_buckets(1, 1000, &loginwindow, &b).is_empty());
+        // Idle, long after locking: still nothing (both rules agree).
+        let locked_idle = sample("com.apple.loginwindow", "Login Window", 300_000);
+        assert!(sample_buckets(1, 1000, &locked_idle, &b).is_empty());
+        let logonui = sample(r"C:\Windows\System32\LogonUI.exe", "Windows Logon UI", 0);
+        assert!(sample_buckets(1, 1000, &logonui, &b).is_empty());
+        // Contrast: a real foreground app in the same interval is
+        // still credited, and other protected apps keep their credit.
+        let chrome = sample("com.google.Chrome", "Google Chrome", 0);
+        assert_one(
+            &sample_buckets(1, 1000, &chrome, &b),
+            "site",
+            "instagram.com",
+            1000,
+        );
+        let finder = sample("com.apple.finder", "Finder", 0);
+        let no_browser = status("", "", false, false);
+        assert_one(
+            &sample_buckets(1, 1000, &finder, &no_browser),
+            "app",
+            "com.apple.finder",
+            1000,
+        );
     }
 
     #[test]

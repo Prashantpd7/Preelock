@@ -31,6 +31,10 @@ impl Signal {
 struct Request {
     token: String,
     active: bool,
+    /// Liveness probe: report the current status without touching capture.
+    /// Serde-default so requests from older clients still parse.
+    #[serde(default)]
+    probe: bool,
 }
 
 fn token(dir: &Path) -> Result<String, String> {
@@ -58,7 +62,7 @@ fn port(dir: &Path) -> Result<u16, String> {
 }
 
 fn running(dir: &Path) -> bool {
-    signal(dir, false).is_ok()
+    probe(dir).is_ok()
 }
 
 pub fn ensure_running(dir: &Path) -> Result<(), String> {
@@ -79,19 +83,77 @@ pub fn ensure_running(dir: &Path) -> Result<(), String> {
 }
 
 pub fn signal(dir: &Path, active: bool) -> Result<Signal, String> {
-    let token = token(dir)?;
+    request(
+        dir,
+        Request {
+            token: token(dir)?,
+            active,
+            probe: false,
+        },
+    )
+}
+
+/// Liveness probe: answers only if the agent is responsive, and never
+/// starts or stops the camera. The old probe sent `active: false`, which
+/// the agent treated as a stand-down order — stopping the camera every
+/// second while a session was live.
+fn probe(dir: &Path) -> Result<Signal, String> {
+    request(
+        dir,
+        Request {
+            token: token(dir)?,
+            active: false,
+            probe: true,
+        },
+    )
+}
+
+fn request(dir: &Path, request: Request) -> Result<Signal, String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port(dir)?))
         .map_err(|e| format!("Attention agent unavailable: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;
-    let request = serde_json::to_string(&Request { token, active }).map_err(|e| e.to_string())?;
-    writeln!(stream, "{request}").map_err(|e| e.to_string())?;
+    let body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+    writeln!(stream, "{body}").map_err(|e| e.to_string())?;
     let mut response = String::new();
     BufReader::new(stream)
         .read_line(&mut response)
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&response).map_err(|e| format!("Invalid attention signal: {e}"))
+}
+
+/// What the agent must do for a request. Classified separately from
+/// `handle()` so the probe/stand-down distinction is unit-testable
+/// without camera hardware.
+#[derive(Debug, PartialEq, Eq)]
+enum RequestAction {
+    /// Authenticated `active: true` — poll the camera (may start it).
+    Poll,
+    /// Authenticated explicit stand-down — stop the camera.
+    StandDown,
+    /// Liveness probe — report the current status, never touch capture.
+    Report,
+    /// Invalid token or malformed/empty request — report "unknown",
+    /// never touch capture.
+    Reject,
+}
+
+fn classify(request: &Option<Request>, expected: &str) -> RequestAction {
+    let Some(request) = request else {
+        return RequestAction::Reject;
+    };
+    if request.token != expected {
+        return RequestAction::Reject;
+    }
+    if request.probe {
+        return RequestAction::Report;
+    }
+    if request.active {
+        RequestAction::Poll
+    } else {
+        RequestAction::StandDown
+    }
 }
 
 fn handle(mut stream: TcpStream, expected: &str, capture: &mut Capture) {
@@ -100,24 +162,28 @@ fn handle(mut stream: TcpStream, expected: &str, capture: &mut Capture) {
         .read_line(&mut request)
         .ok()
         .and_then(|_| serde_json::from_str::<Request>(&request).ok());
-    let valid = request
-        .as_ref()
-        .is_some_and(|request| request.token == expected);
-    let signal = if valid && request.as_ref().is_some_and(|request| request.active) {
-        Signal {
+    // Only an authenticated, explicit stand-down stops the camera.
+    // Probes, invalid tokens, and empty requests only report status.
+    let signal = match classify(&request, expected) {
+        RequestAction::Poll => Signal {
             status: capture.poll(clock::continuous_ms()),
             sampled_at_ms: clock::continuous_ms(),
+        },
+        RequestAction::StandDown => {
+            capture.stop();
+            Signal {
+                status: "off".into(),
+                sampled_at_ms: clock::continuous_ms(),
+            }
         }
-    } else {
-        capture.stop();
-        Signal {
-            status: if valid {
-                "off".into()
-            } else {
-                "unknown".into()
-            },
+        RequestAction::Report => Signal {
+            status: capture.status(),
             sampled_at_ms: clock::continuous_ms(),
-        }
+        },
+        RequestAction::Reject => Signal {
+            status: "unknown".into(),
+            sampled_at_ms: clock::continuous_ms(),
+        },
     };
     if let Ok(body) = serde_json::to_string(&signal) {
         let _ = writeln!(stream, "{body}");
@@ -223,7 +289,10 @@ mod tests {
         let response = signal(dir.path(), false).unwrap();
         worker.join().unwrap();
         assert_eq!(response.status, "off");
-        assert!(response.sampled_at_ms > 0);
+        // The timestamp must be fresh: on Linux the test clock counts
+        // from process start, so it can legitimately be 0 in the first
+        // millisecond and `> 0` is racy there.
+        assert!(response.fresh(clock::continuous_ms()));
     }
 
     #[test]
@@ -234,5 +303,95 @@ mod tests {
         };
         assert!(!signal.fresh(4_001));
         assert!(!signal.fresh(999));
+    }
+
+    #[test]
+    fn probe_is_report_only_and_never_polls_or_stops() {
+        let probe = Some(Request {
+            token: "expected".into(),
+            active: false,
+            probe: true,
+        });
+        assert_eq!(classify(&probe, "expected"), RequestAction::Report);
+        // A probe wins over `active`: even a probe sent with active=true
+        // must not start the camera.
+        let probe_active = Some(Request {
+            token: "expected".into(),
+            active: true,
+            probe: true,
+        });
+        assert_eq!(classify(&probe_active, "expected"), RequestAction::Report);
+    }
+
+    #[test]
+    fn only_an_authenticated_explicit_stand_down_stops_the_camera() {
+        let stand_down = Some(Request {
+            token: "expected".into(),
+            active: false,
+            probe: false,
+        });
+        assert_eq!(classify(&stand_down, "expected"), RequestAction::StandDown);
+        let poll = Some(Request {
+            token: "expected".into(),
+            active: true,
+            probe: false,
+        });
+        assert_eq!(classify(&poll, "expected"), RequestAction::Poll);
+    }
+
+    #[test]
+    fn invalid_token_and_empty_requests_are_rejected_without_action() {
+        let wrong_token = Some(Request {
+            token: "wrong".into(),
+            active: false,
+            probe: false,
+        });
+        assert_eq!(classify(&wrong_token, "expected"), RequestAction::Reject);
+        let wrong_token_probe = Some(Request {
+            token: "wrong".into(),
+            active: false,
+            probe: true,
+        });
+        assert_eq!(
+            classify(&wrong_token_probe, "expected"),
+            RequestAction::Reject
+        );
+        assert_eq!(classify(&None, "expected"), RequestAction::Reject);
+    }
+
+    #[test]
+    fn probe_reports_status_without_touching_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(TOKEN), "expected").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(dir.path().join(PORT), port.to_string()).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut capture = Capture::default();
+            handle(stream, "expected", &mut capture);
+        });
+        let response = probe(dir.path()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(response.status, "off");
+        assert!(response.fresh(clock::continuous_ms()));
+    }
+
+    #[test]
+    fn probe_with_wrong_token_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(TOKEN), "expected").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(dir.path().join(PORT), port.to_string()).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut capture = Capture::default();
+            handle(stream, "expected", &mut capture);
+        });
+        std::fs::write(dir.path().join(TOKEN), "wrong").unwrap();
+        let response = probe(dir.path()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(response.status, "unknown");
     }
 }

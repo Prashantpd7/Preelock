@@ -12,6 +12,37 @@ use std::{
 };
 use tauri::Manager;
 
+/// M6: marker file recording that the USER enabled the "Start
+/// Preelock at login" preference themselves (the Settings toggle),
+/// kept separate from the automatic login registration that
+/// `sync_login_for_sessions` writes for an active session or an
+/// enabled schedule. The marker is the only input that lets a
+/// login launch show the main window when no session is live (see
+/// `quit::login_window_action`); the automatic registration alone
+/// never shows it. Written/removed only by the `Login` settings
+/// action below, never by the automatic sync. A missing file means
+/// the user never enabled the preference in the app (enabling it
+/// directly in System Settings is not visible here — that launch
+/// starts hidden once, and the tray reopens it).
+pub const LOGIN_USER_PREF_FILE: &str = "login-user-enabled";
+
+pub fn login_user_pref_enabled(data_dir: &std::path::Path) -> bool {
+    data_dir.join(LOGIN_USER_PREF_FILE).exists()
+}
+
+pub fn set_login_user_pref(data_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
+    let path = data_dir.join(LOGIN_USER_PREF_FILE);
+    if enabled {
+        std::fs::write(&path, "1").map_err(|e| e.to_string())
+    } else {
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 pub fn validate_preferences(mut p: Preferences) -> Result<Preferences, String> {
     if !["dark", "light", "system"].contains(&p.theme.as_str())
         || !(1..=480).contains(&p.default_minutes)
@@ -348,7 +379,19 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             Ok(info)
         }
         SettingsAction::Login { enabled } => {
+            if enabled && cfg!(debug_assertions) {
+                return Err("Open at login is available in the installed app.".into());
+            }
             native::login(enabled)?;
+            // Record the user's own choice (see the marker docs
+            // above). A failure to write the marker is logged, not
+            // fatal: the OS registration itself succeeded, and the
+            // worst case is one hidden-window login launch.
+            if let Ok(dir) = app.path().app_data_dir() {
+                if let Err(e) = set_login_user_pref(&dir, enabled) {
+                    log::warn!("Could not record open-at-login preference: {e}");
+                }
+            }
             Ok(json!(null))
         }
         SettingsAction::AllowNotifications => {
@@ -596,5 +639,21 @@ mod tests {
         assert_eq!(restored.sessions[0].status, Status::Interrupted);
         assert!(!restored.sessions[0].focus.camera);
         assert!(!restored.sessions[0].focus.activity_consent);
+    }
+    #[test]
+    fn login_user_pref_marker_round_trips() {
+        // M6 req 9: the marker records only the user's own toggle,
+        // never the automatic registration.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!login_user_pref_enabled(dir.path()));
+        set_login_user_pref(dir.path(), true).unwrap();
+        assert!(login_user_pref_enabled(dir.path()));
+        set_login_user_pref(dir.path(), true).unwrap();
+        assert!(login_user_pref_enabled(dir.path()));
+        set_login_user_pref(dir.path(), false).unwrap();
+        assert!(!login_user_pref_enabled(dir.path()));
+        // Removing twice is fine (no marker left behind).
+        set_login_user_pref(dir.path(), false).unwrap();
+        assert!(!login_user_pref_enabled(dir.path()));
     }
 }

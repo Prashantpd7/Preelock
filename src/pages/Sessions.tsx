@@ -112,9 +112,7 @@ export function Sessions() {
       enabled: fields.enabled,
       lock_changes: fields.lock_changes,
       ...(fields.lock ? { lock: fields.lock } : {}),
-      ...(fields.lock_password
-        ? { lock_password: fields.lock_password }
-        : {}),
+      ...(fields.lock_password ? { lock_password: fields.lock_password } : {}),
     });
     if (ok) resetWizard();
   }

@@ -291,6 +291,14 @@ int preelock_install_quit_guard(void (*callback)(void), void (*shutdown)(void)) 
     return installed;
 }
 
+// M2: a tray-only process (Preelock --tray) must not show in the Dock
+// or Cmd-Tab — it is a menu-bar icon only. Accessory policy keeps the
+// NSStatusItem working while removing the Dock tile. Called on the
+// main thread from the tray process setup, after NSApp exists.
+void preelock_hide_from_dock(void) {
+    onMain(^{ [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]; });
+}
+
 // Screen Time row icons: the app's real icon as a base64 PNG string
 // (96px, so a 30-row list stays small), or NULL when no icon resolves.
 // `identity` is a bundle id (e.g. com.brave.Browser) or a file path

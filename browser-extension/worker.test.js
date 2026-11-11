@@ -93,13 +93,40 @@ it('clears installed rules when acknowledgement is rejected', async () => {
   expect(session.applied_id).toBe('');
   expect(session.error).toContain('Connection code rejected');
 });
-it('releases rules on connection failure', async () => {
+// M4 (v7): a failed sync no longer drops the rules while the stored
+// policy's lease is still valid. During a bridge handover (GUI killed,
+// background taking over) the bridge is briefly unreachable; dropping
+// the rules then would open a blocking gap even though the policy the
+// extension already holds is still live. The lease still bounds
+// fail-open: once it expires, the rules are removed.
+it('keeps rules while the stored policy lease is live on connection failure', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => response(policy())),
   );
   await import('./worker.js');
   await send({ type: 'sync' });
+  expect(rules.length).toBeGreaterThan(0);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new Error('Failed to fetch');
+    }),
+  );
+  await send({ type: 'sync' });
+  expect(session.error).toContain('Open the desktop app');
+  expect(rules.length).toBeGreaterThan(0);
+  expect(session.applied_id).toBe('test-session');
+});
+it('releases rules on connection failure once the stored policy lease has expired', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(policy())),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(rules.length).toBeGreaterThan(0);
+  session.policy.expires_at = Date.now() - 1;
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => {
@@ -109,6 +136,37 @@ it('releases rules on connection failure', async () => {
   await send({ type: 'sync' });
   expect(session.error).toContain('Open the desktop app');
   expect(rules).toEqual([]);
+  expect(session.applied_id).toBe('');
+});
+it('recovers rules after a failed sync once the bridge answers again', async () => {
+  let syncCalls = 0;
+  let failSync = false;
+  const request = vi.fn(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    // The acknowledgement carries no `v`; only the sync request does.
+    if (!('v' in body)) return response(policy());
+    syncCalls += 1;
+    if (failSync) throw new Error('Failed to fetch');
+    return response({
+      ...policy(),
+      id: syncCalls === 1 ? 'test-session' : 'test-session-2',
+    });
+  });
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(session.applied_id).toBe('test-session');
+  expect(rules.length).toBeGreaterThan(0);
+  failSync = true;
+  await send({ type: 'sync' });
+  expect(session.error).toContain('Open the desktop app');
+  expect(rules.length).toBeGreaterThan(0);
+  expect(session.applied_id).toBe('test-session');
+  failSync = false;
+  await send({ type: 'sync' });
+  expect(session.applied_id).toBe('test-session-2');
+  expect(rules.length).toBeGreaterThan(0);
+  expect(session.error).toBe('');
 });
 it('runs requested browser checks and acknowledges the result without leaving rules', async () => {
   const matches = [1, null, 4, 5, 2, 4, 6, 2];
@@ -220,7 +278,9 @@ it('sends an authenticated goodbye when disconnecting', async () => {
   expect(body.disconnect).toBe(true);
   expect(body.client).toBe('test-client');
   expect(body.applied_id).toBe('');
-  expect(body.v).toBe(6);
+  // v7: bumped together with EXTENSION_VERSION in worker.js and
+  // browser.rs when the lease-aware fail-open behaviour landed (M4).
+  expect(body.v).toBe(7);
 });
 
 it('reports the extension version on every sync', async () => {
@@ -229,7 +289,9 @@ it('reports the extension version on every sync', async () => {
   await import('./worker.js');
   await send({ type: 'sync' });
   const body = JSON.parse(request.mock.calls[0][1].body);
-  expect(body.v).toBe(6);
+  // v7: bumped together with EXTENSION_VERSION in worker.js and
+  // browser.rs when the lease-aware fail-open behaviour landed (M4).
+  expect(body.v).toBe(7);
 });
 
 it('uses the chosen Comet identity when Chrome is installed too', async () => {

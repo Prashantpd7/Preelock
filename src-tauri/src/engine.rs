@@ -28,7 +28,25 @@ pub struct Engine {
     allowance_checkpoint: u64,
     bridge: Option<Bridge>,
     bridge_error: String,
+    /// M4: continuous-ms time before which `ensure_bridge` must not
+    /// retry a failed bridge start (throttle, not a tight loop — a
+    /// start attempt while the port is still bound by the dying
+    /// holder is wasted work). `0` means a retry is due now.
+    bridge_retry_at: u64,
+    /// M1: cross-process engine lock. `Some` while this engine is the
+    /// one authoritative engine allowed to tick and save; `None` while
+    /// it is an observer (the other process owns the lock). The flock
+    /// is released when this engine drops.
+    engine_lock: Option<crate::engine_lock::EngineLock>,
     native: bool,
+    /// M6: whether this engine was opened after an OS shutdown,
+    /// logout, or restart (`lifecycle::initialize` resume flag).
+    /// True only when the previous run ended via the OS event path
+    /// or the boot id changed — never after an ordinary quit — so
+    /// the GUI can tell a login launch (start hidden when idle)
+    /// from a manual launch (always show the window). See
+    /// `quit::login_window_action`.
+    resumed_after_os_shutdown: bool,
     camera_enabled: bool,
     attention_camera_status: String,
     camera: crate::camera::Capture,
@@ -138,6 +156,15 @@ fn browser_domain_relevant_with_exceptions(
 /// ordinary tick already re-evaluates schedules every second.
 pub const TICK_GAP_THRESHOLD_MS: i64 = 120_000;
 
+/// M4: minimum gap between bridge (re)start attempts by a lock
+/// holder whose bridge failed to start (port still bound by the
+/// dying holder, lock still held by a holder mid-exit). Five seconds
+/// is far inside the 65 s policy lease the extension already holds,
+/// so retrying on this cadence can never open a policy gap, and a
+/// tick never stalls more than a single fast attempt (see
+/// `Bridge::try_start`).
+pub const BRIDGE_RETRY_MS: u64 = 5_000;
+
 /// True when the wall-clock gap since the previous tick exceeds the
 /// threshold. `None` (no previous tick yet) and a clock moving
 /// backwards are never a gap.
@@ -155,21 +182,22 @@ fn purge_expired_one_shots(data: &mut Snapshot, now_ms: i64) -> bool {
     data.one_shots.retain(|shot| shot.fire_at_ms > now_ms);
     data.one_shots.len() != before
 }
-/// Whether the always-on sampler (`sample_screen_time`) owns interval
-/// recording on this tick. It records while the desktop is alive, or
-/// while no background tracker exists to take over.
-fn always_on_path_owns_recording(data_dir: &Path) -> bool {
-    crate::background::desktop_alive(data_dir) || !crate::background::tracker_alive(data_dir)
-}
-/// Whether the session tick path owns interval recording on this tick.
-/// It records only while the desktop is gone AND a background tracker is
-/// running. The two gates are exact logical complements, so exactly one
-/// path records any given interval: a website replaces the browser app
-/// for the interval within that one path, and the interval is written
-/// once, never twice.
-fn session_path_owns_recording(data_dir: &Path) -> bool {
-    !crate::background::desktop_alive(data_dir) && crate::background::tracker_alive(data_dir)
-}
+/// M5: screen-time recording ownership. There is exactly one
+/// recording path — the always-on sampler in `sample_screen_time`,
+/// reached only from `tick()`, which only the engine-lock holder
+/// ever runs (M1: an observer's tick returns before sampling).
+/// Recording therefore follows the lock, never the heartbeat
+/// files: the old heartbeat gates (`desktop-alive` vs
+/// `tracker-alive`) left a hole where NO path recorded — GUI gone,
+/// background tracker alive, no session running — so idle
+/// background screen time was silently dropped, and a Paused or
+/// Preparing session's time with it. The session tick path used
+/// to record as the mirror image of those gates; it no longer
+/// records at all, so one interval can never be written twice and
+/// the foreground browser's site attribution (via
+/// `browser_status_for_app`) is the only attribution used.
+/// Heartbeat files are still used where they belong: liveness
+/// (background takeover, tray exit), never accounting.
 /// "Why am I blocked" app page trigger: record the blocked app +
 /// its true reason so the `blocked-app` overlay window can show it
 /// instead of the app just silently vanishing. A free function (not
@@ -233,6 +261,23 @@ impl Engine {
         resume: bool,
         camera_enabled: bool,
     ) -> Result<Self, String> {
+        let data_dir = path
+            .parent()
+            .ok_or("Invalid database location.")?
+            .to_path_buf();
+        // The data dir must exist for the lock file; Database::open
+        // below would fail without it anyway.
+        let _ = std::fs::create_dir_all(&data_dir);
+        // M1: only the engine that holds the cross-process lock may run
+        // recovery and save. An observer still loads the snapshot (so
+        // the UI can show the owner's state) and still applies the
+        // recovery transforms in memory, but it must not persist them:
+        // a whole-snapshot save from a stale observer could delete rows
+        // the owner just created. The observer re-checks the lock on
+        // every tick / write (see `try_acquire_engine_lock`) and
+        // reloads from the database the moment it becomes the owner.
+        let engine_lock = crate::engine_lock::EngineLock::try_acquire(&data_dir);
+        let owns_lock = engine_lock.is_some();
         let mut db = Database::open(path)?;
         let mut data = db.load()?;
         // One-shot timers (step 6c): anything whose time passed while
@@ -247,20 +292,19 @@ impl Engine {
                 s.focus.attention.verification = "activity_only".into();
             }
         }
-        // Upgrade historical timers without ever crediting offline elapsed time.
-        for s in &mut data.sessions {
-            if !s.focus.attention.enabled
-                && matches!(
-                    s.status,
-                    Status::Running | Status::Preparing | Status::Paused
-                )
-            {
-                s.status = Status::Interrupted;
-                s.deadline_ms = None;
-                s.ended_at = Some(clock::now());
-                s.report.event(clock::now(),"timer_upgrade","Legacy timer stopped on upgrade. Create a productive-time session; historical time is retained as legacy.");
-            }
-        }
+        // M6: live plain-timer sessions (attention disabled — one-shot
+        // sessions, backup restores, and legacy rows can all be plain)
+        // resume exactly like attention sessions below, with their
+        // checkpointed `remaining_ms` intact. An earlier "upgrade"
+        // loop ended every live plain timer here as Interrupted on
+        // every reopen, which silently lifted its block across any
+        // restart and dropped its remaining time. That is wrong for
+        // shutdown recovery: `remaining_ms` is authoritative, the
+        // tick anchors are reset at open, and the first tick after a
+        // long gap credits nothing (M5 wake clamp), so offline time
+        // can never be credited or drain the session. Sessions that
+        // were already Interrupted stay Interrupted; nothing here
+        // resurrects a finished session.
         for s in &mut data.sessions {
             // Step 12 Frozen Turkey, recovery: a frozen session
             // whose wall-clock timer already passed while the app
@@ -369,16 +413,38 @@ impl Engine {
             }
             attention::recover(s, clock::now());
         }
-        db.save(&data)?;
-        let (bridge, bridge_error) = if native {
+        // M1: persist recovery only as the lock holder (see above).
+        if owns_lock {
+            db.save(&data)?;
+        }
+        // M1: only the lock holder starts a bridge. An observer that
+        // grabbed the bridge would publish a possibly stale policy
+        // while the owner ticks — the dual-owner hazard this lock
+        // exists to prevent. M4: an observer's bridge is the owner's
+        // bridge (same port, same token), so the error says so
+        // instead of the domain-test message — the extension stays
+        // connected to the owner's bridge while this engine observes.
+        let (bridge, bridge_error) = if native && owns_lock {
             match Bridge::start(path.parent().ok_or("Invalid database location.")?) {
                 Ok(b) => (Some(b), String::new()),
                 Err(e) => (None, e),
             }
+        } else if native {
+            (
+                None,
+                "Another Preelock process currently owns the browser bridge.".into(),
+            )
         } else {
             (None, "Native runtime disabled in domain tests.".into())
         };
         let now = clock::continuous_ms();
+        // M4: computed before the literal below moves `bridge` into
+        // the engine — see the `bridge_retry_at` field docs.
+        let bridge_retry_at = if bridge.is_none() && native && owns_lock {
+            now + BRIDGE_RETRY_MS
+        } else {
+            0
+        };
         let engine = Self {
             db,
             data_dir: path
@@ -395,7 +461,12 @@ impl Engine {
             allowance_checkpoint: now,
             bridge,
             bridge_error,
+            // M4: a holder whose open-time start failed retries on
+            // the tick (see `ensure_bridge`); an observer never does.
+            bridge_retry_at,
+            engine_lock,
             native,
+            resumed_after_os_shutdown: resume,
             camera_enabled,
             attention_camera_status: "camera_unavailable".into(),
             camera: Default::default(),
@@ -412,6 +483,180 @@ impl Engine {
         }
         Ok(engine)
     }
+    /// M1: returned when a write is refused because the other engine
+    /// (GUI or background) currently owns the cross-process engine
+    /// lock. The handover is automatic within about a second, so the
+    /// caller just retries.
+    const ENGINE_LOCK_HELD: &str =
+        "Another Preelock process currently owns the session engine; try again in a moment.";
+    /// M1: whether this engine currently holds the cross-process engine
+    /// lock — the only engine allowed to tick, commit, or save.
+    pub fn owns_engine_lock(&self) -> bool {
+        self.engine_lock.is_some()
+    }
+
+    /// M6: whether this engine opened after an OS shutdown, logout,
+    /// or restart (see the `resumed_after_os_shutdown` field docs).
+    pub fn recovered_after_os_shutdown(&self) -> bool {
+        self.resumed_after_os_shutdown
+    }
+
+    /// M6: best-effort shutdown checkpoint — persist the current
+    /// snapshot exactly as it is, with no status changes. Unlike
+    /// `shutdown()` (idle quit, which releases restrictions), this
+    /// keeps a live session live with its remaining time intact, so
+    /// recovery after an OS shutdown resumes it instead of ending
+    /// it. Holder-only: an observer refuses, so a stale snapshot
+    /// can never overwrite the owner's checkpoint. Callers on
+    /// shutdown paths ignore the error and log it — the periodic
+    /// ~5 s commit checkpoint already bounds the loss, and a
+    /// failing save must never block the OS from shutting down.
+    pub fn save_checkpoint(&mut self) -> Result<(), String> {
+        if !self.owns_engine_lock() {
+            return Err(Self::ENGINE_LOCK_HELD.into());
+        }
+        self.db.save(&self.data)
+    }
+
+    /// M1: try to become the authoritative engine. A no-op when this
+    /// engine already holds the lock. On a fresh acquisition the snapshot
+    /// is reloaded from the database — the observer's in-memory copy may
+    /// predate everything the previous owner saved — and the tick anchors
+    /// are reset so no time is credited for the observer period. Expired
+    /// one-shots that lapsed while this engine observed are purged (the
+    /// step-6c launch rule), never fired late. If the bridge is free now
+    /// (the previous owner died while bridge-less, or never had it), it
+    /// is started here and the current policy republished, so website
+    /// enforcement resumes with the takeover instead of waiting for a
+    /// restart. A takeover-time start that still fails (the old
+    /// holder's port not yet released) is not the end of the story
+    /// any more: the holder's tick retries it via `ensure_bridge`
+    /// (M4), so a bridge-less holder recovers on its own.
+    fn try_acquire_engine_lock(&mut self) -> bool {
+        if self.engine_lock.is_some() {
+            return true;
+        }
+        let Some(lock) = crate::engine_lock::EngineLock::try_acquire(&self.data_dir) else {
+            return false;
+        };
+        // Reload first: if the load fails, give the lock straight back
+        // rather than ticking from a stale snapshot.
+        let Ok(data) = self.db.load() else {
+            drop(lock);
+            return false;
+        };
+        self.engine_lock = Some(lock);
+        self.data = data;
+        let now_continuous = clock::continuous_ms();
+        let now_wall = clock::now();
+        self.anchor = now_continuous;
+        self.sample_anchor = now_continuous;
+        self.screen_time_anchor = now_continuous;
+        self.checkpoint = now_continuous;
+        self.allowance_checkpoint = now_continuous;
+        self.wall = now_wall;
+        self.last_tick_wall_ms = Some(now_wall);
+        if purge_expired_one_shots(&mut self.data, now_wall) {
+            // Best-effort: the purge is already applied in memory, so
+            // the timer cannot fire from this engine, and the next
+            // commit save persists it.
+            if self.db.save(&self.data).is_err() {
+                log::warn!("Could not persist expired one-shot purge on engine takeover.");
+            }
+        }
+        self.start_bridge_patient();
+        self.publish();
+        true
+    }
+
+    /// M4: patient bridge start, used at open and on engine-lock
+    /// takeover, where waiting ~2 s for the previous holder's bridge
+    /// to release is correct. On failure the error is kept and the
+    /// tick retry is armed — the holder recovers via `ensure_bridge`
+    /// instead of staying bridge-less until a restart.
+    fn start_bridge_patient(&mut self) {
+        if self.bridge.is_some() || !self.native {
+            return;
+        }
+        match Bridge::start(&self.data_dir) {
+            Ok(bridge) => {
+                bridge.set_screen_time_tracking(true);
+                self.bridge = Some(bridge);
+                self.bridge_error = String::new();
+                self.bridge_retry_at = 0;
+            }
+            Err(error) => {
+                self.bridge_error = error;
+                self.bridge_retry_at = clock::continuous_ms() + BRIDGE_RETRY_MS;
+            }
+        }
+    }
+
+    /// M4: keep the bridge owned while this engine holds the lock.
+    /// Called on every holder tick, and only there — never by an
+    /// observer, which must not start a second bridge while the
+    /// owner serves the extension. Three cases:
+    /// - No bridge yet (the open/takeover start failed, e.g. the
+    ///   port was still bound by the dying holder): retry with one
+    ///   fast attempt, at most once per `BRIDGE_RETRY_MS`, until it
+    ///   starts. A holder that opened bridge-less no longer
+    ///   enforces nothing forever.
+    /// - Bridge present but its server thread dead: drop the husk
+    ///   (releases `bridge.lock` and the port) and restart below,
+    ///   so a dead server can never strand enforcement while this
+    ///   process lives.
+    /// - Bridge live: nothing to do; the tick's lease refresh keeps
+    ///   the observe-only policy fresh.
+    ///
+    /// A successful (re)start republishes the current policy at
+    /// once, so the extension picks it up on its next 30 s sync —
+    /// inside the 65 s lease the policy it already holds carries.
+    fn ensure_bridge(&mut self) {
+        if !self.native || !self.owns_engine_lock() {
+            return;
+        }
+        if let Some(bridge) = &self.bridge {
+            if bridge.server_alive() {
+                return;
+            }
+            log::warn!(
+                "Browser bridge server thread is no longer answering; restarting the bridge."
+            );
+            self.bridge = None;
+        }
+        let now = clock::continuous_ms();
+        if now < self.bridge_retry_at {
+            return;
+        }
+        match Bridge::try_start(&self.data_dir) {
+            Ok(bridge) => {
+                bridge.set_screen_time_tracking(true);
+                self.bridge = Some(bridge);
+                self.bridge_error = String::new();
+                self.bridge_retry_at = 0;
+                self.publish();
+            }
+            Err(error) => {
+                self.bridge_error = error;
+                self.bridge_retry_at = now + BRIDGE_RETRY_MS;
+            }
+        }
+    }
+
+    /// Test helper: flip the native flag after `open()` (which always
+    /// opens non-native in tests). Lets bridge-ownership tests drive
+    /// `ensure_bridge` without `open_native`, whose lifecycle
+    /// one-shot cannot run twice in one test process. Also refreshes
+    /// the bridge error so an observer reports the bridge as owned
+    /// elsewhere, exactly as `open_recovery` would.
+    #[cfg(test)]
+    fn set_native_for_test(&mut self, native: bool) {
+        self.native = native;
+        if native && self.bridge.is_none() && !self.owns_engine_lock() {
+            self.bridge_error =
+                "Another Preelock process currently owns the browser bridge.".into();
+        }
+    }
     pub fn set_attention_camera_status(&mut self, signal: crate::attention_agent::Signal) {
         let now = clock::continuous_ms();
         let fresh = signal.fresh(now);
@@ -427,6 +672,7 @@ impl Engine {
                 | "analysis_error"
                 | "no_camera"
                 | "camera_error"
+                | "starting"
                 | "off"
         );
         self.attention_camera_status = if fresh && valid {
@@ -443,12 +689,52 @@ impl Engine {
                 && session.focus.attention.verification == "camera_and_activity"
         })
     }
-    pub fn shutdown_if_idle(&mut self) -> bool {
-        if self.has_active() {
-            return false;
+    /// M3: the state-dependent quit decision (`crate::quit`).
+    /// Gathers the authoritative inputs, applies the one decision
+    /// table, and performs the shutdown side effect only for the
+    /// owner-idle outcome — an observer never shuts the engine down.
+    /// - Owner (lock held or just acquired; the snapshot was reloaded
+    ///   by `try_acquire_engine_lock`): live session → close the UI
+    ///   only; idle → `shutdown()` and exit.
+    /// - Observer (another engine owns the lock): a fresh read-only
+    ///   database load is the authoritative live-session check — the
+    ///   in-memory snapshot may predate the owner's latest save by a
+    ///   tick. When the database cannot be read, the in-memory
+    ///   snapshot is the fallback. Live → close the UI only; idle →
+    ///   exit the UI only. This is the fix for the M1 transient:
+    ///   an idle observer no longer reports "not idle" (and no
+    ///   longer shows the "Finish your focus session" notice for a
+    ///   session that is not running).
+    pub fn quit_decision(&mut self) -> crate::quit::QuitDecision {
+        let owns_lock = self.try_acquire_engine_lock();
+        let has_active = if owns_lock {
+            self.has_active()
+        } else {
+            // Read-only: `Database::open` on an existing file only.
+            // A missing file must not be created here — fall back to
+            // the in-memory snapshot instead.
+            let db_path = self.data_dir.join("preelock.sqlite");
+            if db_path.exists() {
+                Database::open(&db_path)
+                    .and_then(|db| db.load())
+                    .map(|data| {
+                        data.sessions.iter().any(|s| {
+                            matches!(
+                                s.status,
+                                Status::Running | Status::Paused | Status::Preparing
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|_| self.has_active())
+            } else {
+                self.has_active()
+            }
+        };
+        let decision = crate::quit::decide(has_active, owns_lock);
+        if decision == crate::quit::QuitDecision::ShutdownAndExit {
+            self.shutdown();
         }
-        self.shutdown();
-        true
+        decision
     }
     pub fn shutdown(&mut self) {
         self.stop_test();
@@ -486,14 +772,14 @@ impl Engine {
         self.bridge
             .as_ref()
             .map(Bridge::status)
-            .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+            .unwrap_or_else(|| self.bridge_unavailable())
     }
     /// Connection status for one specific browser (platform browser id).
     pub fn browser_status_for(&self, browser_id: &str) -> browser::BrowserStatus {
         self.bridge
             .as_ref()
             .map(|b| b.status_for(browser_id))
-            .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+            .unwrap_or_else(|| self.bridge_unavailable())
     }
     /// Status of the connected browser matching the foreground app sample
     /// id, if any. Site attribution uses this so another paired browser's
@@ -502,7 +788,20 @@ impl Engine {
         self.bridge
             .as_ref()
             .map(|b| b.status_for_app(app_id))
-            .unwrap_or_else(|| browser::unavailable(&self.bridge_error))
+            .unwrap_or_else(|| self.bridge_unavailable())
+    }
+    /// M4: status when this engine has no bridge of its own. If
+    /// another engine's bridge is answering on the loopback port,
+    /// the extension is still served — just not by this process —
+    /// so report the bridge as owned elsewhere instead of
+    /// "unavailable". The probe is a bare TCP connect (see
+    /// `Bridge::probe`): no HTTP, no auth, no client state is read,
+    /// so nothing about the owner's extension connections leaks.
+    fn bridge_unavailable(&self) -> browser::BrowserStatus {
+        if self.native && Bridge::probe(&self.data_dir, browser::PORT).port_listening {
+            return browser::unavailable("Browser bridge is running in the background engine.");
+        }
+        browser::unavailable(&self.bridge_error)
     }
     /// Browser ids with a live extension connection.
     pub fn connected_browsers(&self) -> Vec<String> {
@@ -533,6 +832,11 @@ impl Engine {
             .unwrap_or_default()
     }
     pub fn reset_pairing(&mut self, path: &Path) -> Result<(), String> {
+        // M1: pairing reset can start a bridge — holder only, so an
+        // observer can never steal the bridge from the owner.
+        if !self.try_acquire_engine_lock() {
+            return Err(Self::ENGINE_LOCK_HELD.into());
+        }
         if self.data.sessions.iter().any(|s| {
             matches!(
                 s.status,
@@ -627,6 +931,12 @@ impl Engine {
     /// Enforcement continues regardless: app and website blocking
     /// are engine-side and never depend on the overlay window.
     pub fn note_frozen_overlay_failure(&mut self) {
+        // M1: this records a report event and saves it — holder only.
+        // An observer skips it (no acquire attempt: it is a
+        // best-effort diagnostic, and the owner is the one enforcing).
+        if !self.owns_engine_lock() {
+            return;
+        }
         let now = clock::now();
         let mut changed = false;
         for s in &mut self.data.sessions {
@@ -678,6 +988,10 @@ impl Engine {
         self.db.backup()
     }
     pub fn replace_data(&mut self, data: Snapshot) -> Result<(), String> {
+        // M1: a backup restore is a whole-database replace — holder only.
+        if !self.try_acquire_engine_lock() {
+            return Err(Self::ENGINE_LOCK_HELD.into());
+        }
         if self.has_active() {
             return Err("Finish your session before changing history.".into());
         }
@@ -696,7 +1010,16 @@ impl Engine {
         Ok(())
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
-        self.commit(None)
+        // M1: reading state never needs the lock — but the read must be
+        // fresh, and the observer must not save (commit() checkpoints
+        // every 5 s). When this engine does not own the lock, reload and
+        // return the owner's snapshot without writing anything.
+        if !self.owns_engine_lock() && !self.try_acquire_engine_lock() {
+            self.data = self.db.load()?;
+            self.data.browser = Some(self.browser_status());
+            return Ok(self.data.clone());
+        }
+        self.commit(None, false)
     }
 
     /// Step 13: recent block attempts, newest first (SQLite rows
@@ -774,6 +1097,12 @@ impl Engine {
         self.db.delete_attempts()
     }
     pub fn execute(&mut self, action: Action) -> Result<Snapshot, String> {
+        // M1: writes go through the lock holder only (see commit()).
+        // Fail fast, before preflight, so no action runs on a stale
+        // observer snapshot.
+        if !self.try_acquire_engine_lock() {
+            return Err(Self::ENGINE_LOCK_HELD.into());
+        }
         if let Action::StartSession { id } | Action::ResumeSession { id } = &action {
             self.stop_test();
             self.preflight(id)?;
@@ -781,7 +1110,7 @@ impl Engine {
         if matches!(&action, Action::EnableCamera { .. }) {
             self.stop_camera();
         }
-        let result = self.commit(Some(action));
+        let result = self.commit(Some(action), false);
         // Consent revocation or terminal transitions stop camera synchronously.
         if !self
             .data
@@ -985,13 +1314,40 @@ impl Engine {
             }
         }
     }
-    fn commit(&mut self, action: Option<Action>) -> Result<Snapshot, String> {
+    /// M5: `wake_gap` is true only for the first tick after a long
+    /// tick gap (sleep / long suspension, see `tick()`). The
+    /// continuous clock keeps running while the machine sleeps on
+    /// both macOS (`mach_continuous_time`) and Windows
+    /// (`GetTickCount64`), so `elapsed` then spans the whole sleep
+    /// — and `sessions::advance` would credit it as focused time
+    /// and drain the session's remaining time. A wake tick credits
+    /// none of it: the gap is skipped, the session resumes with its
+    /// remaining time intact, and later ticks accrue normally.
+    /// The true `elapsed` is still used for the wall-jump math
+    /// below (wall and continuous agree across sleep, so the jump
+    /// stays ~0 and no false clock-jump event fires), and
+    /// wall-clock rules — schedule windows, one-shot expiry,
+    /// frozen wall expiry — still evaluate on wall time, so a
+    /// window that ended during sleep still ends on this tick.
+    fn commit(&mut self, action: Option<Action>, wake_gap: bool) -> Result<Snapshot, String> {
+        // M1: commit is the single writer behind execute / snapshot /
+        // tick, so the lock is enforced here as well as at each caller.
+        // An observer refuses outright — its snapshot may be stale, and
+        // a whole-snapshot save from it could delete rows the owner
+        // just created.
+        if !self.try_acquire_engine_lock() {
+            return Err(Self::ENGINE_LOCK_HELD.into());
+        }
         if let Some(error) = &self.failed {
             return Err(format!("Restrictions released after a storage error. Restart Preelock after resolving: {error}"));
         }
         let tick = clock::continuous_ms();
         let now = clock::now();
         let elapsed = tick.saturating_sub(self.anchor);
+        // M5: on a wake tick the sleep span is not focus time (see
+        // the doc comment above); every other commit credits the
+        // full elapsed interval.
+        let credit_elapsed = if wake_gap { 0 } else { elapsed };
         let mut next = self.data.clone();
         // Step 11 clock-tamper detection: compare the wall clock
         // against the monotonic anchor. Productive time is only
@@ -1051,7 +1407,7 @@ impl Engine {
             if !s.focus.attention.enabled
                 && !crate::notifications::grace_active(s.grace_until_ms, now)
             {
-                sessions::advance(s, elapsed, now);
+                sessions::advance(s, credit_elapsed, now);
             }
         }
         let changed = action.is_some();
@@ -1574,6 +1930,43 @@ impl Engine {
         }
         Ok(changed)
     }
+    /// M5: the single screen-time recording path. Attributes one
+    /// sampled interval (at most one bucket — a website replaces
+    /// the browser app, never adds to it) and writes it once: an
+    /// incrementing row in the `screen_time_usage` table plus the
+    /// same amount in the in-memory usage the snapshot later saves
+    /// with overwrite semantics, so a save after a record can never
+    /// double the total (see the M5 round-trip test). Called only
+    /// from the always-on sampler, which only the engine-lock
+    /// holder runs — no heartbeat or tray state is consulted, so
+    /// recording works identically with the GUI alive, the GUI
+    /// closed, the GUI force-quit, or no tray process at all, and
+    /// with or without a live session. Returns whether anything
+    /// was recorded.
+    fn record_screen_time_buckets(
+        &mut self,
+        now: i64,
+        delta: u64,
+        sample: &crate::platform::Sample,
+        browser_for_site: &crate::browser::BrowserStatus,
+    ) -> Result<bool, String> {
+        let buckets = crate::screen_time::sample_buckets(now, delta, sample, browser_for_site);
+        if buckets.is_empty() {
+            return Ok(false);
+        }
+        self.db.record_screen_time(&buckets)?;
+        for bucket in &buckets {
+            crate::screen_time::add_usage(
+                &mut self.data.screen_time_usage,
+                bucket.day_ms,
+                &bucket.kind,
+                &bucket.target,
+                &bucket.name,
+                bucket.ms,
+            );
+        }
+        Ok(true)
+    }
     fn sample_screen_time(&mut self, now: i64, delta: u64) -> Result<(), String> {
         if delta == 0 || delta > 3000 || !self.native {
             return Ok(());
@@ -1586,22 +1979,8 @@ impl Engine {
         // before (its own frontmost check handles apps).
         let browser_for_site = self.browser_status_for_app(&sample.id);
         let browser = self.browser_status();
-        let buckets = crate::screen_time::sample_buckets(now, delta, &sample, &browser_for_site);
+        let has_usage = self.record_screen_time_buckets(now, delta, &sample, &browser_for_site)?;
         let day_ms = crate::screen_time::local_day_start_ms(now);
-        let has_usage = !buckets.is_empty();
-        if has_usage && always_on_path_owns_recording(&self.data_dir) {
-            self.db.record_screen_time(&buckets)?;
-            for bucket in &buckets {
-                crate::screen_time::add_usage(
-                    &mut self.data.screen_time_usage,
-                    bucket.day_ms,
-                    &bucket.kind,
-                    &bucket.target,
-                    &bucket.name,
-                    bucket.ms,
-                );
-            }
-        }
         if self.has_active() {
             return Ok(());
         }
@@ -1728,16 +2107,33 @@ impl Engine {
         Ok(())
     }
     pub fn tick(&mut self) -> Result<(), String> {
+        // M1: only the engine holding the cross-process lock may tick.
+        // An observer reloads the snapshot so the UI keeps showing the
+        // owner's state, then returns without ticking, sampling,
+        // publishing, or saving anything.
+        if !self.try_acquire_engine_lock() {
+            if let Ok(data) = self.db.load() {
+                self.data = data;
+            }
+            return Ok(());
+        }
+        // M4: a holder that opened or took over bridge-less retries
+        // the bridge here (throttled, one fast attempt), and a holder
+        // whose bridge server thread died restarts it — before any
+        // tick work publishes or samples, so enforcement never runs
+        // a tick with a bridge it could already have back.
+        self.ensure_bridge();
         // Step 6b: wall-clock gap detection. Ticks pause during sleep
         // on both OSes, so a gap over the threshold means wake from
-        // sleep (or a long suspension). The tick below already runs
-        // the existing session recovery path (commit(): monotonic
-        // timer, no offline credit) and then schedule re-evaluation
-        // on current local time, so a window that ended during sleep
-        // ends on this same tick and is never extended. The gap flag
-        // additionally expires due one-shot timers (step 6c) instead
-        // of firing them late. The timestamp is captured once so
-        // schedule and one-shot decisions share one moment.
+        // sleep (or a long suspension). The tick below runs commit()
+        // with the gap flag (M5: the sleep span is never credited
+        // as focus time — the continuous clock runs through sleep)
+        // and then schedule re-evaluation on current local time, so
+        // a window that ended during sleep ends on this same tick
+        // and is never extended. The gap flag additionally expires
+        // due one-shot timers (step 6c) instead of firing them
+        // late. The timestamp is captured once so schedule and
+        // one-shot decisions share one moment.
         let tick_wall = clock::now();
         let gap_exceeded = tick_gap_exceeded(self.last_tick_wall_ms, tick_wall);
         self.last_tick_wall_ms = Some(tick_wall);
@@ -1749,7 +2145,9 @@ impl Engine {
         if self.camera_test_until > 0 && clock::continuous_ms() >= self.camera_test_until {
             self.stop_test();
         }
-        self.commit(None)?;
+        // M5: the gap flag travels into commit so the sleep span is
+        // never credited as focus time (see `commit`).
+        self.commit(None, gap_exceeded)?;
         if crate::background::tracker_alive(&self.data_dir) {
             self.data.screen_time_usage = self.db.load_screen_time_usage()?;
         }
@@ -2054,37 +2452,14 @@ impl Engine {
                                 &usage,
                             );
                         }
-                        // Exactly one process writes a given interval: the
-                        // always-on sampler in `sample_screen_time` owns
-                        // recording while the desktop is alive, so this
-                        // session sampler records only when the desktop is
-                        // gone and a background tracker is running (the
-                        // mirror image of the always-on sampler's gate).
-                        // The buckets follow the same mutual-exclusion
-                        // rule as the always-on sampler: a website
-                        // replaces the browser application for the
-                        // interval, never adds to it.
-                        let session_path_records = session_path_owns_recording(&self.data_dir);
+                        // M5: this path never records screen time.
+                        // The always-on sampler in `sample_screen_time`
+                        // already recorded this tick's interval (it
+                        // runs first, on the same tick, with the
+                        // foreground browser's own attribution), so
+                        // recording here too would write the same
+                        // ~second twice. One sampler, one write.
                         let day_ms = crate::screen_time::local_day_start_ms(now);
-                        let buckets =
-                            crate::screen_time::sample_buckets(now, delta, &sample, &browser);
-                        if s.status == Status::Running
-                            && !in_break
-                            && session_path_records
-                            && !buckets.is_empty()
-                        {
-                            self.db.record_screen_time(&buckets)?;
-                            for bucket in buckets {
-                                crate::screen_time::add_usage(
-                                    &mut next.screen_time_usage,
-                                    bucket.day_ms,
-                                    &bucket.kind,
-                                    &bucket.target,
-                                    &bucket.name,
-                                    bucket.ms,
-                                );
-                            }
-                        }
                         if session_consented {
                             // Step 4: folder/title rules feed the EXACT
                             // existing blocked handling below (hide,
@@ -2526,6 +2901,295 @@ mod tests {
     /// Client UUID + browser report used by the network tests' fake extension.
     const TEST_CLIENT: &str = "11111111-1111-1111-1111-111111111111";
     const TEST_BROWSER: &str = "com.google.Chrome";
+    // M1: cross-process engine lock — the holder ticks and saves, the
+    // contender observes and refuses every write.
+    #[test]
+    fn observer_engine_never_ticks_or_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        assert!(holder.owns_engine_lock());
+        holder
+            .execute(Action::CreateSession {
+                title: "Held".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+
+        // A second engine on the same database is an observer.
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        // Its tick is a no-op reload: it sees the owner's session.
+        observer.tick().unwrap();
+        assert_eq!(observer.data.sessions.len(), 1);
+        assert_eq!(observer.data.sessions[0].title, "Held");
+        // A read-only snapshot works and does not save.
+        assert_eq!(observer.snapshot().unwrap().sessions.len(), 1);
+        // Writes are refused, and the refusal leaves the database alone.
+        assert!(observer
+            .execute(Action::CreateSession {
+                title: "Contender".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .is_err());
+        assert!(observer.replace_data(observer.data.clone()).is_err());
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert_eq!(stored.sessions.len(), 1);
+        assert_eq!(stored.sessions[0].title, "Held");
+        // Shutdown is refused too: the observer must not release the
+        // holder's restrictions. M3: it exits the UI only, with no
+        // shutdown and no "finish your session" notice.
+        assert_eq!(
+            observer.quit_decision(),
+            crate::quit::QuitDecision::ExitUiOnly
+        );
+        drop(holder);
+        // Once the holder is gone, the observer's next tick takes over.
+        observer.tick().unwrap();
+        assert!(observer.owns_engine_lock());
+        observer
+            .execute(Action::CreateSession {
+                title: "Takeover".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert_eq!(stored.sessions.len(), 2);
+    }
+    // M1: an observer's open must not persist recovery — the recovery
+    // save belongs to the lock holder alone — and taking over later
+    // purges one-shots that expired during the observer period instead
+    // of firing them late.
+    #[test]
+    fn observer_open_skips_recovery_save_and_takeover_purges_expired_one_shots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock-recovery.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder
+            .execute(Action::CreateSession {
+                title: "Live".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        // Plant a live session plus an already-expired one-shot, as a
+        // process killed mid-session would leave them.
+        holder.data.sessions[0].status = Status::Running;
+        holder
+            .data
+            .one_shots
+            .push(one_shot_timer(clock::now() - 60_000));
+        holder.db.save(&holder.data).unwrap();
+
+        let observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        // Recovery transforms ran in memory only: the live session
+        // reads Running with the force-quit flag set, and the expired
+        // one-shot is purged from this engine's copy — but nothing was
+        // persisted, so the database still holds the pre-recovery rows
+        // for the owner.
+        assert_eq!(observer.data.sessions[0].status, Status::Running);
+        assert!(observer.data.sessions[0].force_quit);
+        assert!(observer.data.one_shots.is_empty());
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert_eq!(stored.sessions[0].status, Status::Running);
+        assert_eq!(stored.one_shots.len(), 1);
+        assert!(!stored.sessions[0].force_quit);
+        drop(holder);
+        // Taking over purges the expired timer instead of firing it.
+        let mut observer = observer;
+        observer.tick().unwrap();
+        assert!(observer.owns_engine_lock());
+        assert!(observer.data.one_shots.is_empty());
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert!(stored.one_shots.is_empty());
+    }
+
+    // M4: tests that bind the real bridge port (47832) must not run
+    // concurrently — the port is one per machine, like production.
+    // Tests that only use `Bridge::test_bridge` (ephemeral port) do
+    // not need this guard. A panic while holding it must not cascade
+    // into the other tests, so a poisoned guard is recovered.
+    static FIXED_PORT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn fixed_port_guard() -> std::sync::MutexGuard<'static, ()> {
+        FIXED_PORT_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// M4: wait for a stopped bridge server thread to go stale
+    /// (its liveness stamp freezes on `stop()` and ages out of the
+    /// 5 s window). Polls instead of sleeping a fixed 5 s.
+    fn wait_until_server_dead(bridge: &Bridge) {
+        for _ in 0..100 {
+            if !bridge.server_alive() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("server thread did not go stale after stop()");
+    }
+
+    // M4 req 4: a relaunched GUI that opens as an observer must not
+    // start a second bridge — the owner's bridge (same port, same
+    // token) keeps serving the extension, and this engine's tick
+    // leaves it alone.
+    #[test]
+    fn observer_never_starts_a_second_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("second-bridge.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder.set_native_for_test(true);
+        // The owner's bridge, holding bridge.lock on this data dir.
+        let owner_bridge = Bridge::test_bridge(dir.path());
+        assert!(owner_bridge.server_alive());
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        observer.set_native_for_test(true);
+        observer.tick().unwrap();
+        assert!(observer.bridge.is_none());
+        assert!(Bridge::lock_held(dir.path()));
+        assert!(owner_bridge.server_alive());
+    }
+
+    // M4 req 3/4: an observer reports the bridge as owned elsewhere
+    // instead of "unavailable" — the extension is still served, just
+    // not by this process.
+    #[test]
+    fn observer_reports_bridge_owned_elsewhere() {
+        let _guard = fixed_port_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("owned-elsewhere.sqlite");
+        let holder = Engine::open(&path).unwrap();
+        assert!(holder.owns_engine_lock());
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        observer.set_native_for_test(true);
+        assert!(observer
+            .browser_status()
+            .error
+            .contains("Another Preelock process currently owns the browser bridge."));
+        assert!(!observer.browser_status().available);
+    }
+
+    // M4 req 1/7: a lock holder that opened bridge-less starts its
+    // bridge on the tick retry instead of enforcing nothing until a
+    // restart.
+    #[test]
+    fn holder_starts_bridge_on_retry() {
+        let _guard = fixed_port_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("retry.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        assert!(engine.owns_engine_lock());
+        assert!(engine.bridge.is_none());
+        engine.set_native_for_test(true);
+        engine.ensure_bridge();
+        assert!(engine.bridge.is_some());
+        assert!(engine.bridge_error.is_empty());
+        assert!(engine.bridge.as_ref().unwrap().server_alive());
+        assert!(Bridge::port_listening(browser::PORT));
+    }
+
+    // M4 req 7: while another bridge holds the lock the holder's
+    // retry fails fast and throttles (no tight loop, no stalled
+    // tick); once the holder dies the next retry recovers the bridge.
+    #[test]
+    fn holder_retries_bridge_after_lock_contention() {
+        let _guard = fixed_port_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("contention.sqlite");
+        let holder_bridge = Bridge::test_bridge(dir.path());
+        let mut engine = Engine::open(&path).unwrap();
+        assert!(engine.owns_engine_lock());
+        engine.set_native_for_test(true);
+        engine.ensure_bridge();
+        assert!(engine.bridge.is_none());
+        assert!(!engine.bridge_error.is_empty());
+        assert!(engine.bridge_error.contains("ownership"));
+        // Throttled: the next retry is armed ~5 s out, not at once.
+        assert!(engine.bridge_retry_at > clock::continuous_ms());
+        // The failed attempt did not disturb the live bridge.
+        assert!(holder_bridge.server_alive());
+        drop(holder_bridge);
+        // Simulate the retry window passing (the throttle itself is
+        // asserted above; waiting 5 s here would only test the clock).
+        engine.bridge_retry_at = 0;
+        engine.ensure_bridge();
+        assert!(engine.bridge.is_some());
+        assert!(engine.bridge_error.is_empty());
+    }
+
+    // M4 req 2/5: a bridge whose server thread died is restarted by
+    // the holder, and the restarted bridge republishes the live
+    // session's policy at once — the extension's next sync gets the
+    // same rules, inside the 65 s lease, with no stale policy.
+    #[test]
+    fn dead_server_bridge_is_restarted_and_republishes_policy() {
+        use std::io::{Read, Write};
+        let _guard = fixed_port_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut e, id) = network_engine(dir.path());
+        e.execute(Action::StartSession { id: id.clone() }).unwrap();
+        e.set_native_for_test(true);
+        // Kill the bridge's server thread for real (a fake stale
+        // stamp would be overwritten by the live thread) and wait
+        // for the liveness stamp to age out, exactly as a holder
+        // would observe a dead server on its tick.
+        e.bridge.as_ref().unwrap().stop();
+        wait_until_server_dead(e.bridge.as_ref().unwrap());
+        e.ensure_bridge();
+        let bridge = e.bridge.as_ref().unwrap();
+        assert!(bridge.server_alive());
+        assert!(Bridge::port_listening(browser::PORT));
+        assert!(e.bridge_error.is_empty());
+        // The restarted bridge serves the live session's policy to a
+        // syncing extension (same token, same port — no reload).
+        let token = e.pairing_token();
+        assert_eq!(token.len(), 64);
+        // The bridge's strict field validation only accepts
+        // lowercase browser ids over HTTP (the in-process test
+        // helpers bypass it); the sync below is a real HTTP sync,
+        // so it uses the lowercase id.
+        let body = serde_json::json!({
+            "client": TEST_CLIENT,
+            "browser": "com.google.chrome",
+            "applied_id": "",
+        })
+        .to_string();
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", browser::PORT)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        write!(stream, "POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", browser::PORT, body.len())
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            response.contains(&id),
+            "restarted bridge must republish the live policy: {response}"
+        );
+        assert!(
+            response.contains("reddit.com"),
+            "restarted bridge must republish the session rules: {response}"
+        );
+    }
     #[test]
     fn normal_shutdown_refuses_every_active_status() {
         let dir = tempfile::tempdir().unwrap();
@@ -2542,10 +3206,191 @@ mod tests {
             .unwrap();
         for status in [Status::Running, Status::Paused, Status::Preparing] {
             engine.data.sessions[0].status = status;
-            assert!(!engine.shutdown_if_idle());
+            assert_eq!(
+                engine.quit_decision(),
+                crate::quit::QuitDecision::CloseUiOnly
+            );
         }
         engine.data.sessions[0].status = Status::Completed;
-        assert!(engine.shutdown_if_idle());
+        assert_eq!(
+            engine.quit_decision(),
+            crate::quit::QuitDecision::ShutdownAndExit
+        );
+    }
+    // M3: the state-dependent quit decision. Owner + live session
+    // closes only the UI: no shutdown, no save, the session and the
+    // database are untouched.
+    #[test]
+    fn quit_decision_owner_active_closes_ui_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("quit-owner-active.sqlite")).unwrap();
+        engine
+            .execute(Action::CreateSession {
+                title: "Work".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        engine.data.sessions[0].status = Status::Running;
+        assert_eq!(
+            engine.quit_decision(),
+            crate::quit::QuitDecision::CloseUiOnly
+        );
+        assert_eq!(engine.data.sessions[0].status, Status::Running);
+        assert!(engine.failed.is_none());
+    }
+    // M3: owner + idle shuts the engine down (the ShutdownAndExit
+    // outcome performs the shutdown side effect).
+    #[test]
+    fn quit_decision_owner_idle_shuts_down_and_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("quit-owner-idle.sqlite")).unwrap();
+        engine
+            .execute(Action::CreateSession {
+                title: "Work".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        engine.data.sessions[0].status = Status::Completed;
+        assert_eq!(
+            engine.quit_decision(),
+            crate::quit::QuitDecision::ShutdownAndExit
+        );
+        assert_eq!(
+            engine.failed.as_deref(),
+            Some("Application is shutting down")
+        );
+    }
+    // M3: the M1 transient, fixed — an idle observer exits the UI
+    // only. It must not shut the engine down (the holder keeps its
+    // restrictions) and must not take the lock.
+    #[test]
+    fn quit_decision_observer_idle_exits_ui_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quit-observer-idle.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder
+            .execute(Action::CreateSession {
+                title: "Ready".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        assert_eq!(
+            observer.quit_decision(),
+            crate::quit::QuitDecision::ExitUiOnly
+        );
+        assert!(!observer.owns_engine_lock());
+        assert!(holder.failed.is_none());
+        assert_eq!(holder.data.sessions[0].status, Status::Ready);
+    }
+    // M3: observer + live session closes only the UI — and leaves
+    // the holder's session alone.
+    #[test]
+    fn quit_decision_observer_active_closes_ui_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quit-observer-active.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder
+            .execute(Action::CreateSession {
+                title: "Live".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        holder.data.sessions[0].status = Status::Running;
+        holder.db.save(&holder.data).unwrap();
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        assert_eq!(
+            observer.quit_decision(),
+            crate::quit::QuitDecision::CloseUiOnly
+        );
+        assert!(!observer.owns_engine_lock());
+        assert!(holder.failed.is_none());
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert_eq!(stored.sessions[0].status, Status::Running);
+    }
+    // M3: the observer's decision trusts a fresh database read over
+    // its own snapshot. Here the snapshot is stale-idle (the holder
+    // started the session after the observer opened) and the
+    // database says live: close the UI only.
+    #[test]
+    fn quit_decision_observer_trusts_fresh_database_over_stale_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        // The production database name: the observer's fresh read
+        // looks for exactly this file.
+        let path = dir.path().join("preelock.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder
+            .execute(Action::CreateSession {
+                title: "Later".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.has_active());
+        // The holder starts the session after the observer opened.
+        holder.data.sessions[0].status = Status::Running;
+        holder.db.save(&holder.data).unwrap();
+        assert!(!observer.has_active());
+        assert_eq!(
+            observer.quit_decision(),
+            crate::quit::QuitDecision::CloseUiOnly
+        );
+    }
+    // M3: the mirror case — the snapshot is stale-active (the holder
+    // ended the session after the observer opened) and the database
+    // says idle: exit the UI only, with no "finish your session"
+    // notice. This is the exact M1 transient.
+    #[test]
+    fn quit_decision_observer_stale_active_snapshot_yields_to_idle_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preelock.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder
+            .execute(Action::CreateSession {
+                title: "Ending".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        holder.data.sessions[0].status = Status::Running;
+        holder.db.save(&holder.data).unwrap();
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(observer.has_active());
+        // The holder ends the session after the observer opened.
+        holder.data.sessions[0].status = Status::Completed;
+        holder.db.save(&holder.data).unwrap();
+        assert!(observer.has_active());
+        assert_eq!(
+            observer.quit_decision(),
+            crate::quit::QuitDecision::ExitUiOnly
+        );
+        assert!(!observer.owns_engine_lock());
+        assert!(holder.failed.is_none());
     }
     #[test]
     fn browser_domain_relevance_follows_website_blocking_mode() {
@@ -3019,6 +3864,26 @@ mod tests {
             .is_err());
         assert!(engine.snapshot().unwrap().sessions.is_empty());
     }
+    #[test]
+    fn starting_camera_status_is_accepted_as_transient() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("test.sqlite")).unwrap();
+        engine.set_attention_camera_status(crate::attention_agent::Signal {
+            status: "starting".into(),
+            sampled_at_ms: clock::continuous_ms(),
+        });
+        assert_eq!(engine.attention_camera_status, "starting");
+        // Freshness is still enforced: a "starting" sampled 60s in the
+        // future is not fresh and stays unavailable. (An old timestamp
+        // cannot be built portably here: the Linux test clock counts
+        // from process start, so `now - 60_000` saturates to 0 and is
+        // fresh again when the process is young.)
+        engine.set_attention_camera_status(crate::attention_agent::Signal {
+            status: "starting".into(),
+            sampled_at_ms: clock::continuous_ms() + 60_000,
+        });
+        assert_eq!(engine.attention_camera_status, "camera_unavailable");
+    }
     fn network_engine(dir: &Path) -> (Engine, String) {
         let mut e = Engine::open(&dir.join("test.sqlite")).unwrap();
         e.bridge = Some(Bridge::test_bridge(dir));
@@ -3076,7 +3941,7 @@ mod tests {
         // Missing browser acknowledgement must never end the commitment.
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Preparing);
-        assert!(!e.shutdown_if_idle());
+        assert_eq!(e.quit_decision(), crate::quit::QuitDecision::CloseUiOnly);
         let dir2 = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir2.path());
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
@@ -3091,7 +3956,7 @@ mod tests {
             .acknowledge(TEST_CLIENT, TEST_BROWSER, "");
         e.tick().unwrap();
         assert_eq!(e.data.sessions[0].status, Status::Running);
-        assert!(!e.shutdown_if_idle());
+        assert_eq!(e.quit_decision(), crate::quit::QuitDecision::CloseUiOnly);
     }
     #[test]
     fn unsupported_os_deep_and_missing_camera_permission_fail_before_start() {
@@ -3756,7 +4621,12 @@ mod tests {
         assert_eq!(engine.data.sessions[0].status, Status::Completed);
         // And a gap tick on an idle engine runs cleanly and refreshes
         // the last-tick timestamp, so the next tick is not a gap.
-        let mut idle = Engine::open(&dir.path().join("idle.sqlite")).unwrap();
+        // M1: the idle engine gets its own data dir — two engines in
+        // one dir are holder + observer by design (one lock per data
+        // dir, matching production, where a data dir holds exactly one
+        // database), and an observer's tick never refreshes timestamps.
+        let idle_dir = tempfile::tempdir().unwrap();
+        let mut idle = Engine::open(&idle_dir.path().join("idle.sqlite")).unwrap();
         idle.last_tick_wall_ms = Some(clock::now() - 10 * TICK_GAP_THRESHOLD_MS);
         idle.tick().unwrap();
         let refreshed = idle.last_tick_wall_ms.unwrap();
@@ -3781,31 +4651,498 @@ mod tests {
         assert!(e.browser_status().cleanup_pending);
     }
 
+    /// M5: a fake extension report + foreground sample for the
+    /// recording tests. `record_screen_time_buckets` is the only
+    /// recording path, and it takes both as parameters, so the
+    /// tests can drive it without native sampling (which errors on
+    /// the Linux VM).
+    fn m5_browser_status(domain: &str) -> crate::browser::BrowserStatus {
+        crate::browser::BrowserStatus {
+            available: true,
+            connected: true,
+            applied_id: String::new(),
+            client_browser: "com.google.chrome".into(),
+            error: String::new(),
+            blocks: 0,
+            cleanup_pending: false,
+            active_domain: domain.into(),
+            browser_focused: true,
+            search_distracted: false,
+            channel_blocked: false,
+            activity_fresh: true,
+            extension_stale: false,
+            ext_v_debug: 0,
+            raw_browser_debug: String::new(),
+        }
+    }
+
+    fn m5_sample(id: &str, name: &str) -> crate::platform::Sample {
+        crate::platform::Sample {
+            id: id.into(),
+            name: name.into(),
+            pid: 1,
+            idle_ms: 0,
+            path: String::new(),
+            title: String::new(),
+        }
+    }
+
+    fn m5_recorded_total(engine: &Engine) -> u64 {
+        engine
+            .db
+            .load_screen_time_usage()
+            .unwrap()
+            .iter()
+            .map(|b| b.ms)
+            .sum()
+    }
+
     #[test]
-    fn screen_time_recording_ownership_is_exactly_one_process_per_interval() {
-        // The always-on sampler and the session sampler must be exact
-        // complements: whichever one owns a tick, the other skips it, so
-        // an interval is written once (the whole point of the
-        // browser/website mutual-exclusion accounting).
+    fn background_holder_records_screen_time_without_desktop_or_tray() {
+        // M5 req 1 + 3: the GUI is gone (no desktop heartbeat), the
+        // background tracker owns the engine, no tray process runs —
+        // and app + website intervals are still recorded. This is
+        // the exact state the old heartbeat gates dropped: with no
+        // live session the session path never ran, and the always-on
+        // path refused to record, so background idle time vanished.
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path();
-        // Neither heartbeat exists: no tracker, so the always-on path owns.
+        let mut engine = Engine::open(&data.join("m5.sqlite")).unwrap();
+        assert!(engine.owns_engine_lock());
+        std::fs::write(data.join("background-heartbeat"), b"x").unwrap();
+        assert!(!crate::background::desktop_alive(data));
+        assert!(crate::background::tracker_alive(data));
+        assert!(!crate::tray::lock_held(data));
+        let now = clock::now();
+        // Website interval: Chrome foreground, fresh focused domain.
+        assert!(engine
+            .record_screen_time_buckets(
+                now,
+                1000,
+                &m5_sample("com.google.Chrome", "Google Chrome"),
+                &m5_browser_status("instagram.com"),
+            )
+            .unwrap());
+        let usage = engine.db.load_screen_time_usage().unwrap();
+        assert_eq!(usage.len(), 1, "one bucket per interval, never two");
+        assert_eq!(usage[0].kind, "site");
+        assert_eq!(usage[0].target, "instagram.com");
+        assert_eq!(usage[0].ms, 1000);
+        assert_eq!(engine.data.screen_time_usage.len(), 1);
+        // App interval: a non-browser app, no browser report.
+        assert!(engine
+            .record_screen_time_buckets(
+                now,
+                1000,
+                &m5_sample("com.microsoft.VSCode", "Visual Studio Code"),
+                &m5_browser_status(""),
+            )
+            .unwrap());
+        assert_eq!(m5_recorded_total(&engine), 2000);
+    }
+
+    #[test]
+    fn screen_time_recording_is_heartbeat_independent_and_single_write() {
+        // M5 req 5: recording follows the engine lock, never the
+        // heartbeat files — the same 1 s interval records exactly
+        // 1000 ms in every liveness state, and a later snapshot save
+        // (which overwrites the table from the in-memory usage) can
+        // never double it. Replaces the old heartbeat-gate test,
+        // whose gates were the bug: they dropped intervals in the
+        // desktop-gone + tracker-alive state.
+        for (desktop, tracker) in [(false, false), (true, true), (false, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = dir.path();
+            if desktop {
+                crate::background::touch_desktop(data);
+            }
+            if tracker {
+                std::fs::write(data.join("background-heartbeat"), b"x").unwrap();
+            }
+            assert_eq!(crate::background::desktop_alive(data), desktop);
+            assert_eq!(crate::background::tracker_alive(data), tracker);
+            let mut engine = Engine::open(&data.join("m5.sqlite")).unwrap();
+            assert!(engine
+                .record_screen_time_buckets(
+                    clock::now(),
+                    1000,
+                    &m5_sample("com.google.Chrome", "Google Chrome"),
+                    &m5_browser_status("instagram.com"),
+                )
+                .unwrap());
+            assert_eq!(m5_recorded_total(&engine), 1000);
+            // Snapshot save after a record: overwrite semantics, so
+            // the total stays 1000 instead of doubling to 2000.
+            let snapshot = engine.data.clone();
+            engine.db.save(&snapshot).unwrap();
+            assert_eq!(m5_recorded_total(&engine), 1000);
+            assert_eq!(
+                engine
+                    .data
+                    .screen_time_usage
+                    .iter()
+                    .map(|b| b.ms)
+                    .sum::<u64>(),
+                1000
+            );
+        }
+    }
+
+    #[test]
+    fn observer_tick_writes_no_screen_time() {
+        // M5 req 5, observer side: a GUI that relaunched while the
+        // background owns the engine must not write anything — its
+        // tick is a reload only, so the owner's recorded total is
+        // untouched by the overlap.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m5.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        assert!(holder
+            .record_screen_time_buckets(
+                clock::now(),
+                1000,
+                &m5_sample("com.google.Chrome", "Google Chrome"),
+                &m5_browser_status("instagram.com"),
+            )
+            .unwrap());
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        observer.tick().unwrap();
+        let usage = crate::database::Database::open(&path)
+            .unwrap()
+            .load_screen_time_usage()
+            .unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].ms, 1000);
+    }
+
+    #[test]
+    fn scheduled_session_starts_without_gui_or_tray() {
+        // M5 req 4: a due schedule starts from a bare holder engine
+        // — no GUI process, no desktop heartbeat, no tray process —
+        // exactly the background engine's position after the GUI
+        // quits. The start is persisted, so the tray process (which
+        // reads the database) can show it.
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let mut engine = Engine::open(&data.join("m5.sqlite")).unwrap();
+        assert!(engine.owns_engine_lock());
         assert!(!crate::background::desktop_alive(data));
         assert!(!crate::background::tracker_alive(data));
-        assert!(always_on_path_owns_recording(data));
-        assert!(!session_path_owns_recording(data));
-        // Desktop alive + tracker alive: always-on path owns.
-        crate::background::touch_desktop(data);
-        std::fs::write(data.join("background-heartbeat"), b"x").unwrap();
-        assert!(crate::background::desktop_alive(data));
-        assert!(crate::background::tracker_alive(data));
-        assert!(always_on_path_owns_recording(data));
-        assert!(!session_path_owns_recording(data));
-        // Desktop gone, tracker alive (background process): session path owns.
-        std::fs::remove_file(data.join("desktop-heartbeat")).unwrap();
-        assert!(!crate::background::desktop_alive(data));
-        assert!(crate::background::tracker_alive(data));
-        assert!(!always_on_path_owns_recording(data));
-        assert!(session_path_owns_recording(data));
+        assert!(!crate::tray::lock_held(data));
+        engine.data.schedules.push(upcoming_schedule(0));
+        engine.tick().unwrap();
+        assert_eq!(engine.data.sessions.len(), 1);
+        let session = &engine.data.sessions[0];
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.schedule_id.as_deref(), Some("sched"));
+        assert!(session.focus.attention.enabled);
+        assert!(engine.has_active());
+        let reloaded = crate::database::Database::open(&data.join("m5.sqlite"))
+            .unwrap()
+            .load()
+            .unwrap();
+        assert_eq!(reloaded.sessions.len(), 1);
+        assert_eq!(reloaded.sessions[0].status, Status::Running);
+    }
+
+    #[test]
+    fn wake_tick_credits_no_sleep_time_to_plain_timer_session() {
+        // M5 req 6: the continuous clock runs through sleep on both
+        // OSes, so without the wake-gap clamp the first tick after
+        // waking would credit the whole sleep as focused time and
+        // drain the session. A plain (non-attention) Running session
+        // is the exposed case — attention sessions already cap
+        // their tick delta at 3000 ms in `attention::observe`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("m5.sqlite")).unwrap();
+        let mut session = running_session("wake");
+        assert!(
+            !session.focus.attention.enabled,
+            "test needs a plain-timer session"
+        );
+        engine.data.sessions.push(session);
+        // Fake a sleep: the monotonic anchor is pushed to the
+        // process start (elapsed then spans the sleep below), the
+        // wall anchor is pushed back by the same span so no false
+        // clock-jump fires, and the last tick was long ago.
+        engine.anchor = 0;
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let now = clock::now();
+        engine.wall = now - clock::continuous_ms() as i64;
+        engine.last_tick_wall_ms = Some(now - 10 * TICK_GAP_THRESHOLD_MS);
+        engine.tick().unwrap();
+        session = engine.data.sessions[0].clone();
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.focused_ms, 0, "sleep is not focus time");
+        assert_eq!(
+            session.remaining_ms,
+            25 * 60_000,
+            "remaining time survives the sleep"
+        );
+        assert!(
+            !session.report.events.iter().any(|e| e.kind == "clock_jump"),
+            "wall and continuous agree across sleep: no jump event"
+        );
+    }
+
+    // M6: shutdown / restart recovery.
+    #[test]
+    fn shutdown_checkpoint_saves_session_without_ending_it() {
+        // Req 1: an orderly-shutdown save keeps the session live
+        // with its remaining time — unlike `shutdown()`, which
+        // releases restrictions on an idle quit.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-checkpoint.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine
+            .execute(Action::CreateSession {
+                title: "Work".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: FocusConfig {
+                    attention: crate::attention::Policy {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                    activity_consent: true,
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        // `StartSession` needs the native platform, so — like the
+        // existing restart tests — mark the session Running and
+        // persist it directly: the on-disk status is what a
+        // shutdown checkpoint has to preserve.
+        engine.data.sessions[0].status = Status::Running;
+        engine.db.save(&engine.data).unwrap();
+        assert_eq!(engine.data.sessions[0].status, Status::Running);
+        // Holder-only: a second engine in the same dir is an
+        // observer while the first holds the lock, and must refuse
+        // to checkpoint (its snapshot may be stale).
+        let mut observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        assert!(observer.save_checkpoint().is_err());
+        drop(observer);
+        engine.save_checkpoint().unwrap();
+        drop(engine);
+        // The process died without `shutdown()` ever running: the
+        // session is still live on disk with its time intact.
+        let engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(engine.recovered_after_os_shutdown());
+        assert_eq!(engine.data.sessions[0].status, Status::Running);
+        assert_eq!(engine.data.sessions[0].remaining_ms, 25 * 60_000);
+        assert_eq!(engine.data.sessions[0].focused_ms, 0);
+    }
+
+    #[test]
+    fn plain_timer_session_survives_restart_with_remaining_intact() {
+        // M6 req 2/3: a live plain-timer session (attention off —
+        // reachable in production via one-shot sessions, backup
+        // restores, and legacy rows) resumes after a restart with
+        // its remaining time intact, on both the OS-restart path
+        // and the same-boot kill path. It must NOT be ended as
+        // Interrupted: ending it would silently lift its block.
+        for resume in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("m6-plain.sqlite");
+            let mut engine = Engine::open(&path).unwrap();
+            let mut session = running_session("plain");
+            assert!(!session.focus.attention.enabled);
+            session.focused_ms = 5 * 60_000;
+            session.remaining_ms = 20 * 60_000;
+            engine.data.sessions.push(session);
+            engine.db.save(&engine.data).unwrap();
+            drop(engine);
+            let engine = Engine::open_recovery(&path, false, resume, false).unwrap();
+            assert_eq!(engine.recovered_after_os_shutdown(), resume);
+            let session = &engine.data.sessions[0];
+            assert_eq!(session.status, Status::Running);
+            assert_eq!(session.remaining_ms, 20 * 60_000);
+            assert_eq!(session.focused_ms, 5 * 60_000);
+            assert!(
+                !session
+                    .report
+                    .events
+                    .iter()
+                    .any(|e| e.kind == "timer_upgrade"),
+                "a live plain timer is resumed, never upgraded away"
+            );
+        }
+    }
+
+    #[test]
+    fn first_tick_after_restart_credits_no_shutdown_gap_to_plain_timer() {
+        // M6 req 2/3: the M5 wake clamp applies to the shutdown gap
+        // too. The powered-off span must not inflate `focused_ms`
+        // or drain the session: the first tick after reopening
+        // credits nothing for the gap.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-gap.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.sessions.push(running_session("gap"));
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let mut engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        // Fake the powered-off span the way the M5 wake test fakes
+        // sleep: a stale monotonic anchor plus a long-ago last tick.
+        engine.anchor = 0;
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let now = clock::now();
+        engine.wall = now - clock::continuous_ms() as i64;
+        engine.last_tick_wall_ms = Some(now - 10 * TICK_GAP_THRESHOLD_MS);
+        engine.tick().unwrap();
+        let session = &engine.data.sessions[0];
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.focused_ms, 0, "powered-off time is not focus time");
+        assert_eq!(
+            session.remaining_ms,
+            25 * 60_000,
+            "remaining time survives the shutdown gap"
+        );
+    }
+
+    #[test]
+    fn schedule_due_after_login_starts_and_expired_window_does_not() {
+        // M6 req 10: a schedule whose window is still active when
+        // the machine comes back starts automatically on the first
+        // tick after login; a window that ended while the machine
+        // was off never starts.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-schedule.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.schedules.push(upcoming_schedule(0));
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let mut engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        engine.tick().unwrap();
+        assert_eq!(engine.data.sessions.len(), 1);
+        assert_eq!(engine.data.sessions[0].status, Status::Running);
+        assert_eq!(
+            engine.data.sessions[0].schedule_id.as_deref(),
+            Some("sched")
+        );
+
+        // A window that ended while powered off: build it from the
+        // local clock so the test holds at any hour.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-schedule-past.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let now = clock::now();
+        let (weekday, minutes) = crate::schedules::local_weekday_and_minutes(now);
+        let (day, start, end) = if minutes >= 180 {
+            (weekday, minutes - 120, minutes - 60)
+        } else {
+            ((weekday + 6) % 7, 22 * 60, 23 * 60)
+        };
+        engine.data.schedules.push(crate::schedules::Schedule {
+            id: "past".into(),
+            title: "Past block".into(),
+            days: vec![day],
+            start_time: format!("{:02}:{:02}", start / 60, start % 60),
+            end_time: format!("{:02}:{:02}", end / 60, end % 60),
+            focus: FocusConfig::default(),
+            enabled: true,
+            lock_changes: false,
+            lock: Default::default(),
+            lock_state: Default::default(),
+            warning_fired: vec![],
+            created_at: now,
+        });
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let mut engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        engine.tick().unwrap();
+        assert!(
+            engine.data.sessions.is_empty(),
+            "a window that ended while off never starts"
+        );
+    }
+
+    #[test]
+    fn one_shot_due_during_power_off_never_fires_after_login() {
+        // M6 req 10 (one-shot side): a timer whose fire time passed
+        // while the machine was off is purged at open, never fired
+        // retroactively at login.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-oneshot.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine
+            .data
+            .one_shots
+            .push(one_shot_timer(clock::now() - 60_000));
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let mut engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(engine.data.one_shots.is_empty());
+        engine.tick().unwrap();
+        assert!(engine.data.sessions.is_empty());
+    }
+
+    #[test]
+    fn login_recovery_recovers_session_for_tray_with_correct_remaining() {
+        // M6 req 5: after login recovery the tray reads the live
+        // session from the database and shows the correct remaining
+        // time — the tray process never computes time itself.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preelock.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let mut session = running_session("tray");
+        session.remaining_ms = 90_000;
+        engine.data.sessions.push(session);
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(engine.has_active());
+        let snapshot = engine.current();
+        let live = crate::tray::live_session(&snapshot).expect("live session");
+        assert_eq!(crate::tray::timer_text(live, clock::now()), "01:30 left");
+        // The same database read the --tray process does.
+        let from_db = crate::tray::read_live_session(dir.path()).expect("live session");
+        assert_eq!(from_db.remaining_ms, 90_000);
+    }
+
+    #[test]
+    fn camera_recovery_is_gated_on_camera_session() {
+        // M6 req 8 (engine side): after login, the attention agent
+        // — and therefore the camera — is only driven when a
+        // recovered session actually needs camera verification.
+        // Permission itself is enforced inside the agent/camera
+        // layer (`camera.rs` reports `permission_required` without
+        // starting capture); the engine must not ask for it when
+        // nothing needs it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-camera.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let mut session = running_session("cam");
+        session.focus.camera = true;
+        session.focus.attention.enabled = true;
+        session.focus.attention.verification = "camera_and_activity".into();
+        engine.data.sessions.push(session);
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(engine.needs_attention_agent());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m6-camera-idle.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.sessions.push(running_session("nocam"));
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(!engine.needs_attention_agent());
+    }
+
+    #[test]
+    fn ordinary_open_is_not_an_os_shutdown_recovery() {
+        // The login-window signal must stay false for a normal
+        // launch, or every manual launch after a quit would hide
+        // the window.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&dir.path().join("m6-ordinary.sqlite")).unwrap();
+        assert!(!engine.recovered_after_os_shutdown());
     }
 }

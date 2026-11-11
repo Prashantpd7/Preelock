@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn preelock_camera_stop();
     fn preelock_camera_status() -> *mut c_char;
     fn preelock_app_icon(identity: *const c_char) -> *mut c_char;
+    fn preelock_hide_from_dock();
 }
 fn text(ptr: *mut c_char) -> Result<String, String> {
     if ptr.is_null() {
@@ -62,6 +63,13 @@ pub fn app_icon(identity: &str) -> Option<String> {
     }
     let identity = std::ffi::CString::new(identity).ok()?;
     text(unsafe { preelock_app_icon(identity.as_ptr()) }).ok()
+}
+/// M2: hide a tray-only process (`Preelock --tray`) from the Dock
+/// and Cmd-Tab, so it is a menu-bar icon only. No-op on other
+/// platforms (see `super::hide_from_dock`). Call on the main thread
+/// once the app exists; harmless if called again.
+pub fn hide_from_dock() {
+    unsafe { preelock_hide_from_dock() };
 }
 /// Browsers installed on this Mac (whether running or not), so the user can
 /// pick their browser without having to open it first.

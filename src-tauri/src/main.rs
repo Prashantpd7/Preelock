@@ -4,22 +4,31 @@ fn main() {
     // without launching the GUI; anything else launches the GUI
     // exactly as before (see `cli::is_cli_invocation` — unknown
     // flags are treated as launcher arguments, not CLI commands).
+    // M7: the mode decision lives in `launch::launch_mode` (one
+    // table, unit-tested). Explicit arguments always win over the
+    // executable name, so `PreelockBackground.exe --tray` is a tray
+    // process, not a second background — the MSIX background copy
+    // only runs the background when launched bare, which is exactly
+    // what its startupTask does.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let background_executable = std::env::current_exe()
+    let exe_stem = std::env::current_exe()
         .ok()
         .and_then(|path| {
             path.file_stem()
                 .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
         })
-        .is_some_and(|stem| stem == "preelockbackground");
-    if args.iter().any(|arg| arg == "--attention") {
-        std::process::exit(preelock_lib::attention_agent::run());
+        .unwrap_or_default();
+    match preelock_lib::launch::launch_mode(&exe_stem, &args) {
+        preelock_lib::launch::LaunchMode::Attention => {
+            std::process::exit(preelock_lib::attention_agent::run())
+        }
+        preelock_lib::launch::LaunchMode::Background => {
+            std::process::exit(preelock_lib::background::run())
+        }
+        // M2: persistent menu-bar / system-tray process. Owns the tray
+        // icon while the GUI is down; exits when the GUI returns.
+        preelock_lib::launch::LaunchMode::Tray => std::process::exit(preelock_lib::tray::run()),
+        preelock_lib::launch::LaunchMode::Cli => std::process::exit(preelock_lib::cli::run(&args)),
+        preelock_lib::launch::LaunchMode::Gui => preelock_lib::run(),
     }
-    if background_executable || preelock_lib::background::is_invocation(&args) {
-        std::process::exit(preelock_lib::background::run());
-    }
-    if preelock_lib::cli::is_cli_invocation(&args) {
-        std::process::exit(preelock_lib::cli::run(&args));
-    }
-    preelock_lib::run();
 }

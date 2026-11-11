@@ -126,7 +126,20 @@ try {
         Check ($mainTask[0].DisplayName -ceq "Preelock") "Startup display name is Preelock"
         $backgroundExtension = $backgroundTask[0].ParentNode
         Check ($backgroundExtension.Executable -eq "PreelockBackground.exe") "Background task uses the independent executable"
+        Check ($mainTask[0].ParentNode.Executable -eq "Preelock.exe") "Main task uses the GUI executable"
         Check ($mainTask[0].Enabled -eq "false" -and $backgroundTask[0].Enabled -eq "false") "startupTasks are disabled by default (opt-in only)"
+        # M7: the background startupTask is only real if its
+        # executable is actually in the package, and it must be the
+        # same binary as the GUI copy under a different name — the
+        # mode is selected by that name (see src/launch.rs), so a
+        # stale or different background binary would start the
+        # wrong mode at sign-in. The manifest check above alone
+        # never proved the file exists.
+        $backgroundExe = Join-Path $extract "PreelockBackground.exe"
+        Check (Test-Path $backgroundExe) "PreelockBackground.exe is packaged"
+        if ((Test-Path $backgroundExe) -and (Test-Path $executable)) {
+            Check ((Get-FileHash $backgroundExe).Hash -eq (Get-FileHash $executable).Hash) "PreelockBackground.exe is byte-identical to Preelock.exe"
+        }
     }
 
     # Visual assets required by the manifest and by Partner Center.

@@ -32,12 +32,26 @@ impl Capture {
     pub fn poll(&mut self, now: u64) -> String {
         self.poll_with(now, &mut Native)
     }
+    // Current camera status without starting or stopping capture.
+    // Reports "off" while capture is down; otherwise the live device
+    // status. Used by the agent's liveness probe so checking the
+    // agent never restarts the camera.
+    pub fn status(&mut self) -> String {
+        self.status_with(&mut Native)
+    }
     fn stop_with(&mut self, device: &mut impl Device) {
         if self.on {
             device.stop();
         }
         self.on = false;
         self.retry_at = 0;
+    }
+    fn status_with(&mut self, device: &mut impl Device) -> String {
+        if self.on {
+            device.status()
+        } else {
+            "off".into()
+        }
     }
     fn poll_with(&mut self, now: u64, device: &mut impl Device) -> String {
         if !device.allowed() {
@@ -148,5 +162,30 @@ mod tests {
         c.stop_with(&mut d);
         assert!(!c.on);
         assert_eq!(d.stops, 2);
+    }
+    #[test]
+    fn status_reports_without_starting_or_stopping_capture() {
+        // The agent's liveness probe reads status: it must never start
+        // a stopped camera, and never stop a running one. Only an
+        // explicit stand-down stops capture.
+        let mut c = Capture::default();
+        let mut d = device();
+        d.available = true;
+        assert_eq!(c.status_with(&mut d), "off");
+        assert_eq!(d.starts, 0);
+        assert_eq!(d.stops, 0);
+        assert_eq!(c.poll_with(0, &mut d), "person_detected");
+        assert_eq!(d.starts, 1);
+        assert!(c.on);
+        assert_eq!(c.status_with(&mut d), "person_detected");
+        assert_eq!(d.starts, 1);
+        assert_eq!(d.stops, 0);
+        assert!(c.on);
+        c.stop_with(&mut d);
+        assert!(!c.on);
+        assert_eq!(d.stops, 1);
+        assert_eq!(c.status_with(&mut d), "off");
+        assert_eq!(d.starts, 1);
+        assert_eq!(d.stops, 1);
     }
 }

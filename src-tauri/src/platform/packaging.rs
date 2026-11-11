@@ -10,6 +10,23 @@
 pub const STARTUP_TASK_ID: &str = "VYSTRIQ";
 pub const BACKGROUND_STARTUP_TASK_ID: &str = "PreelockBackground";
 
+/// File stem of the dedicated MSIX background executable. M7: this
+/// is the stem `main.rs` (via `launch::launch_mode`) treats as the
+/// background copy, and the stem `launch::gui_executable` resolves
+/// away from when a spawn must open the GUI. It must stay identical
+/// to the file stem of [`BACKGROUND_EXE_FILE_NAME`], which is the
+/// `Executable` of the `PreelockBackground` startupTask in
+/// `windows/msix/AppxManifest.xml.template` — `scripts/verify-msix.ps1`
+/// checks the manifest side of that coupling, the `launch` tests
+/// check the dispatch side.
+pub const BACKGROUND_EXE_STEM: &str = "preelockbackground";
+/// The dedicated MSIX background executable, staged next to the GUI
+/// executable by `scripts/package-msix.ps1` (a copy of the same
+/// binary under a different name; the name is what selects the mode).
+pub const BACKGROUND_EXE_FILE_NAME: &str = "PreelockBackground.exe";
+/// The GUI executable, next to the background copy in the package.
+pub const GUI_EXE_FILE_NAME: &str = "Preelock.exe";
+
 /// `State` values reported by `Windows.ApplicationModel.StartupTask`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupState {
@@ -65,6 +82,25 @@ pub fn is_packaged_exe(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_executable_name_and_task_id_agree() {
+        // The MSIX manifest's background startupTask uses
+        // PreelockBackground.exe and `launch` dispatches on the
+        // stem: if either side renames one without the other, the
+        // packaged background stops starting (or the tray stops
+        // dispatching). The manifest side is checked by
+        // scripts/verify-msix.ps1; this pins the Rust side.
+        assert_eq!(
+            BACKGROUND_EXE_FILE_NAME
+                .strip_suffix(".exe")
+                .unwrap()
+                .to_ascii_lowercase(),
+            BACKGROUND_EXE_STEM
+        );
+        assert_eq!(BACKGROUND_STARTUP_TASK_ID, "PreelockBackground");
+        assert_eq!(GUI_EXE_FILE_NAME, "Preelock.exe");
+    }
 
     #[test]
     fn winrt_states_map_to_the_existing_login_contract() {

@@ -29,6 +29,10 @@ tiny_http = "0.12"
 # own dependency list, with no new crate versions.
 sha2 = "0.10"
 fs2 = "0.4"
+# M6: Unix signal handling for the --background process (SIGTERM on
+# macOS logout/shutdown, SIGINT). Already in Cargo.lock (0.2.191) via
+# transitive dependencies; this only adds it to Preelock's own list.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

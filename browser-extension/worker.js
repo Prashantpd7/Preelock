@@ -42,7 +42,7 @@ import { selfTest } from './self-test.js';
 // Bump this every time extension behavior changes. The desktop app
 // compares it against its own copy to spot extension copies that were
 // never reloaded after an app update.
-const EXTENSION_VERSION = 6;
+const EXTENSION_VERSION = 7;
 let serial = Promise.resolve();
 const enqueue = (work) => {
   serial = serial.then(work, work);
@@ -381,8 +381,19 @@ async function sync() {
     if (!acknowledgement.ok)
       throw new Error(`Bridge rejected pairing (${acknowledgement.status})`);
   } catch (error) {
-    // Fail open rather than strand network access after a crash or broken installation.
-    await removeRules();
+    // M4: a failed sync no longer drops the rules while the stored
+    // policy's lease is still valid. During a bridge handover (GUI
+    // killed, background taking over) the bridge is briefly
+    // unreachable; dropping the rules then would open a blocking gap
+    // until the next 30 s sync, even though the policy the extension
+    // already holds is still live. The lease still bounds fail-open:
+    // once it expires, the sync-start check above removes the rules,
+    // so a permanently dead bridge never strands blocking on. Fail
+    // open (rather than strand network access after a crash or
+    // broken installation) still applies once the lease is gone.
+    if (!leaseValid(policy)) {
+      await removeRules();
+    }
     const detail = String(error);
     const message = detail.includes('(403)')
       ? 'Connection code rejected. Copy it again from Preelock Settings.'

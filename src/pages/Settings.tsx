@@ -622,8 +622,9 @@ export function Settings() {
                   Permissions.
                 </p>
                 <p>
-                  During a session, closing and quitting are blocked. When idle,
-                  use the tray icon to reopen or quit.
+                  During a session, closing or quitting only hides the window —
+                  the session keeps running in the menu bar. When idle, use the
+                  tray icon to reopen or quit.
                 </p>
               </div>
               <p className="settings-footnote">

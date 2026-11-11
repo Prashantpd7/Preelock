@@ -40,3 +40,18 @@ Var PreelockLegacyRun
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\VYSTRIQ"
   ${EndIf}
 !macroend
+
+; M7: uninstall must not leave startup registrations behind. The
+; app writes both Run values itself at runtime (the "Preelock"
+; open-at-login value and the "Preelock Background" tracker value),
+; and Tauri's NSIS uninstaller only removes what the installer
+; wrote — so without this hook an uninstall left Windows trying to
+; launch a deleted exe at every sign-in. DeleteRegValue is a no-op
+; when a value is already absent. User data is untouched: the
+; database, pairing token and settings live under AppData and the
+; uninstaller never removes them (see scripts/smoke-windows.ps1).
+!macro NSIS_HOOK_PREUNINSTALL
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock Background"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "VYSTRIQ"
+!macroend

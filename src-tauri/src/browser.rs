@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     fs::File,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicU64, Arc, Mutex},
     time::Duration,
 };
 
@@ -19,7 +19,7 @@ pub const PORT: u16 = 47832;
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
-pub const EXTENSION_VERSION: u32 = 6;
+pub const EXTENSION_VERSION: u32 = 7;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
     #[serde(skip)]
@@ -110,11 +110,6 @@ impl Policy {
             },
         };
         let has_youtube_rules = !c.youtube_blocked_channels.is_empty() || c.youtube_study_mode;
-        // DEBUG 2026-11-03: log YouTube channels to diagnose empty policy
-        eprintln!(
-            "[preelock-debug] Policy::new youtube_blocked_channels={:?} study_mode={} has_rules={}",
-            c.youtube_blocked_channels, c.youtube_study_mode, has_youtube_rules
-        );
         let blocking = (!matches!(&c.website_blocking, WebsiteBlocking::None)
             && c.general_internet)
             || has_youtube_rules;
@@ -341,20 +336,102 @@ pub struct Bridge {
     server: Arc<tiny_http::Server>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     _ownership: File,
+    /// Continuous-ms time the server thread last looped (updated at
+    /// the top of every iteration, at least every 1 s while it lives).
+    /// M4: a bridge whose thread died still holds `bridge.lock` and
+    /// the port, so `server_alive()` below is how the engine notices
+    /// a dead server and restarts it instead of believing forever
+    /// that it owns a working bridge.
+    last_loop: Arc<AtomicU64>,
     /// Browser ids known to this machine, captured once at startup. Used to
     /// disambiguate extension reports (Comet looks exactly like Chrome).
     installed: Vec<String>,
 }
+/// M4: read-only bridge probes. Neither sends HTTP nor touches auth:
+/// `lock_held` tries the bridge flock and releases it at once, and
+/// `port_listening` is a bare TCP connect. An observer engine uses
+/// them to report the bridge truthfully (owned elsewhere) instead of
+/// claiming it is unavailable, and to tell a live bridge apart from
+/// a stale lock or a stale port binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeProbe {
+    pub lock_held: bool,
+    pub port_listening: bool,
+}
 impl Bridge {
     pub fn start(dir: &Path) -> Result<Self, String> {
-        Self::start_at(dir, PORT)
+        Self::start_at_retries(dir, PORT, 20, 20)
+    }
+
+    /// M4: single-attempt bridge start for the engine tick's retry
+    /// loop. `start()` retries the lock and the port bind for ~2 s
+    /// each, which is right at open / takeover but would stall every
+    /// tick while another engine still holds the bridge. This fails
+    /// fast instead; the tick retries on its own cadence (see
+    /// `Engine::ensure_bridge`).
+    pub fn try_start(dir: &Path) -> Result<Self, String> {
+        Self::start_at_retries(dir, PORT, 1, 1)
+    }
+
+    #[cfg(test)]
+    fn try_start_at(dir: &Path, port: u16) -> Result<Self, String> {
+        Self::start_at_retries(dir, port, 1, 1)
+    }
+
+    /// True when another process currently holds the bridge flock.
+    /// An uncreatable lock file is reported as held: fail closed.
+    /// (A flock cannot go stale: the OS releases it when the holding
+    /// process dies, so "held" always means a live process.)
+    pub fn lock_held(dir: &Path) -> bool {
+        let Ok(file) = File::create(dir.join("bridge.lock")) else {
+            return true;
+        };
+        if file.try_lock_exclusive().is_ok() {
+            let _ = file.unlock();
+            false
+        } else {
+            true
+        }
+    }
+
+    /// True when something is listening on the loopback port. Bare
+    /// TCP connect only — no bytes are sent and no auth is involved.
+    pub fn port_listening(port: u16) -> bool {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+    }
+
+    pub fn probe(dir: &Path, port: u16) -> BridgeProbe {
+        BridgeProbe {
+            lock_held: Self::lock_held(dir),
+            port_listening: Self::port_listening(port),
+        }
+    }
+
+    /// M4: whether the server thread that answers /sync is still
+    /// looping. Fresh within 5 s: the loop wakes at least every 1 s
+    /// (`recv_timeout`) or on each request, so a larger gap means
+    /// the thread is gone while this process still holds the lock
+    /// and the port.
+    pub fn server_alive(&self) -> bool {
+        clock::continuous_ms()
+            .saturating_sub(self.last_loop.load(std::sync::atomic::Ordering::Relaxed))
+            < 5_000
     }
 
     pub fn stop(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
         self.server.unblock();
     }
-    fn start_at(dir: &Path, port: u16) -> Result<Self, String> {
+    fn start_at_retries(
+        dir: &Path,
+        port: u16,
+        lock_attempts: u32,
+        bind_attempts: u32,
+    ) -> Result<Self, String> {
         let path = dir.join("browser-token");
         let token = if path.exists() {
             std::fs::read_to_string(&path).map_err(|e| e.to_string())?
@@ -384,7 +461,7 @@ impl Bridge {
         let ownership = File::create(dir.join("bridge.lock")).map_err(|e| e.to_string())?;
         let mut ownership_error = String::new();
         let mut ownership_acquired = false;
-        for _ in 0..20 {
+        for attempt in 0..lock_attempts {
             match ownership.try_lock_exclusive() {
                 Ok(()) => {
                     ownership_acquired = true;
@@ -392,7 +469,9 @@ impl Bridge {
                 }
                 Err(error) => {
                     ownership_error = error.to_string();
-                    std::thread::sleep(Duration::from_millis(100));
+                    if attempt + 1 < lock_attempts {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
         }
@@ -402,15 +481,19 @@ impl Bridge {
             ));
         }
         let mut last_error = String::new();
-        let server = (0..20)
-            .find_map(|_| match tiny_http::Server::http(("127.0.0.1", port)) {
-                Ok(server) => Some(server),
-                Err(error) => {
-                    last_error = error.to_string();
-                    std::thread::sleep(Duration::from_millis(100));
-                    None
-                }
-            })
+        let server = (0..bind_attempts)
+            .find_map(
+                |attempt| match tiny_http::Server::http(("127.0.0.1", port)) {
+                    Ok(server) => Some(server),
+                    Err(error) => {
+                        last_error = error.to_string();
+                        if attempt + 1 < bind_attempts {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        None
+                    }
+                },
+            )
             .map(Arc::new)
             .ok_or_else(|| format!("Browser bridge unavailable: {last_error}"))?;
         let port = server
@@ -421,11 +504,13 @@ impl Bridge {
         let state = Arc::new(Mutex::new(State::default()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let auth_key = Arc::new(Mutex::new(token.clone()));
-        let (s, state2, key, stopped) = (
+        let last_loop = Arc::new(AtomicU64::new(clock::continuous_ms()));
+        let (s, state2, key, stopped, loop_stamp) = (
             server.clone(),
             state.clone(),
             auth_key.clone(),
             stop.clone(),
+            last_loop.clone(),
         );
         let installed: Vec<String> = platform::installed_browsers()
             .into_iter()
@@ -434,6 +519,7 @@ impl Bridge {
         let thread_browsers = installed.clone();
         std::thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                loop_stamp.store(clock::continuous_ms(), std::sync::atomic::Ordering::Relaxed);
                 let Ok(Some(mut req)) = s.recv_timeout(Duration::from_secs(1)) else {
                     continue;
                 };
@@ -592,6 +678,7 @@ impl Bridge {
             server,
             stop,
             _ownership: ownership,
+            last_loop,
             installed,
         })
     }
@@ -647,7 +734,7 @@ impl Bridge {
     }
     #[cfg(test)]
     pub fn test_bridge(dir: &Path) -> Self {
-        let mut bridge = Self::start_at(dir, 0).unwrap();
+        let mut bridge = Self::start_at_retries(dir, 0, 20, 20).unwrap();
         // Deterministic test environment: the fake extension always reports
         // Chrome, so pin the installed list instead of reading the dev
         // machine (Comet-vs-Chrome disambiguation would otherwise rewrite
@@ -661,7 +748,11 @@ impl Bridge {
         let c = s.clients.entry(client.into()).or_default();
         c.browser = browser.into();
         c.ext_v = EXTENSION_VERSION;
-        c.last_seen = clock::continuous_ms();
+        // `last_seen == 0` means "never seen" to `status_from_best`,
+        // and on Linux `continuous_ms()` is ms-since-first-call, so
+        // an ack inside the process's first millisecond would store
+        // 0 and read back as never-connected. Clamp to 1.
+        c.last_seen = clock::continuous_ms().max(1);
         c.applied_id = id.into();
         c.error.clear();
     }
@@ -673,7 +764,8 @@ impl Bridge {
         let c = s.clients.entry(client.into()).or_default();
         c.browser = browser.into();
         c.ext_v = EXTENSION_VERSION;
-        c.last_seen = clock::continuous_ms();
+        // Same `last_seen == 0` clamp as `acknowledge` (see above).
+        c.last_seen = clock::continuous_ms().max(1);
         c.active_domain = domain.into();
         c.browser_focused = focused;
         c.error.clear();
@@ -1237,5 +1329,88 @@ mod tests {
         // The foreground Comet app does not leak Chrome's domain.
         let s = bridge.status_for_app("ai.perplexity.comet");
         assert_eq!(s.active_domain, "comet.example.com");
+    }
+
+    // M4: one bridge, one owner — the fast single-attempt start fails
+    // while another bridge holds the lock, and succeeds the moment
+    // that holder drops (holder death releases the flock, so there
+    // is no stale-lock cleanup step).
+    #[test]
+    fn try_start_fails_fast_while_bridge_lock_held_and_recovers_after_holder_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = Bridge::test_bridge(dir.path());
+        assert!(holder.server_alive());
+        let err = match Bridge::try_start_at(dir.path(), 0) {
+            Ok(_) => panic!("second bridge must not start while the lock is held"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("ownership"),
+            "expected an ownership error, got: {err}"
+        );
+        // The holder is untouched by the failed attempt.
+        assert!(holder.server_alive());
+        drop(holder);
+        let recovered = Bridge::try_start_at(dir.path(), 0).unwrap();
+        assert!(recovered.server_alive());
+    }
+
+    #[test]
+    fn server_liveness_reports_a_live_thread_and_a_dead_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        assert!(bridge.server_alive());
+        // Kill the thread for real: a fake stale stamp would be
+        // overwritten by the live thread on its next loop. After
+        // `stop()` the stamp freezes and goes stale within the 5 s
+        // window, so poll rather than asserting on a racy instant.
+        bridge.stop();
+        for _ in 0..100 {
+            if !bridge.server_alive() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("server thread did not go stale after stop()");
+    }
+
+    #[test]
+    fn probe_distinguishes_a_live_bridge_from_a_free_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = Bridge::probe(dir.path(), PORT);
+        assert!(!free.lock_held);
+        assert!(!free.port_listening);
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let live = Bridge::probe(dir.path(), port);
+        assert!(live.lock_held);
+        assert!(live.port_listening);
+        drop(bridge);
+        // The flock is released synchronously by the drop; the port
+        // frees when the server thread exits on unblock, so poll
+        // briefly instead of asserting on a racy instant.
+        for _ in 0..40 {
+            if !Bridge::port_listening(port) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let gone = Bridge::probe(dir.path(), port);
+        assert!(!gone.lock_held);
+        assert!(!gone.port_listening);
+    }
+
+    #[test]
+    fn try_start_recovers_after_a_stale_port_binding_is_released() {
+        // A previous holder's socket still bound (e.g. a listener
+        // that outlived its owner) must not strand the next holder
+        // forever: the start fails while the port is busy and
+        // succeeds once it is free.
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(Bridge::try_start_at(dir.path(), port).is_err());
+        drop(listener);
+        assert!(Bridge::try_start_at(dir.path(), port).is_ok());
     }
 }

@@ -13,14 +13,17 @@ mod clock;
 pub mod database;
 mod desktop_settings;
 pub(crate) mod engine;
+pub(crate) mod engine_lock;
 pub mod focus;
 mod frozen;
+pub mod launch;
 mod lifecycle;
 mod locks;
 pub mod models;
 mod notifications;
 pub mod platform;
 pub mod pomodoro;
+mod quit;
 mod rewards;
 mod schedules;
 pub mod screen_time;
@@ -29,6 +32,7 @@ mod settings;
 mod setup;
 mod stats;
 mod tamper;
+pub mod tray;
 use engine::Engine;
 use models::{Action, Snapshot};
 use std::sync::{
@@ -38,7 +42,17 @@ use std::sync::{
 
 #[derive(Default)]
 struct ExitApproved(AtomicBool);
+/// M6: whether the main window was auto-hidden at this launch
+/// (login launch, idle, no user login preference — see
+/// `quit::login_window_action`). While set, the idle tray menu
+/// also offers "Show Preelock"; cleared by `show_window`.
+#[derive(Default)]
+struct StartHidden(AtomicBool);
 use tauri::Manager;
+
+pub(crate) fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
 
 // Run native work off the event loop. macOS adapters dispatch AppKit calls to the main thread.
 #[tauri::command]
@@ -240,6 +254,11 @@ fn execute_cli_request(engine: &mut Engine, request: &cli::CliRequest) -> cli::C
 /// removal branch, despite comments implying removal; step 6 adds
 /// the removal branch, which is the documented rule.
 fn sync_login_for_sessions(app: &tauri::AppHandle) {
+    // `tauri dev` runs the raw debug binary, which cannot be registered as
+    // an OS login item. Startup cleanup above handles stale registrations.
+    if cfg!(debug_assertions) {
+        return;
+    }
     let register = app
         .state::<Mutex<Engine>>()
         .lock()
@@ -364,10 +383,44 @@ async fn settings_action(
         .map_err(|e| e.to_string())?
 }
 fn show_window(app: &tauri::AppHandle) {
+    // M6: the window is visible again, so later tray-menu rebuilds
+    // use the normal menu (no "Show Preelock" item).
+    if let Some(hidden) = app.try_state::<StartHidden>() {
+        hidden.0.store(false, Ordering::Release);
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+/// M6: tray menu for the current state. A live session shows the
+/// timer (shared `tray::build_menu`); idle normally shows only
+/// Quit — except while the main window is auto-hidden after a
+/// login launch, where the menu also offers "Show Preelock" so
+/// the window stays reachable without relaunching (on Windows
+/// there is no Dock Reopen event to fall back on). Once the
+/// window is shown, `show_window` clears the flag and later
+/// rebuilds use the normal menu.
+fn build_menu_for_state(
+    app: &tauri::AppHandle,
+    live: Option<&models::Session>,
+    start_hidden: bool,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    if live.is_some() || !start_hidden {
+        return crate::tray::build_menu(app, live);
+    }
+    let show = tauri::menu::MenuItem::with_id(app, "show", "Show Preelock", true, None::<&str>)?;
+    let quit = tauri::menu::MenuItem::with_id(app, "quit", "Quit Preelock", true, None::<&str>)?;
+    tauri::menu::Menu::with_items(app, &[&show, &quit])
+}
+/// M3: hide (never destroy) the main window, so the tray timer click
+/// can reopen it with `show_window`. Hiding is what "close only the
+/// main UI" means during a live session.
+fn hide_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
     }
 }
 fn blocked_quit(app: &tauri::AppHandle) {
@@ -377,30 +430,54 @@ fn blocked_quit(app: &tauri::AppHandle) {
         "Finish your focus session before closing Preelock.",
     );
 }
+/// M3: every user quit request — tray menu Quit, Cmd+Q /
+/// application-menu Quit / Dock Quit (via the native quit guard and
+/// via `ExitRequested`) — goes through the one state-dependent
+/// decision in `Engine::quit_decision`, driven by authoritative
+/// engine state, never by UI-local state:
+/// - Live session → hide only the main window. The GUI process, its
+///   tray icon, the background engine, the browser bridge and the
+///   camera agent all keep running; the session is untouched.
+/// - Idle + this engine owns the lock → shut the engine down and
+///   exit the UI + tray. The separate `--background` process is NOT
+///   stopped: screen-time tracking and scheduled sessions keep
+///   running there.
+/// - Idle + another engine owns the lock → exit only this UI
+///   process, with no shutdown and no "finish your session" notice
+///   (the M1 transient fix).
 fn quit(app: &tauri::AppHandle) {
     let app = app.clone();
     // Never wait on the engine from the UI thread: native sampling can be
     // waiting for that same thread. Check and shut down under one lock.
     tauri::async_runtime::spawn_blocking(move || {
-        let approved = {
+        let decision = {
             let state = app.state::<Mutex<Engine>>();
-            let result = match state.lock() {
-                Ok(mut engine) => {
-                    if engine.shutdown_if_idle() {
-                        app.state::<ExitApproved>().0.store(true, Ordering::Release);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Err(_) => false,
+            // Bind the match result first: as the block's tail
+            // expression its temporaries would outlive `state`.
+            let decision = match state.lock() {
+                // A poisoned engine mutex is a broken engine: take the
+                // safe direction and hide the UI instead of exiting
+                // or shutting anything down.
+                Ok(mut engine) => engine.quit_decision(),
+                Err(_) => crate::quit::QuitDecision::CloseUiOnly,
             };
-            result
+            decision
         };
-        if approved {
-            app.exit(0);
-        } else {
-            blocked_quit(&app);
+        match decision {
+            crate::quit::QuitDecision::CloseUiOnly => {
+                hide_main_window(&app);
+                desktop_settings::notify(
+                    "Session in progress",
+                    "Preelock keeps running in the menu bar — finish your focus session to quit.",
+                );
+            }
+            crate::quit::QuitDecision::ShutdownAndExit => {
+                app.state::<ExitApproved>().0.store(true, Ordering::Release);
+                app.exit(0);
+            }
+            crate::quit::QuitDecision::ExitUiOnly => {
+                disconnect_ui(&app);
+            }
         }
     });
 }
@@ -497,55 +574,9 @@ fn sync_frozen_overlay(app: &tauri::AppHandle, snapshot: &models::Snapshot) {
         }
     }
 }
-fn live_session(snapshot: &models::Snapshot) -> Option<&models::Session> {
-    snapshot.sessions.iter().find(|s| {
-        matches!(
-            s.status,
-            models::Status::Running | models::Status::Paused | models::Status::Preparing
-        )
-    })
-}
-fn tray_timer_text(session: &models::Session) -> String {
-    // Step 14: a grace session shows its countdown, not its full
-    // productive target — the block has not started enforcing yet.
-    if session.status == models::Status::Running
-        && crate::notifications::grace_active(session.grace_until_ms, crate::clock::now())
-    {
-        let secs =
-            crate::notifications::grace_remaining_secs(session.grace_until_ms, crate::clock::now());
-        return format!("Starting in {secs}s");
-    }
-    let secs = session.remaining_ms / 1000;
-    let clock = format!("{:02}:{:02}", secs / 60, secs % 60);
-    match session.status {
-        models::Status::Paused => format!("Paused - {clock}"),
-        models::Status::Preparing => "Starting session...".to_string(),
-        _ => format!("{clock} left"),
-    }
-}
-fn build_tray_menu(
-    app: &tauri::AppHandle,
-    live: Option<&models::Session>,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    match live {
-        Some(session) => {
-            let timer = tauri::menu::MenuItem::with_id(
-                app,
-                "timer",
-                tray_timer_text(session),
-                true,
-                None::<&str>,
-            )?;
-            tauri::menu::Menu::with_items(app, &[&timer])
-        }
-        None => {
-            let quit =
-                tauri::menu::MenuItem::with_id(app, "quit", "Quit Preelock", true, None::<&str>)?;
-            tauri::menu::Menu::with_items(app, &[&quit])
-        }
-    }
-}
-
+// M2: the live-session predicate, timer text, and tray menu now live
+// in `crate::tray`, shared by the GUI tray and the `--tray` process
+// so the two icons can never drift apart.
 fn migrate_legacy_data(new_dir: &std::path::Path) -> std::io::Result<()> {
     if new_dir.exists() {
         return Ok(());
@@ -640,6 +671,7 @@ pub fn run() {
             ));
             app.manage(Mutex::new(settings::Runtime::default()));
             app.manage(ExitApproved::default());
+            app.manage(StartHidden::default());
             desktop_settings::install_quit_guard(app.handle()).map_err(std::io::Error::other)?;
             // Sync open-at-login on every launch: registered while a
             // session is active (recovery after restart) or while any
@@ -648,19 +680,61 @@ pub fn run() {
             // unregisters the debug binary (macos.m guards
             // registration, but an old bad entry may still exist).
             sync_login_for_sessions(app.handle());
+            // M2: a tray process may own the menu-bar icon right now
+            // (it took over when this GUI exited or was killed). It
+            // exits within a second of the desktop heartbeat going
+            // fresh — the heartbeat was touched at setup start — so
+            // wait for it to release the tray lock before building
+            // this GUI's tray, or there would be two icons. If it
+            // does not exit in time, build anyway: the tray process
+            // still exits on its next tick.
+            crate::tray::wait_for_release(&dir, crate::tray::gui_takeover_wait());
+            // M6 req 9: after an OS shutdown/logout/restart with no
+            // live session — and no user "Start Preelock at login"
+            // preference — the main window does not pop up at login.
+            // The background engine still tracks and fires schedules,
+            // the tray icon stays available, and the window is only
+            // hidden (never destroyed): the tray's "Show Preelock"
+            // item or a Dock click reopens it. A manual launch, a
+            // live session, or the user's own login preference all
+            // show the window (see `quit::login_window_action`).
+            let start_hidden = {
+                let state = app.state::<Mutex<Engine>>();
+                let engine = state.lock().map_err(|_| "Session engine unavailable.")?;
+                crate::quit::login_window_action(
+                    engine.has_active(),
+                    crate::settings::login_user_pref_enabled(&dir),
+                    engine.recovered_after_os_shutdown(),
+                ) == crate::quit::LoginWindowAction::StartHidden
+            };
+            if start_hidden {
+                if let Some(hidden) = app.try_state::<StartHidden>() {
+                    hidden.0.store(true, Ordering::Release);
+                }
+                // Setup runs before the run loop starts, so no window
+                // is ever presented (the same timing the --tray
+                // process relies on to destroy its windows).
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
             let app_handle = app.handle();
             let (initial_menu, mut showing_timer) = {
                 let state = app.state::<Mutex<Engine>>();
                 let engine = state.lock().map_err(|_| "Session engine unavailable.")?;
                 let snapshot = engine.current();
-                let live = live_session(&snapshot);
-                (build_tray_menu(app_handle, live)?, live.is_some())
+                let live = crate::tray::live_session(&snapshot);
+                (
+                    build_menu_for_state(app_handle, live, start_hidden)?,
+                    live.is_some(),
+                )
             };
             let mut tray = tauri::tray::TrayIconBuilder::with_id("focus-controller")
                 .tooltip("Preelock focus controller")
                 .menu(&initial_menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "timer" => show_window(app),
+                    "show" => show_window(app),
                     "quit" => self::quit(app),
                     _ => {}
                 });
@@ -682,6 +756,17 @@ pub fn run() {
                         Err(_) => continue,
                     };
                     let needs_attention = engine.needs_attention_agent();
+                    // M6: the OS is shutting down / logging out — the
+                    // process is about to die, so checkpoint the
+                    // engine as-is (live sessions stay live) before
+                    // the tick below runs. The tick itself is still
+                    // run: at worst a schedule starting here is
+                    // checkpointed as Running and resumes at login.
+                    if lifecycle::ending() {
+                        if let Err(error) = engine.save_checkpoint() {
+                            log::warn!("Could not save shutdown checkpoint: {error}");
+                        }
+                    }
                     if needs_attention {
                         if let Err(error) = attention_agent::ensure_running(&cli_dir) {
                             log::warn!("Could not start attention agent: {error}");
@@ -708,11 +793,17 @@ pub fn run() {
                 // its true reason instead of the app just vanishing.
                 blockedpage::sync_overlay(&handle, &data);
                 // Tray menu follows the session: live timer while a session
-                // runs (no quit item), plain Quit when idle.
-                let live = live_session(&data);
+                // runs (no quit item), plain Quit when idle — plus a
+                // "Show Preelock" item while the window is auto-hidden
+                // after a login launch (M6 req 9).
+                let live = crate::tray::live_session(&data);
                 let active = live.is_some();
                 if active != showing_timer {
-                    if let Ok(next) = build_tray_menu(&handle, live) {
+                    let hidden = handle
+                        .try_state::<StartHidden>()
+                        .map(|s| s.0.load(Ordering::Acquire))
+                        .unwrap_or(false);
+                    if let Ok(next) = build_menu_for_state(&handle, live, hidden) {
                         if let Some(tray) = handle.tray_by_id("focus-controller") {
                             if tray.set_menu(Some(next.clone())).is_ok() {
                                 tray_menu = next;
@@ -723,7 +814,8 @@ pub fn run() {
                 } else if active {
                     if let (Some(session), Some(kind)) = (live, tray_menu.get("timer")) {
                         if let Some(item) = kind.as_menuitem() {
-                            let _ = item.set_text(tray_timer_text(session));
+                            let _ = item
+                                .set_text(crate::tray::timer_text(session, crate::clock::now()));
                         }
                     }
                 }
@@ -793,22 +885,32 @@ pub fn run() {
                 if lifecycle::ending() {
                     return;
                 }
-                let state = window.app_handle().state::<Mutex<Engine>>();
-                let active = state
-                    .try_lock()
-                    .map(|engine| engine.has_active())
-                    .unwrap_or(true);
-                if active {
-                    // A strict session is owned by the background engine;
-                    // closing the UI must not end it.
-                    return;
-                }
-                // Preserve the existing idle close-to-tray behavior.
+                // M3: closing the main window closes only the main UI —
+                // never the process, the engine, or the tray — whether
+                // a session is live or not. A strict session is owned
+                // by the background engine; closing the UI must not end
+                // it. The window is hidden (not destroyed) so the tray
+                // timer click can reopen it. Only a poisoned engine
+                // mutex keeps the window visible with the blocked-quit
+                // notice instead of hiding it.
+                let action = {
+                    let state = window.app_handle().state::<Mutex<Engine>>();
+                    // Bind the match result first: as the block's tail
+                    // expression its temporaries would outlive `state`.
+                    let action = match state.try_lock() {
+                        Ok(engine) => crate::quit::close_action(engine.has_active(), true),
+                        Err(_) => crate::quit::close_action(false, false),
+                    };
+                    action
+                };
                 api.prevent_close();
-                if state.try_lock().is_ok() {
-                    let _ = window.hide();
-                } else {
-                    blocked_quit(window.app_handle());
+                match action {
+                    crate::quit::WindowCloseAction::HideWindow => {
+                        let _ = window.hide();
+                    }
+                    crate::quit::WindowCloseAction::ShowBlockedNotice => {
+                        blocked_quit(window.app_handle());
+                    }
                 }
             }
         })
@@ -827,27 +929,43 @@ pub fn run() {
             settings_action,
             blockedpage::dismiss_blocked_app_page
         ])
-        .build(tauri::generate_context!());
+        .build(context());
     match result {
         Ok(app) => app.run(|app, event| match event {
+            // M6: OS shutdown/logout/restart (`lifecycle::ending()`).
+            // The process is about to die, so checkpoint the engine
+            // as-is — live sessions stay live with their remaining
+            // time — then let the exit proceed (never `prevent_exit`
+            // here: blocking the OS shutdown is not ours to do).
+            // The lock is only taken with `try_lock`: the tray
+            // thread may hold the engine mutex, and waiting on it
+            // from the run loop could stall the shutdown. A missed
+            // save is bounded by the periodic ~5 s checkpoint.
+            tauri::RunEvent::ExitRequested { .. } if lifecycle::ending() => {
+                if let Ok(mut engine) = app.state::<Mutex<Engine>>().try_lock() {
+                    if let Err(error) = engine.save_checkpoint() {
+                        log::warn!("Could not save shutdown checkpoint: {error}");
+                    }
+                }
+            }
             // Covers Cmd+Q, application-menu Quit, Dock Quit and app.exit(code).
-            // Only the checked shutdown helper can approve the final exit.
+            // M3: every user quit request goes through the same
+            // state-dependent decision as tray Quit — see `quit()`.
+            // Live session: only the main window hides; the process,
+            // tray, engine, bridge and camera agent keep running, so
+            // the M2 tray spawn that used to live on the active branch
+            // is gone (the GUI process no longer exits mid-session, so
+            // its own tray icon survives and no handover is needed).
+            // Idle: the engine owner shuts down and exits; an idle
+            // observer exits only the UI process. OS shutdown/logout
+            // (`lifecycle::ending()`) still exits fully — the arm
+            // above checkpoints first, then lets it exit.
             tauri::RunEvent::ExitRequested { api, .. }
                 if !lifecycle::ending()
                     && !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
             {
-                let active = app
-                    .state::<Mutex<Engine>>()
-                    .try_lock()
-                    .map(|engine| engine.has_active())
-                    .unwrap_or(true);
-                if active {
-                    api.prevent_exit();
-                    disconnect_ui(app);
-                } else {
-                    api.prevent_exit();
-                    quit(app);
-                }
+                api.prevent_exit();
+                quit(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_window(app),

@@ -26,7 +26,10 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "macos")]
-pub use macos::*;
+pub use macos::{
+    app_icon, applications, camera_permission, camera_start, camera_status, camera_stop, hide,
+    hide_from_dock, installed_browsers, request_camera, sample,
+};
 #[cfg(target_os = "windows")]
 pub use windows::*;
 pub fn supported() -> bool {
@@ -93,3 +96,8 @@ pub fn enable_background_startup() -> Result<(), String> {
 pub fn enable_background_startup() -> Result<(), String> {
     Ok(())
 }
+/// M2: hide the tray-only process from the Dock / Cmd-Tab. macOS
+/// provides this via `macos::hide_from_dock`; on Windows and Linux
+/// a windowless process shows no taskbar entry, so this is a no-op.
+#[cfg(not(target_os = "macos"))]
+pub fn hide_from_dock() {}
