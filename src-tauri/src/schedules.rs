@@ -21,10 +21,13 @@
 //! Step 6 (autostart) additions live here too, so the pure rules stay
 //! in one testable place:
 //! - `login_registration_needed`: the app registers for open-at-login
-//!   when a session is active OR any schedule is enabled. Rationale:
-//!   schedules can only fire if the app runs, so creating an enabled
-//!   schedule is explicit consent to launch at login. With neither, the
-//!   login item is removed.
+//!   when the user enabled the "Open at login" preference themselves OR
+//!   a session is active OR any schedule is enabled. Rationale: the
+//!   preference is the user's own ask for the app at login; schedules
+//!   can only fire if the app runs, so creating an enabled schedule is
+//!   explicit consent to launch at login; and a live session must
+//!   survive a shutdown, so its registration must never depend on the
+//!   preference. With none of the three, the login item is removed.
 //! - `OneShot` / `one_shot_action`: a one-shot timer fires once at a
 //!   future wall-clock time. It never fires retroactively: a time that
 //!   passed while the app was closed is purged at launch, a time that
@@ -169,15 +172,23 @@ pub fn validate_one_shot(mut shot: OneShot, now_ms: i64) -> Result<OneShot, Stri
     Ok(shot)
 }
 
-/// Whether the app should be registered for open-at-login (step 6a).
+/// Whether the app should be registered for open-at-login.
 /// Pure, so the rule is unit-testable without a Tauri handle: register
+/// when the user enabled the "Open at login" preference themselves OR
 /// when a manual session is active (the step-5 rule, unchanged) OR
 /// when ANY schedule is enabled — schedules can only fire if the app
 /// runs, so creating an enabled schedule is explicit consent to login
-/// launch. Otherwise (no active session, no enabled schedule) the
-/// caller must REMOVE the login item.
-pub fn login_registration_needed(has_active_session: bool, schedules: &[Schedule]) -> bool {
-    has_active_session || schedules.iter().any(|s| s.enabled)
+/// launch. Otherwise (preference off, no active session, no enabled
+/// schedule) the caller must REMOVE the login item. The user
+/// preference can never unregister the login item while a strict
+/// session is live: mandatory recovery after a shutdown must not
+/// depend on the preference.
+pub fn login_registration_needed(
+    has_active_session: bool,
+    schedules: &[Schedule],
+    user_login_pref: bool,
+) -> bool {
+    user_login_pref || has_active_session || schedules.iter().any(|s| s.enabled)
 }
 
 /// What the engine should do with one one-shot timer on one tick.
@@ -558,23 +569,39 @@ mod tests {
         let mut disabled = schedule(vec![1], "09:00", "10:00");
         disabled.enabled = false;
         // Active session alone registers (step-5 rule, unchanged).
-        assert!(login_registration_needed(true, &[]));
+        assert!(login_registration_needed(true, &[], false));
         assert!(login_registration_needed(
             true,
-            std::slice::from_ref(&disabled)
+            std::slice::from_ref(&disabled),
+            false
         ));
         // An enabled schedule alone registers: schedules can only fire
         // if the app runs, so the schedule is consent to login launch.
         assert!(login_registration_needed(
             false,
-            std::slice::from_ref(&enabled)
+            std::slice::from_ref(&enabled),
+            false
         ));
         // Removal case: no active session and no enabled schedule.
-        assert!(!login_registration_needed(false, &[]));
+        assert!(!login_registration_needed(false, &[], false));
         assert!(!login_registration_needed(
             false,
-            std::slice::from_ref(&disabled)
+            std::slice::from_ref(&disabled),
+            false
         ));
+    }
+
+    #[test]
+    fn login_registration_covers_user_preference_and_never_drops_a_live_session() {
+        // The user's own "Open at login" preference alone registers:
+        // with it on, the app opens at login even with nothing live.
+        assert!(login_registration_needed(false, &[], true));
+        // Turning the preference OFF while a strict session is live
+        // must NOT unregister the login item: mandatory recovery
+        // after a shutdown must not depend on the preference.
+        assert!(login_registration_needed(true, &[], false));
+        // Preference off, nothing live, nothing scheduled: remove.
+        assert!(!login_registration_needed(false, &[], false));
     }
 
     #[test]

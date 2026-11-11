@@ -376,21 +376,44 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             info["camera_status"] = json!(platform::camera_status());
             info["platform"] = json!(platform::name());
             info["version"] = json!(app.package_info().version.to_string());
+            // The user's own "Open at login" preference (the Settings
+            // toggle), recorded in the `login-user-enabled` marker
+            // file — separate from the OS registration state in
+            // `info["login"]`, which also reflects live sessions and
+            // enabled schedules. The toggle shows this value.
+            if let Ok(dir) = app.path().app_data_dir() {
+                info["login_user_pref"] = json!(login_user_pref_enabled(&dir));
+            }
             Ok(info)
         }
         SettingsAction::Login { enabled } => {
             if enabled && cfg!(debug_assertions) {
                 return Err("Open at login is available in the installed app.".into());
             }
-            native::login(enabled)?;
-            // Record the user's own choice (see the marker docs
+            // Record the user's own choice first (see the marker docs
             // above). A failure to write the marker is logged, not
-            // fatal: the OS registration itself succeeded, and the
-            // worst case is one hidden-window login launch.
+            // fatal: the decision below then reads the marker that is
+            // actually on disk.
             if let Ok(dir) = app.path().app_data_dir() {
                 if let Err(e) = set_login_user_pref(&dir, enabled) {
                     log::warn!("Could not record open-at-login preference: {e}");
                 }
+            }
+            // Apply the single login rule (user preference OR live
+            // session OR enabled schedule) in one OS call, so turning
+            // the toggle OFF while a strict session is live never
+            // unregisters the login item: mandatory recovery after a
+            // shutdown still works. Errors propagate so Settings can
+            // show the real saved/error state.
+            // In dev mode the decision is not applied (the debug
+            // binary cannot be registered); turning the preference off
+            // still cleans up a stale registration, as before.
+            if cfg!(debug_assertions) {
+                if !enabled {
+                    native::login(false)?;
+                }
+            } else {
+                native::login(crate::login_registration_decision(app))?;
             }
             Ok(json!(null))
         }

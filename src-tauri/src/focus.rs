@@ -62,14 +62,15 @@ pub struct FocusConfig {
     /// With an empty allowed list, study mode blocks every channel
     /// (Watch Later excepted when `youtube_allow_watch_later` is on).
     pub youtube_study_mode: bool,
-    /// Watch-Later exception: URLs with `list=WL` (playlist?list=WL
-    /// and watch?v=...&list=WL) stay open even when youtube.com is
-    /// domain-blocked or the channel is otherwise blocked. This is
-    /// extension-enforced only: query parameters are invisible to the
-    /// engine, so if the domain is blocked the engine still counts
-    /// youtube.com as not relevant even on an allowed Watch-Later
-    /// page (see the engine-limitation note in
-    /// browser-extension/rules.js).
+    /// Watch-Later exception: exactly the user's Watch Later playlist
+    /// page (`youtube.com/playlist?list=WL`) stays open even when
+    /// youtube.com is domain-blocked or absent from the allowlist. It
+    /// never covers another route — videos (including ones carrying
+    /// `list=WL`), Shorts, search, channel pages and other playlists
+    /// stay blocked. This is extension-enforced only: query parameters
+    /// are invisible to the engine, so the engine still counts
+    /// youtube.com as not relevant on the allowed page (see the
+    /// engine-limitation note in browser-extension/rules.js).
     pub youtube_allow_watch_later: bool,
     pub block_adult_content: bool,
     pub website_blocking: WebsiteBlocking,
@@ -159,6 +160,16 @@ impl FocusConfig {
     }
     pub fn apps_required(&self) -> bool {
         self.activity_consent
+    }
+    /// Safari selected where this session relies on the browser to enforce
+    /// its website rules: as the session browser, as an approved work app
+    /// (both modes), or in a Strict session's app allowlist. A Safari in a
+    /// Standard session's blocklist is not approved usage — blocking it
+    /// needs no extension — so it does not count.
+    pub fn safari_approved(&self) -> bool {
+        safari(&self.browser_app)
+            || self.attention.work_apps.iter().any(|id| safari(id))
+            || (self.mode != Mode::Standard && self.apps.iter().any(|id| safari(id)))
     }
     pub fn blocked(&self, id: &str) -> bool {
         self.blocked_sample(id, "", "")
@@ -483,6 +494,14 @@ pub fn supported_browser(id: &str) -> bool {
         ]
         .iter()
         .any(|name| id.ends_with(&format!("\\{name}")))
+}
+/// Safari is a known browser with no Preelock extension. It stays a normal
+/// application everywhere (screen time, app blocking, normal use); this is
+/// only used to refuse it where a session's website rules must be enforced
+/// inside the browser.
+pub fn safari(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    id == "com.apple.safari" || id.ends_with("\\safari.exe")
 }
 pub fn known_browser(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
@@ -1051,6 +1070,18 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     // browser app not in the frozen allowed-apps list anyway).
     // A frozen session WITH a picked browser still needs that
     // browser to be supported, like any other session.
+    // Session-specific Safari restriction (Safari has no Preelock
+    // extension): a session whose website rules the extension must enforce
+    // cannot approve Safari as a work app either, not just as its browser.
+    // Only checked where browser rules exist — Safari as a plain app in a
+    // session without website blocking is untouched, and Safari keeps
+    // running and being tracked normally.
+    if config.network_required() && config.safari_approved() {
+        return Err(
+            "Safari can't enforce this session's website rules. Choose a supported browser for the session, or remove Safari from your work apps."
+                .into(),
+        );
+    }
     let needs_browser_pick =
         config.network_required() && !(config.frozen.enabled && config.browser_app.is_empty());
     if needs_browser_pick && !supported_browser(&config.browser_app) {
@@ -1722,5 +1753,64 @@ mod tests {
         assert!(validate(browser.clone()).is_err());
         browser.blocked_folders = vec![r"C:\Games".into()];
         assert!(validate(browser).is_ok());
+    }
+}
+#[cfg(test)]
+mod safari_session_rules {
+    use super::*;
+    fn config() -> FocusConfig {
+        let mut c = FocusConfig {
+            browser_app: "ai.perplexity.comet".into(),
+            website_blocking: WebsiteBlocking::Blocklist,
+            domains: vec!["youtube.com".into()],
+            ..Default::default()
+        };
+        c.attention.work_apps = vec!["com.microsoft.VSCode".into()];
+        c
+    }
+    #[test]
+    fn safari_is_known_without_extension_support() {
+        assert!(safari("com.apple.Safari"));
+        assert!(safari("C:\\Program Files\\Safari\\Safari.exe"));
+        assert!(known_browser("com.apple.Safari"));
+        assert!(!supported_browser("com.apple.Safari"));
+        assert!(!safari("com.google.Chrome"));
+    }
+    #[test]
+    fn safari_work_app_is_rejected_when_the_session_blocks_websites() {
+        let mut c = config();
+        c.attention.work_apps.push("com.apple.Safari".into());
+        let err = validate(c).unwrap_err();
+        assert!(err.contains("Safari"), "{err}");
+    }
+    #[test]
+    fn safari_as_the_session_browser_is_rejected() {
+        let mut c = config();
+        c.browser_app = "com.apple.Safari".into();
+        let err = validate(c).unwrap_err();
+        assert!(err.contains("Safari"), "{err}");
+    }
+    #[test]
+    fn strict_sessions_cannot_allowlist_safari() {
+        let mut c = config();
+        c.mode = Mode::Strict;
+        c.website_blocking = WebsiteBlocking::Allowlist;
+        c.apps = vec!["com.apple.Safari".into()];
+        let err = validate(c).unwrap_err();
+        assert!(err.contains("Safari"), "{err}");
+    }
+    #[test]
+    fn blocking_safari_or_using_it_without_website_rules_stays_valid() {
+        // Standard mode: `apps` is the blocklist, so blocking Safari is fine.
+        let mut blocked = config();
+        blocked.apps = vec!["com.apple.Safari".into()];
+        assert!(validate(blocked).is_ok());
+        // No website rules at all: Safari is just an app you work in.
+        let mut plain = config();
+        plain.browser_app = String::new();
+        plain.domains = Vec::new();
+        plain.website_blocking = WebsiteBlocking::None;
+        plain.attention.work_apps = vec!["com.apple.Safari".into()];
+        assert!(validate(plain).is_ok());
     }
 }

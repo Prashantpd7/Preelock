@@ -43,8 +43,11 @@
 //! or an admin kill, and claiming otherwise would be false. What
 //! survives a kill is recovery, not prevention: the engine lock is
 //! released by the OS on process death, the background engine takes
-//! over on its next tick (M1), the tray reappears (M2), and a
-//! same-boot kill is flagged `force_quit` on the session. The OS
+//! over on its next tick (M1), the tray reappears (M2), and the
+//! session resumes from its checkpoint. A same-boot kill is NOT
+//! recorded as a force quit: the desktop app is only a view of a
+//! session the engine owns, so closing or quitting it never ends the
+//! block and is not tampering. The OS
 //! service registrations (LaunchAgent `KeepAlive` on macOS,
 //! Run-key + `RegisterApplicationRestart` on Windows) restart the
 //! background tracker after a kill; they do not — and cannot —

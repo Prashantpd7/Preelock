@@ -22,6 +22,15 @@ if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
 $legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
 $legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
 if (!$legacySetup.WaitForExit(120000) -or $legacySetup.ExitCode -ne 0) { throw "Legacy installation failed" }
+$executable = Join-Path $installDir "preelock.exe"
+function Stop-InstalledProcesses {
+    Get-Process preelock -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $executable } |
+        ForEach-Object {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            $_.WaitForExit(10000) | Out-Null
+        }
+}
 $legacyApp = Start-Process (Join-Path $installDir "preelock.exe") `
     -WorkingDirectory $installDir -PassThru
 try {
@@ -31,6 +40,7 @@ try {
     }
 } finally {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
+    Stop-InstalledProcesses
 }
 python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); p=json.loads(c.execute('select payload from preferences where id=1').fetchone()[0]); p['theme']='light'; c.execute('update preferences set payload=? where id=1',(json.dumps(p),)); c.commit()" $legacyDatabase
 if ($LASTEXITCODE -ne 0) { throw "Could not seed upgrade preference" }
@@ -72,6 +82,7 @@ try {
         Stop-Process -Id $app.Id
         $app.WaitForExit(10000) | Out-Null
     }
+    Stop-InstalledProcesses
 }
 $token = Join-Path (Split-Path $database -Parent) "browser-token"
 python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==10; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
@@ -98,6 +109,8 @@ if (!$uninstall.WaitForExit(120000)) { throw "Uninstaller timed out" }
 if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed" }
 for ($i = 0; $i -lt 30 -and (Test-Path $executable); $i++) { Start-Sleep -Seconds 1 }
 if (Test-Path $executable) { throw "Uninstaller left the application executable" }
+$lingering = @(Get-Process preelock -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $executable })
+if ($lingering.Count -gt 0) { throw "Uninstaller left running application process(es)" }
 if (!(Test-Path $database)) { throw "Uninstaller unexpectedly removed user data" }
 Write-Output "Unsigned NSIS install, resource integrity, process startup, and uninstall passed."
 Write-Output "SmartScreen and interactive browser/permission flows were not exercised by this test."

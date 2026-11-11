@@ -25,10 +25,24 @@ pub struct Sample {
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
+/// Native website identification (no browser extension): the foreground
+/// browser's active page URL, plus why it is unavailable when it is.
+/// `status` is one of `ok`, `permission_required`, `no_url`,
+/// `unavailable` or `unsupported`. Only a page URL is ever returned — the
+/// adapters never read page contents, titles or form values.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct WebSample {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub status: String,
+}
+
 #[cfg(target_os = "macos")]
 pub use macos::{
     app_icon, applications, camera_permission, camera_start, camera_status, camera_stop, hide,
-    hide_from_dock, installed_browsers, request_camera, sample,
+    hide_from_dock, installed_browsers, request_camera, request_web_permission, sample,
+    web_permission, web_sample,
 };
 #[cfg(target_os = "windows")]
 pub use windows::*;
@@ -69,6 +83,16 @@ mod unsupported {
     pub fn app_icon(_identity: &str) -> Option<String> {
         None
     }
+    pub fn web_sample() -> WebSample {
+        WebSample {
+            url: String::new(),
+            status: "unsupported".into(),
+        }
+    }
+    pub fn web_permission() -> &'static str {
+        "unsupported"
+    }
+    pub fn request_web_permission() {}
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use unsupported::*;

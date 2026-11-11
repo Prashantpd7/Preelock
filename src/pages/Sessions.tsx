@@ -1,16 +1,29 @@
-import { useState } from 'react';
-import { ArrowLeft, Plus, RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  CalendarDays,
+  Clock,
+  Hourglass,
+  Plus,
+  RefreshCw,
+  Timer,
+} from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { api, desktop } from '../services/api';
 import { setupProblem, splitDomains } from '../services/focusSetup';
-import { Empty, PageHeading } from '../components/ui';
+import { PageHeading } from '../components/ui';
+import {
+  defaultActivitySection,
+  type ActivitySection,
+} from '../services/activitySection';
 import { Dropdown } from '../components/Dropdown';
 import { BrowserSetup } from '../components/BrowserSetup';
+import { SafariBrowserNotice } from '../components/SafariBrowserNotice';
+import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
 import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
 import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
 import type { ScheduleCreateFields } from '../components/ScheduleConfirmDialog';
 import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
-import { PlanningSections } from '../components/PlanningSections';
 import { Activity } from './Activity';
 import {
   cleanDomain,
@@ -64,8 +77,22 @@ export function Sessions() {
   >('start');
   const [scheduleConfirmOpen, setScheduleConfirmOpen] = useState(false);
   const [oneShotConfirmOpen, setOneShotConfirmOpen] = useState(false);
+  // Activity dropdown selection, owned here so the cards and the
+  // dropdown stay in sync. The smart default is applied exactly once,
+  // when the snapshot first loads; after that the user's own choice
+  // sticks across re-renders and data changes.
+  const storeLoading = useAppStore((s) => s.loading);
+  const [section, setSection] = useState<ActivitySection | null>(null);
+  const [allowanceFormSignal, setAllowanceFormSignal] = useState(0);
+  const defaultSectionApplied = useRef(false);
+  useEffect(() => {
+    if (defaultSectionApplied.current || storeLoading) return;
+    defaultSectionApplied.current = true;
+    setSection(defaultActivitySection(data));
+  }, [storeLoading, data]);
   function startWizard(mode: 'start' | 'schedule' | 'oneshot') {
     setProblem('');
+    setSafariNotice(false);
     setMinutes(data.preferences.default_minutes);
     setStep(0);
     setMaxStep(0);
@@ -73,6 +100,7 @@ export function Sessions() {
     setCreating(true);
   }
   function resetWizard() {
+    setSafariNotice(false);
     setTitle('');
     setStep(0);
     setMaxStep(0);
@@ -132,9 +160,15 @@ export function Sessions() {
   }
   // One browser per session: shown when the user tries to pick a second.
   const [browserWarn, setBrowserWarn] = useState('');
+  // True while a browser chosen in the compatibility notice is being
+  // opened and waited for.
+  const [browserOpening, setBrowserOpening] = useState(false);
   const [maxStep, setMaxStep] = useState(0);
   const [creating, setCreating] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Session-only Safari compatibility notice (Safari has no Preelock
+  // extension, so it cannot enforce website rules during a session).
+  const [safariNotice, setSafariNotice] = useState(false);
   function applySavedSetup(preset: SavedSetup) {
     const f = structuredClone(preset.focus);
     // Saved before Manual check-ins was removed: use Apps only instead.
@@ -251,21 +285,21 @@ export function Sessions() {
     // textarea state is kept, so turning study mode off restores
     // what was typed.
     youtube_blocked_channels:
-      ytMode === 'block'
+      blockMode !== 'none' && ytMode === 'block'
         ? splitDomains(ytBlocked).flatMap((entry) => {
             const cleaned = cleanYouTubeChannel(entry);
             return cleaned ? [cleaned] : [];
           })
         : [],
     youtube_allowed_channels:
-      ytMode === 'study'
+      blockMode !== 'none' && ytMode === 'study'
         ? splitDomains(ytAllowed).flatMap((entry) => {
             const cleaned = cleanYouTubeChannel(entry);
             return cleaned ? [cleaned] : [];
           })
         : [],
-    youtube_study_mode: ytMode === 'study',
-    youtube_allow_watch_later: ytWatchLater,
+    youtube_study_mode: blockMode !== 'none' && ytMode === 'study',
+    youtube_allow_watch_later: blockMode !== 'none' && ytWatchLater,
     website_blocking: blockMode,
     camera:
       setup?.platform !== 'windows' &&
@@ -280,6 +314,76 @@ export function Sessions() {
       work_domains: [],
     },
   };
+  // Safari has no Preelock extension, so it can never enforce a session's
+  // website rules. The compatibility notice appears only while configuring
+  // such a session — never during normal use or screen-time tracking, and
+  // never for a session that blocks no websites.
+  const safariSelected =
+    workApps.some(isSafariId) ||
+    focus.apps.some(isSafariId) ||
+    isSafariId(focus.browser_app);
+  const extensionNeeded = sessionNeedsExtension(selected);
+  useEffect(() => {
+    if (creating && safariSelected && extensionNeeded) setSafariNotice(true);
+  }, [creating, safariSelected, extensionNeeded]);
+  // Choose a supported browser from the notice: Safari is removed, every
+  // other selected app is kept, and the browser is selected for this
+  // session. One browser per session, so switching browsers replaces the
+  // previous browser selection instead of adding a second one.
+  function chooseSupportedBrowser(id: string) {
+    setSafariNotice(false);
+    setBrowserWarn('');
+    const replacesBrowser = (x: string) =>
+      x === id || browsers.some((b) => b.id === x);
+    setWorkApps((ids) => [
+      ...ids.filter((x) => !isSafariId(x) && !replacesBrowser(x)),
+      id,
+    ]);
+    update({
+      browser_app: id,
+      apps: focus.apps.filter((x) => !isSafariId(x) && !replacesBrowser(x)),
+    });
+    const connected = (setup?.connected_browsers ?? []).some((c) =>
+      sameBrowser(c, id),
+    );
+    setGuide(!connected);
+    // The browser may not be running yet, so it would not be in the app
+    // list. Open it (the desktop launches the installed app by its own
+    // identity) and wait briefly for it to appear. Launching says nothing
+    // about the extension: an unconnected browser still gets the existing
+    // Connect browser guide above.
+    void openChosenBrowser(id);
+  }
+  async function openChosenBrowser(id: string) {
+    setBrowserOpening(true);
+    setBrowserWarn('');
+    try {
+      await api.openSetup('browser', id);
+    } catch {
+      setBrowserOpening(false);
+      setBrowserWarn(
+        "Couldn't open browser. Open the browser manually and refresh the app list.",
+      );
+      return;
+    }
+    try {
+      // Six polls, half a second apart: enough for a cold browser start,
+      // bounded so a browser that never appears cannot spin here.
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const next = await refresh(id);
+        if (next?.applications.some((app) => app.id === id)) return;
+        if (attempt < 5)
+          await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } finally {
+      setBrowserOpening(false);
+    }
+  }
+  function cancelSafariSelection() {
+    setSafariNotice(false);
+    setWorkApps((ids) => ids.filter((x) => !isSafariId(x)));
+    update({ apps: focus.apps.filter((x) => !isSafariId(x)) });
+  }
   const apps =
     setup?.applications.filter(
       (a) =>
@@ -287,6 +391,20 @@ export function Sessions() {
           a.id,
         ),
     ) ?? [];
+  // A selected application must always be visible so it can be unchecked,
+  // even when application discovery has not listed it yet (a browser that
+  // was just opened, or one this machine reports as installed only).
+  const knownNames = new Map<string, string>(
+    [...(setup?.applications ?? []), ...(setup?.browsers ?? [])].map(
+      (a) => [a.id, a.name] as [string, string],
+    ),
+  );
+  const appChoices = [
+    ...apps,
+    ...workApps
+      .filter((id) => !apps.some((a) => a.id === id))
+      .map((id) => ({ id, name: knownNames.get(id) ?? id })),
+  ];
   async function cameraPermission() {
     try {
       await api.requestCamera();
@@ -394,13 +512,20 @@ export function Sessions() {
                 return;
               }
               const badAllowed =
-                blockMode !== 'none'
+                blockMode !== 'none' && ytMode === 'study'
                   ? splitDomains(ytAllowed).find(
                       (entry) => cleanYouTubeChannel(entry) === null,
                     )
                   : undefined;
               if (badAllowed) {
                 setProblem(`Invalid YouTube channel: ${badAllowed}`);
+                return;
+              }
+              // Safari can never enforce this session's website rules:
+              // keep the user in the wizard with the compatibility notice
+              // instead of a generic problem message.
+              if (safariSelected && extensionNeeded) {
+                setSafariNotice(true);
                 return;
               }
               const issue = setupProblem(selected, setup, step === 2);
@@ -602,7 +727,7 @@ export function Sessions() {
                   then click “Refresh apps.”
                 </p>
                 <div className="application-picker">
-                  {apps.map((app) => (
+                  {appChoices.map((app) => (
                     <label className="check-label" key={app.id}>
                       <input
                         type="checkbox"
@@ -651,7 +776,7 @@ export function Sessions() {
                       {app.name}
                     </label>
                   ))}
-                  {!apps.length && (
+                  {!appChoices.length && (
                     <p className="muted small">
                       No apps found. Open a work app and refresh.
                     </p>
@@ -661,6 +786,11 @@ export function Sessions() {
                   {browserWarn && (
                     <p role="alert" className="camera-warn">
                       {browserWarn}
+                    </p>
+                  )}
+                  {browserOpening && (
+                    <p className="small muted" role="status">
+                      Opening the browser…
                     </p>
                   )}
                   <div className="setting-row">
@@ -704,7 +834,7 @@ export function Sessions() {
                       )}
                     </div>
                   </div>
-                  {guide && (
+                  {guide && !browserConnected && (
                     <BrowserSetup
                       setup={setup}
                       refresh={async () => {
@@ -1078,7 +1208,10 @@ export function Sessions() {
         </>
       ) : (
         <div className="focus-planning-grid">
-          <div className="panel new-session-card focus-planning-card">
+          <div className="panel focus-planning-card">
+            <span className="planning-card-icon" aria-hidden="true">
+              <Timer size={20} />
+            </span>
             <div className="section-heading section-start">
               <h2>Start a new focus session</h2>
             </div>
@@ -1086,9 +1219,6 @@ export function Sessions() {
               Choose what matters, set your time, and give it your full
               attention.
             </p>
-            <div className="panel">
-              <Empty>No active session</Empty>
-            </div>
             <div className="row controls">
               <button type="button" onClick={() => startWizard('start')}>
                 <Plus size={16} />
@@ -1096,24 +1226,98 @@ export function Sessions() {
               </button>
             </div>
           </div>
-          <PlanningSections
-            only="schedules"
-            onNewSchedule={() => startWizard('schedule')}
-          />
-          <PlanningSections
-            only="oneshots"
-            onNewOneShot={() => startWizard('oneshot')}
-          />
-          <PlanningSections only="allowances" />
+          <div className="panel focus-planning-card">
+            <span className="planning-card-icon" aria-hidden="true">
+              <CalendarDays size={20} />
+            </span>
+            <div className="section-heading section-start">
+              <h2>Schedules</h2>
+            </div>
+            <p className="small muted section-desc">
+              Automatic blocks on your weekly schedule. Needs open at login to
+              run.
+            </p>
+            <div className="row controls">
+              <button type="button" onClick={() => startWizard('schedule')}>
+                <Plus size={16} />
+                New schedule
+              </button>
+            </div>
+          </div>
+          <div className="panel focus-planning-card">
+            <span className="planning-card-icon" aria-hidden="true">
+              <Clock size={20} />
+            </span>
+            <div className="section-heading section-start">
+              <h2>Start once at</h2>
+            </div>
+            <p className="small muted section-desc">
+              One block at a chosen time.
+            </p>
+            <div className="row controls">
+              <button type="button" onClick={() => startWizard('oneshot')}>
+                <Plus size={16} />
+                New one-shot
+              </button>
+            </div>
+          </div>
+          <div className="panel focus-planning-card">
+            <span className="planning-card-icon" aria-hidden="true">
+              <Hourglass size={20} />
+            </span>
+            <div className="section-heading section-start">
+              <h2>Allowances</h2>
+            </div>
+            <p className="small muted section-desc">
+              Daily or weekly time budgets. Blocks always lift on reset.
+            </p>
+            <div className="row controls">
+              <button
+                type="button"
+                onClick={() => {
+                  setSection('allowances');
+                  setAllowanceFormSignal((n) => n + 1);
+                }}
+              >
+                <Plus size={16} />
+                New allowance
+              </button>
+            </div>
+          </div>
         </div>
       )}
-      <Activity />
+      <Activity
+        section={section ?? 'sessions'}
+        onSectionChange={setSection}
+        onNewSchedule={() => startWizard('schedule')}
+        onNewOneShot={() => startWizard('oneshot')}
+        allowanceFormSignal={allowanceFormSignal}
+      />
+      {safariNotice && creating && (
+        <SafariBrowserNotice
+          setup={setup}
+          onChoose={chooseSupportedBrowser}
+          onCancel={cancelSafariSelection}
+          onRefresh={async () => {
+            await refresh();
+          }}
+        />
+      )}
       {confirmOpen && (
         <SessionConfirmDialog
           title={title}
           minutes={minutes}
           strict={strict}
           busy={busy}
+          focus={selected}
+          appNames={Object.fromEntries(knownNames)}
+          browserName={
+            browsers.find((b) => sameBrowser(b.id, browserId))?.name ?? ''
+          }
+          browserConnected={browserConnected}
+          cameraPermission={setup?.camera_permission}
+          platform={setup?.platform}
+          safariWarning={safariSelected && extensionNeeded}
           onStart={() => void confirmStartSession()}
           onCancel={resetWizard}
         />
@@ -1124,6 +1328,15 @@ export function Sessions() {
           minutes={minutes}
           strict={strict}
           busy={busy}
+          focus={selected}
+          appNames={Object.fromEntries(knownNames)}
+          browserName={
+            browsers.find((b) => sameBrowser(b.id, browserId))?.name ?? ''
+          }
+          browserConnected={browserConnected}
+          cameraPermission={setup?.camera_permission}
+          platform={setup?.platform}
+          safariWarning={safariSelected && extensionNeeded}
           onCreate={(fields) => void confirmCreateSchedule(fields)}
           onCancel={() => setScheduleConfirmOpen(false)}
         />
@@ -1134,6 +1347,15 @@ export function Sessions() {
           minutes={minutes}
           strict={strict}
           busy={busy}
+          focus={selected}
+          appNames={Object.fromEntries(knownNames)}
+          browserName={
+            browsers.find((b) => sameBrowser(b.id, browserId))?.name ?? ''
+          }
+          browserConnected={browserConnected}
+          cameraPermission={setup?.camera_permission}
+          platform={setup?.platform}
+          safariWarning={safariSelected && extensionNeeded}
           onCreate={(fields) => void confirmCreateOneShot(fields)}
           onCancel={() => setOneShotConfirmOpen(false)}
         />

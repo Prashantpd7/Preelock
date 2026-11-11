@@ -43,16 +43,27 @@ export function localDayStart(date: Date): number {
   ).getTime();
 }
 
+// Local-calendar day shift so DST transitions (23h or 25h days) always
+// land on local midnight `00:00:00.000` instead of drifting by an hour.
+export function shiftDays(dayMs: number, days: number): number {
+  const date = new Date(dayMs);
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate() + days,
+  ).getTime();
+}
+
 // Sunday (local) starting the week that contains dayMs, where dayMs is a
 // local-midnight timestamp.
 export function weekStartMs(dayMs: number): number {
-  return dayMs - new Date(dayMs).getDay() * DAY_MS;
+  return shiftDays(dayMs, -new Date(dayMs).getDay());
 }
 
 // The 7 local-midnight timestamps of the week starting at weekStart,
 // Sunday first.
 export function weekDays(weekStart: number): number[] {
-  return Array.from({ length: 7 }, (_, index) => weekStart + index * DAY_MS);
+  return Array.from({ length: 7 }, (_, index) => shiftDays(weekStart, index));
 }
 
 // A day's usage split by category, reusing the list's own mapping so the

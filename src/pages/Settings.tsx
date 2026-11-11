@@ -23,17 +23,44 @@ const tabs = [
   'Data & help',
 ] as const;
 type Tab = (typeof tabs)[number];
-export function Settings() {
+
+function parseTabQuery(searchStr: string): Tab | null {
+  const t = new URLSearchParams(searchStr).get('tab');
+  return (tabs as readonly string[]).includes(t ?? '') ? (t as Tab) : null;
+}
+
+function readLocationTab(locationSearch?: string): Tab | null {
+  if (locationSearch !== undefined) return parseTabQuery(locationSearch);
+  const hashQuery = window.location.hash.includes('?')
+    ? window.location.hash.slice(window.location.hash.indexOf('?'))
+    : '';
+  return parseTabQuery(hashQuery) ?? parseTabQuery(window.location.search);
+}
+
+export function Settings({
+  locationSearch,
+  navigationKey,
+}: {
+  locationSearch?: string;
+  navigationKey?: string;
+} = {}) {
   const { data, execute, busy, refresh } = useAppStore();
   // Allow deep-linking to a specific tab, e.g. /settings?tab=Connections
   // from the Dashboard's "Connect browser" button.
-  const initialTab = (() => {
-    const t = new URLSearchParams(window.location.search).get('tab');
-    return (tabs as readonly string[]).includes(t ?? '')
-      ? (t as Tab)
-      : 'General';
-  })();
-  const [tab, setTab] = useState<Tab>(initialTab);
+  const [tab, setTab] = useState<Tab>(
+    () => readLocationTab(locationSearch) ?? 'General',
+  );
+  useEffect(() => {
+    const requested = readLocationTab(locationSearch);
+    if (!requested) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (active) setTab(requested);
+    });
+    return () => {
+      active = false;
+    };
+  }, [locationSearch, navigationKey]);
   const [draft, setDraft] = useState({
     ...preferenceDefaults,
     ...data.preferences,
@@ -185,21 +212,22 @@ export function Settings() {
                   disabled={disabled}
                 />
               </SettingRow>
-              <SettingRow title="Open at login" hint="Opens the app at login.">
-                <span
-                  className="status-pill"
-                  aria-label={
-                    info.login === 1
-                      ? 'Open at login is on'
-                      : 'Open at login is automatic'
+              <SettingRow
+                title="Open at login"
+                hint={
+                  info.login_user_pref && info.login === 2
+                    ? 'Needs approval in System Settings to open at login.'
+                    : 'Opens the app at login.'
+                }
+              >
+                <Toggle
+                  label="Open at login"
+                  checked={info.login_user_pref ?? false}
+                  onChange={(v) =>
+                    void run({ type: 'login', enabled: v }, 'Saved')
                   }
-                >
-                  {info.login === 1
-                    ? 'On'
-                    : info.login === 2
-                      ? 'Needs approval'
-                      : 'Auto'}
-                </span>
+                  disabled={disabled || info.login_user_pref === undefined}
+                />
               </SettingRow>
               {switchRow(
                 'Show timer in menu bar',

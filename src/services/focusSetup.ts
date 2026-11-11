@@ -1,4 +1,4 @@
-import { sameBrowser } from '../types';
+import { sameBrowser, sessionBrowsers } from '../types';
 import type { FocusConfig, FocusSetup } from '../types';
 export const splitDomains = (value: string) =>
   value
@@ -60,4 +60,67 @@ export function setupProblem(
   )
     return 'Allow camera access, or choose Apps only in step 1.';
   return '';
+}
+
+/** Which fixable prerequisites a session is still missing, as
+ *  separate flags (unlike `setupProblem`, which returns only the
+ *  first problem as text): the pre-session warning shows the
+ *  browser and camera fixes side by side when both are missing.
+ *  The rules mirror `setupProblem` and the manual "Before you
+ *  start" dialog, so the warning and the manual start agree:
+ *  - Browser: the session needs website blocking (domains, blocked
+ *    internet, strict mode with a browser, work domains, YouTube
+ *    channel rules, or a frozen session with a picked browser) and
+ *    its browser is not properly connected (not connected, an
+ *    error, or the extension reporting a different browser).
+ *  - Camera: the session needs camera checks (`camera` on, or
+ *    `camera_and_activity` verification) and access is not granted.
+ *    Camera checks exist on macOS only, so a camera requirement
+ *    never counts as missing on Windows.
+ *  No setup yet, or a device without native checking, means
+ *  nothing is reported missing: the caller shows "Checking…"
+ *  instead of a fix it cannot verify. */
+export interface MissingPrerequisites {
+  browser: boolean;
+  camera: boolean;
+}
+
+export function missingPrerequisites(
+  focus: FocusConfig,
+  setup: FocusSetup | null,
+): MissingPrerequisites {
+  const none = { browser: false, camera: false };
+  if (!setup || !setup.native_available) return none;
+  const p = focus.attention!;
+  const network =
+    (focus.mode === 'strict' && !!focus.browser_app) ||
+    !focus.general_internet ||
+    focus.domains.length > 0 ||
+    p.work_domains.length > 0 ||
+    (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
+    (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
+    !!focus.youtube_study_mode;
+  const frozenNetwork = !!focus.frozen?.enabled && !!focus.browser_app;
+  const needsConnection = network || frozenNetwork;
+  const sessionBrowserIds = sessionBrowsers(focus);
+  const connectedIds = setup.connected_browsers ?? [];
+  const unpairedBrowsers = sessionBrowserIds.filter(
+    (id) => !connectedIds.some((c) => sameBrowser(c, id)),
+  );
+  const browserOk =
+    !!setup.browser.connected &&
+    !setup.browser.error &&
+    (!focus.browser_app ||
+      (!!setup.browser.client_browser &&
+        sameBrowser(focus.browser_app, setup.browser.client_browser))) &&
+    unpairedBrowsers.length === 0;
+  const needsCamera =
+    focus.camera === true || p.verification === 'camera_and_activity';
+  return {
+    browser: needsConnection && !browserOk,
+    camera:
+      needsCamera &&
+      setup.platform !== 'windows' &&
+      setup.camera_permission !== 'granted',
+  };
 }

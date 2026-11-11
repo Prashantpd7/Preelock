@@ -15,6 +15,8 @@ fn main() {
             "CoreGraphics",
             "CoreMedia",
             "CoreVideo",
+            // Native website identification (Accessibility API).
+            "ApplicationServices",
         ] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }

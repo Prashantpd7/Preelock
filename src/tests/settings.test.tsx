@@ -180,3 +180,18 @@ it('offers startup on first run and does not request camera again when granted',
   expect(screen.getByRole('button', { name: 'Allowed' })).toBeDisabled();
   expect(api.requestCamera).not.toHaveBeenCalled();
 });
+
+it('toggles Open at login from Settings and saves the preference', async () => {
+  const user = userEvent.setup();
+  vi.mocked(settingsAction).mockResolvedValue({
+    login: 0,
+    login_user_pref: false,
+    notifications: 0,
+  });
+  render(<Settings />);
+  const toggle = await screen.findByRole('switch', { name: 'Open at login' });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  await user.click(toggle);
+  expect(settingsAction).toHaveBeenCalledWith({ type: 'login', enabled: true });
+});

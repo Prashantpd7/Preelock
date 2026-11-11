@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { Empty } from './ui';
 import { Dropdown } from './Dropdown';
 import { cleanDomain } from '../services/domains';
+import { inDateRange } from '../services/activitySection';
+import type { AnalyticsRange } from '../services/analytics';
 import {
   DAY_LABELS,
   formatDays,
@@ -28,23 +30,32 @@ import {
   type OneShot,
   type Schedule,
 } from '../types';
-// Schedules, one-shot timers, and allowances, moved here from the
-// Focus Sessions page: they live on the Focus Sessions page as cards
-// in a 2x2 grid next to the new-session card, in the same order, with
-// the same forms, lists, and behavior. `only` renders a single section
-// as one grid card; with no `only`, all three render (as before).
+// Schedules, one-shot timers, and allowances: they live in the
+// Activity dropdown on the Focus Sessions page, one section at a
+// time, with the same forms, lists, and behavior. `only` renders a
+// single section; with no `only`, all three render (as before).
 // `onNewSchedule` / `onNewOneShot` open the session wizard in
 // schedule / one-shot mode instead of the inline template form; the
 // inline form is still used for editing, and when no callback is
 // passed (standalone use) the New button opens it as before.
+// `allowanceFormSignal` opens the New allowance form when it
+// increments (the Allowances card's button); the form state itself
+// stays here.
 export function PlanningSections({
   only,
   onNewSchedule,
   onNewOneShot,
+  allowanceFormSignal = 0,
+  range = 'all',
 }: {
   only?: 'schedules' | 'oneshots' | 'allowances';
   onNewSchedule?: () => void;
   onNewOneShot?: () => void;
+  allowanceFormSignal?: number;
+  /** Date range from the Activity toolbar; 'all' shows everything.
+   *  Only the displayed lists are filtered — edit forms and lookups
+   *  keep using the full lists below. */
+  range?: AnalyticsRange;
 } = {}) {
   const { data, execute, busy } = useAppStore();
   // Scheduled blocks (step 5): the list and form live on the
@@ -100,6 +111,21 @@ export function PlanningSections({
   // Dashboard below the one-shot section, refreshing through the
   // same snapshot.
   const allowances: Allowance[] = data.allowances ?? [];
+  // Display lists for the Activity toolbar's date range. One-shots
+  // filter on their scheduled start; schedules and allowances on
+  // their creation date (they recur / are ongoing budgets, so no
+  // single event date exists). The full lists above stay in use for
+  // edit forms and lookups.
+  const now = new Date();
+  const visibleSchedules = schedules.filter((s) =>
+    inDateRange(s.created_at, range, now),
+  );
+  const visibleOneShots = oneShots.filter((o) =>
+    inDateRange(o.fire_at_ms, range, now),
+  );
+  const visibleAllowances = allowances.filter((a) =>
+    inDateRange(a.created_at, range, now),
+  );
   const [allowKind, setAllowKind] = useState<'site' | 'app'>('site');
   const [allowTitle, setAllowTitle] = useState('');
   const [allowTarget, setAllowTarget] = useState('');
@@ -110,6 +136,17 @@ export function PlanningSections({
   const [allowEditingId, setAllowEditingId] = useState<string | null>(null);
   const [allowFormOpen, setAllowFormOpen] = useState(false);
   const [allowProblem, setAllowProblem] = useState('');
+  // The Allowances card's New allowance button: each increment opens
+  // a fresh New allowance form. Tracked by ref so a later re-render
+  // with the same signal does not reopen (or reset) the form.
+  const lastAllowanceSignal = useRef(0);
+  useEffect(() => {
+    if (allowanceFormSignal > lastAllowanceSignal.current) {
+      lastAllowanceSignal.current = allowanceFormSignal;
+      resetAllowForm();
+      setAllowFormOpen(true);
+    }
+  }, [allowanceFormSignal]);
   function resetAllowForm() {
     setAllowKind('site');
     setAllowTitle('');
@@ -414,9 +451,9 @@ export function PlanningSections({
             Automatic blocks on your weekly schedule. Needs open at login to
             run.
           </p>
-          {schedules.length ? (
+          {visibleSchedules.length ? (
             <div className="session-list">
-              {schedules.map((s) => {
+              {visibleSchedules.map((s) => {
                 const active = isScheduleActive(s);
                 const lockedActive = isScheduleLockedActive(s);
                 const schedLockText = lockLabel(s.lock);
@@ -557,10 +594,10 @@ export function PlanningSections({
                 );
               })}
             </div>
+          ) : schedules.length ? (
+            <Empty>No schedules in this period.</Empty>
           ) : (
-            <div className="panel">
-              <Empty>No schedules yet.</Empty>
-            </div>
+            <Empty>No schedules yet.</Empty>
           )}
           {!schedFormOpen ? (
             <div className="row controls">
@@ -842,9 +879,9 @@ export function PlanningSections({
           <p className="small muted section-desc">
             One block at a chosen time.
           </p>
-          {oneShots.length ? (
+          {visibleOneShots.length ? (
             <div className="session-list">
-              {oneShots.map((o) => (
+              {visibleOneShots.map((o) => (
                 <div className="panel" key={o.id}>
                   <h3>{o.title}</h3>
                   <p className="small muted">
@@ -866,10 +903,10 @@ export function PlanningSections({
                 </div>
               ))}
             </div>
+          ) : oneShots.length ? (
+            <Empty>No one-shot timers in this period.</Empty>
           ) : (
-            <div className="panel">
-              <Empty>No one-shot timers yet.</Empty>
-            </div>
+            <Empty>No one-shot timers yet.</Empty>
           )}
           {!oneFormOpen ? (
             <div className="row controls">
@@ -963,9 +1000,9 @@ export function PlanningSections({
           <p className="small muted section-desc">
             Daily or weekly time budgets. Blocks always lift on reset.
           </p>
-          {allowances.length ? (
+          {visibleAllowances.length ? (
             <div className="session-list">
-              {allowances.map((a) => {
+              {visibleAllowances.map((a) => {
                 const exhausted = allowanceExhausted(a);
                 const remaining = allowanceRemainingMs(a);
                 return (
@@ -1024,10 +1061,10 @@ export function PlanningSections({
                 );
               })}
             </div>
+          ) : allowances.length ? (
+            <Empty>No allowances in this period.</Empty>
           ) : (
-            <div className="panel">
-              <Empty>No allowances yet.</Empty>
-            </div>
+            <Empty>No allowances yet.</Empty>
           )}
           {!allowFormOpen ? (
             <div className="row controls">

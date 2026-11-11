@@ -14,9 +14,11 @@
 //! - A session is "genuinely unrecoverable" only when its state cannot
 //!   be loaded or validated at all (legacy timer upgrade, storage
 //!   failure). Every live session whose remaining/focused time is
-//!   checkpointed in SQLite is recoverable, so it resumes — flagged
-//!   with `force_quit` when the previous process died in the same
-//!   boot, but not ended. The flag is visibility, not punishment.
+//!   checkpointed in SQLite is recoverable, so it resumes — not ended —
+//!   whether the previous process died in the same boot or the desktop
+//!   app was closed, quit or crashed. None of those is recorded as a
+//!   force quit: the block never stopped, so there is nothing to flag.
+//!   The legacy `force_quit` field survives on historical records.
 //!
 //! All helpers here are pure and shared across macOS and Windows;
 //! there is no platform `cfg` in this module.

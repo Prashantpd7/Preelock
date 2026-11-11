@@ -22,7 +22,9 @@ export const api = {
       | 'extension_folder'
       | 'camera_settings'
       | 'notification_settings'
-      | 'privacy_settings',
+      | 'privacy_settings'
+      | 'browser_download'
+      | 'browser',
     browserId = '',
   ) => invoke<void>('open_setup', { target, browserId }),
   focusSetup: (browserId?: string) =>

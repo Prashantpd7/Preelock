@@ -11,8 +11,10 @@ import {
 import { useAppStore } from '../state/store';
 import { countdown } from '../services/analytics';
 import { api, desktop } from '../services/api';
+import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
 import { Modal } from './SettingsControls';
 import { BrowserSetup } from './BrowserSetup';
+import { SessionReview } from './SessionReview';
 import {
   frozenLabel,
   lockDelayStatus,
@@ -160,6 +162,9 @@ export function SessionCard({
       (focusCfg.domains?.length ?? 0) > 0 ||
       (focusCfg.mode !== 'standard' && !!focusCfg.browser_app) ||
       (focusCfg.attention?.work_domains?.length ?? 0) > 0 ||
+      (focusCfg.youtube_blocked_channels?.length ?? 0) > 0 ||
+      (focusCfg.youtube_allowed_channels?.length ?? 0) > 0 ||
+      !!focusCfg.youtube_study_mode ||
       // Step 12: a frozen session with a picked browser needs
       // that browser connected (backend preflight requires it);
       // with no picked browser, no browser check applies.
@@ -167,7 +172,10 @@ export function SessionCard({
   const cameraPermission = setup?.camera_permission;
   const cameraBlocked =
     cameraPermission === 'denied' || cameraPermission === 'restricted';
-  const cameraReady = !needsCamera || cameraPermission === 'granted';
+  const cameraReady =
+    !needsCamera ||
+    setup?.platform === 'windows' ||
+    cameraPermission === 'granted';
   // The paired extension must report that it lives in this session's
   // browser — a connection from any other browser does not count.
   // Prefers the per-session status fetched for the popup; falls back to
@@ -192,6 +200,19 @@ export function SessionCard({
     unpairedBrowsers.length === 0;
   const browserReady = !needsBrowser || browserOk;
   const allReady = cameraReady && browserReady;
+  // Review shown at the top of the pre-start popup: the exact
+  // config this saved session will start with. Safari can never
+  // enforce website rules; the review warns about it (never on
+  // Windows — Safari is macOS-only — the review gates that).
+  const safariWarning =
+    !!focusCfg &&
+    sessionNeedsExtension(focusCfg) &&
+    (isSafariId(focusCfg.browser_app) ||
+      (focusCfg.apps ?? []).some((id) => isSafariId(id)));
+  const reviewBrowserName =
+    (browserSetup?.browsers ?? []).find((b) =>
+      sameBrowser(b.id, focusCfg?.browser_app ?? ''),
+    )?.name ?? '';
   const cameraState = cameraReady
     ? 'ready'
     : cameraBlocked
@@ -847,6 +868,23 @@ export function SessionCard({
       {readyOpen && (
         <Modal title="Before you start" onClose={() => setReadyOpen(false)}>
           <div className="dialog-stack">
+            {focusCfg && (
+              <SessionReview
+                focus={focusCfg}
+                title={session.title}
+                timing={{
+                  kind: 'immediate',
+                  minutes: session.duration_minutes,
+                }}
+                appNames={appNames}
+                browserName={reviewBrowserName}
+                browserConnected={browserOk}
+                cameraPermission={setup?.camera_permission}
+                platform={browserSetup?.platform}
+                safariWarning={safariWarning}
+                lockText={lockText}
+              />
+            )}
             {needsCamera && (
               <section className="ready-check">
                 <h3>Camera</h3>

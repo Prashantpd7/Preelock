@@ -29,6 +29,13 @@ pub struct Attribution<'a> {
     pub browser_focused: bool,
     /// The extension report is newer than the freshness window.
     pub activity_fresh: bool,
+    /// Native (extension-free) observation of the foreground app's active
+    /// page: the browser id the OS adapter sampled for, and the validated
+    /// hostname. Both empty when the adapter had nothing verifiable
+    /// (permission denied, private window with no exposed URL, browser UI
+    /// page, non-browser foreground app).
+    pub native_app: &'a str,
+    pub native_domain: &'a str,
     /// Length of the interval in ms (must be <= 3000 to be credited).
     pub delta: u64,
 }
@@ -36,15 +43,18 @@ pub struct Attribution<'a> {
 /// The core mutual-exclusion accounting rule. Every interval is credited
 /// to exactly one category:
 ///
-/// 1. the active website, when the foreground app IS the connected
-///    browser AND the extension reports a fresh, focused, identifiable
-///    domain (never for browser UI pages such as New Tab, settings,
-///    history or downloads — those report an empty domain);
+/// 1. the active website, when the foreground app IS the browser and
+///    either the extension reports a fresh, focused, identifiable domain
+///    (never for browser UI pages such as New Tab, settings, history or
+///    downloads — those report an empty domain) or the native OS adapter
+///    validated a hostname for that same foreground app;
 /// 2. otherwise the foreground application (the browser itself included
-///    when it is used without an active website).
+///    when it is used without an active website — the unidentified /
+///    private fallback).
 ///
 /// Website usage replaces browser application usage for the interval; it
-/// is never added to it, so an interval can never land in both buckets.
+/// is never added to it, so an interval can never land in both buckets,
+/// and the extension and native sources can never both be credited.
 /// Returns `None` for intervals that must not be credited at all (idle
 /// over 60 s, an empty foreground id, a zero/gap delta).
 /// The lock screen is never user activity: on macOS the frontmost
@@ -73,26 +83,35 @@ pub fn attribute_interval(input: &Attribution<'_>) -> Option<ScreenTimeBucket> {
     {
         return None;
     }
-    let website_active = input.activity_fresh
-        && input.browser_focused
-        && !input.active_domain.is_empty()
-        && crate::browser::same_browser(input.app_id, input.browser_app);
-    if website_active {
-        Some(ScreenTimeBucket {
+    // One decision for both sources (see websites::credited): the
+    // extension when it has a fresh focused domain for this browser,
+    // otherwise the native observation, otherwise nothing — which is the
+    // browser application's own interval below, never a lost one.
+    let extension = crate::websites::ExtensionSite {
+        browser: input.browser_app,
+        domain: input.active_domain,
+        focused: input.browser_focused,
+        fresh: input.activity_fresh,
+    };
+    let native = (!input.native_domain.is_empty()).then_some(crate::websites::NativeSiteRef {
+        app: input.native_app,
+        domain: input.native_domain,
+    });
+    match crate::websites::credited(input.app_id, extension, native) {
+        Some((domain, _source)) => Some(ScreenTimeBucket {
             day_ms: input.day_ms,
             kind: "site".into(),
-            target: input.active_domain.into(),
-            name: input.active_domain.into(),
+            target: domain.into(),
+            name: domain.into(),
             ms: input.delta,
-        })
-    } else {
-        Some(ScreenTimeBucket {
+        }),
+        None => Some(ScreenTimeBucket {
             day_ms: input.day_ms,
             kind: "app".into(),
             target: input.app_id.into(),
             name: input.app_name.into(),
             ms: input.delta,
-        })
+        }),
     }
 }
 
@@ -105,6 +124,21 @@ pub fn sample_buckets(
     sample: &Sample,
     browser: &BrowserStatus,
 ) -> Vec<ScreenTimeBucket> {
+    sample_buckets_with_native(now, delta, sample, browser, None)
+}
+
+/// The same rule plus an optional native (extension-free) observation of
+/// the foreground browser's active page. The native domain is used only
+/// when the extension has nothing fresh and focused for this app; either
+/// way one interval yields at most one bucket, so native and extension
+/// observations can never add up to double time.
+pub fn sample_buckets_with_native(
+    now: i64,
+    delta: u64,
+    sample: &Sample,
+    browser: &BrowserStatus,
+    native: Option<&crate::websites::NativeSite>,
+) -> Vec<ScreenTimeBucket> {
     let mut buckets = Vec::new();
     if let Some(bucket) = attribute_interval(&Attribution {
         day_ms: local_day_start_ms(now),
@@ -115,6 +149,8 @@ pub fn sample_buckets(
         active_domain: &browser.active_domain,
         browser_focused: browser.browser_focused,
         activity_fresh: browser.activity_fresh,
+        native_app: native.map(|n| n.app.as_str()).unwrap_or(""),
+        native_domain: native.map(|n| n.domain.as_str()).unwrap_or(""),
         delta,
     }) {
         buckets.push(bucket);
@@ -170,6 +206,7 @@ mod tests {
             browser_focused: focused,
             search_distracted: false,
             channel_blocked: false,
+            media_playing: false,
             activity_fresh: fresh,
             extension_stale: false,
             ext_v_debug: 0,
@@ -193,6 +230,293 @@ mod tests {
         assert_eq!(buckets[0].kind, kind);
         assert_eq!(buckets[0].target, target);
         assert_eq!(buckets[0].ms, ms);
+    }
+
+    fn credit(totals: &mut Vec<ScreenTimeBucket>, buckets: Vec<ScreenTimeBucket>) {
+        for bucket in buckets {
+            add_usage(
+                totals,
+                bucket.day_ms,
+                &bucket.kind,
+                &bucket.target,
+                &bucket.name,
+                bucket.ms,
+            );
+        }
+    }
+
+    fn native(app: &str, domain: &str) -> crate::websites::NativeSite {
+        crate::websites::NativeSite {
+            app: app.into(),
+            domain: domain.into(),
+        }
+    }
+
+    fn total(totals: &[ScreenTimeBucket]) -> u64 {
+        totals.iter().map(|b| b.ms).sum()
+    }
+
+    #[test]
+    fn native_site_is_credited_without_the_extension() {
+        // Requirement 2: no extension connection at all. The OS adapter's
+        // hostname is credited to the site and the browser app gets
+        // nothing for that interval.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        assert_one(
+            &sample_buckets_with_native(
+                1,
+                1000,
+                &s,
+                &disconnected,
+                Some(&native("com.google.Chrome", "youtube.com")),
+            ),
+            "site",
+            "youtube.com",
+            1000,
+        );
+    }
+
+    #[test]
+    fn native_website_time_accumulates_per_domain() {
+        // 10 min GitHub + 10 min WhatsApp, all through the native adapter.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        let mut totals = Vec::new();
+        for domain in ["github.com", "whatsapp.com"] {
+            let observation = native("com.google.Chrome", domain);
+            for _ in 0..600 {
+                credit(
+                    &mut totals,
+                    sample_buckets_with_native(1, 1000, &s, &disconnected, Some(&observation)),
+                );
+            }
+        }
+        assert_eq!(totals.len(), 2);
+        assert!(totals.iter().all(|b| b.kind == "site"));
+        assert_eq!(total(&totals), 20 * 60_000);
+        assert_eq!(
+            totals.iter().find(|b| b.target == "github.com").unwrap().ms,
+            10 * 60_000
+        );
+    }
+
+    #[test]
+    fn browser_foreground_time_is_kept_when_no_site_is_identified() {
+        // Incognito/private window, a browser UI page, or an adapter that
+        // could not read the page: the interval is browser application
+        // usage — never an invented site, never a dropped interval.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        assert_one(
+            &sample_buckets_with_native(1, 1000, &s, &disconnected, None),
+            "app",
+            "com.google.Chrome",
+            1000,
+        );
+        // An empty native domain means exactly the same thing.
+        assert_one(
+            &sample_buckets_with_native(
+                1,
+                1000,
+                &s,
+                &disconnected,
+                Some(&native("com.google.Chrome", "")),
+            ),
+            "app",
+            "com.google.Chrome",
+            1000,
+        );
+    }
+
+    #[test]
+    fn extension_and_native_never_double_count_one_interval() {
+        // Both sources describe the same second: exactly one bucket, one
+        // second credited, and the extension's more accurate tab wins.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let extension = status("com.google.chrome", "youtube.com", true, true);
+        let observation = native("com.google.Chrome", "github.com");
+        let buckets = sample_buckets_with_native(1, 1000, &s, &extension, Some(&observation));
+        assert_one(&buckets, "site", "youtube.com", 1000);
+        let mut totals = Vec::new();
+        credit(&mut totals, buckets);
+        assert_eq!(total(&totals), 1000);
+    }
+
+    #[test]
+    fn extension_disconnect_and_reconnect_hand_over_without_losing_time() {
+        // 10 min extension-connected YouTube, 10 min native GitHub after
+        // the extension disconnects, 10 min YouTube again after it
+        // reconnects: 30 minutes total, never 40.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let mut totals = Vec::new();
+        let connected = status("com.google.chrome", "youtube.com", true, true);
+        for _ in 0..600 {
+            credit(&mut totals, sample_buckets(1, 1000, &s, &connected));
+        }
+        let disconnected = status("", "", false, false);
+        let observation = native("com.google.Chrome", "github.com");
+        for _ in 0..600 {
+            credit(
+                &mut totals,
+                sample_buckets_with_native(1, 1000, &s, &disconnected, Some(&observation)),
+            );
+        }
+        for _ in 0..600 {
+            credit(
+                &mut totals,
+                sample_buckets_with_native(1, 1000, &s, &connected, Some(&observation)),
+            );
+        }
+        assert_eq!(total(&totals), 30 * 60_000);
+        assert_eq!(
+            totals
+                .iter()
+                .find(|b| b.target == "youtube.com")
+                .unwrap()
+                .ms,
+            20 * 60_000
+        );
+        assert_eq!(
+            totals.iter().find(|b| b.target == "github.com").unwrap().ms,
+            10 * 60_000
+        );
+    }
+
+    #[test]
+    fn rapid_tab_switching_credits_each_domain_its_own_intervals() {
+        // Alternating tabs every sample for 10 minutes: each host gets
+        // exactly its own seconds and the total is unchanged.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        let youtube = native("com.google.Chrome", "youtube.com");
+        let github = native("com.google.Chrome", "github.com");
+        let mut totals = Vec::new();
+        for interval in 0..600 {
+            let observation = if interval % 2 == 0 { &youtube } else { &github };
+            credit(
+                &mut totals,
+                sample_buckets_with_native(1, 1000, &s, &disconnected, Some(observation)),
+            );
+        }
+        assert_eq!(total(&totals), 10 * 60_000);
+        assert_eq!(totals.len(), 2);
+        assert!(totals.iter().all(|b| b.ms == 5 * 60_000));
+    }
+
+    #[test]
+    fn browser_switching_credits_only_the_foreground_browser() {
+        // A native observation always belongs to the frontmost window. If
+        // it were ever labelled with another browser, it must be refused
+        // rather than misattributed; Chrome keeps the interval instead.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        assert_one(
+            &sample_buckets_with_native(
+                1,
+                1000,
+                &s,
+                &disconnected,
+                Some(&native("com.microsoft.edgemac", "edge-news.microsoft.com")),
+            ),
+            "app",
+            "com.google.Chrome",
+            1000,
+        );
+        // Edge in the foreground with its own observation is credited.
+        let edge = sample("com.microsoft.edgemac", "Microsoft Edge", 0);
+        assert_one(
+            &sample_buckets_with_native(
+                1,
+                1000,
+                &edge,
+                &disconnected,
+                Some(&native("com.microsoft.edgemac", "edge-news.microsoft.com")),
+            ),
+            "site",
+            "edge-news.microsoft.com",
+            1000,
+        );
+    }
+
+    #[test]
+    fn leaving_or_minimizing_the_browser_credits_the_foreground_app() {
+        // The user switched to VS Code while the browser report (and the
+        // last native observation) are still around: the foreground app
+        // takes the interval, the browser/site get nothing.
+        let s = sample("com.microsoft.VSCode", "Visual Studio Code", 0);
+        let browser = status("com.google.chrome", "youtube.com", true, true);
+        assert_one(
+            &sample_buckets_with_native(
+                1,
+                1000,
+                &s,
+                &browser,
+                Some(&native("com.google.Chrome", "youtube.com")),
+            ),
+            "app",
+            "com.microsoft.VSCode",
+            1000,
+        );
+    }
+
+    #[test]
+    fn wake_from_sleep_gap_is_never_credited_and_tracking_resumes() {
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        let observation = native("com.google.Chrome", "github.com");
+        // The first tick after sleep carries the whole suspended span; it
+        // is discarded (existing rule: delta over 3 s is a gap).
+        assert!(
+            sample_buckets_with_native(1, 600_000, &s, &disconnected, Some(&observation))
+                .is_empty()
+        );
+        // The next ticks credit normally again.
+        assert_one(
+            &sample_buckets_with_native(1, 1000, &s, &disconnected, Some(&observation)),
+            "site",
+            "github.com",
+            1000,
+        );
+    }
+
+    #[test]
+    fn identified_and_unidentified_time_add_up_to_browser_foreground_time() {
+        // The requirement's 120-minute example: 50 YouTube + 30 WhatsApp
+        // + 20 GitHub + 10 other site + 10 unidentified = 120 minutes of
+        // Chrome, never 130 and never 110.
+        let s = sample("com.google.Chrome", "Google Chrome", 0);
+        let disconnected = status("", "", false, false);
+        let mut totals = Vec::new();
+        let plan: [(&str, u32); 5] = [
+            ("youtube.com", 3000),
+            ("whatsapp.com", 1800),
+            ("github.com", 1200),
+            ("docs.rs", 600),
+            ("", 600),
+        ];
+        for (domain, seconds) in plan {
+            let observation = native("com.google.Chrome", domain);
+            for _ in 0..seconds {
+                credit(
+                    &mut totals,
+                    sample_buckets_with_native(1, 1000, &s, &disconnected, Some(&observation)),
+                );
+            }
+        }
+        assert_eq!(total(&totals), 120 * 60_000);
+        let browser_ms: u64 = totals
+            .iter()
+            .filter(|b| b.target == "com.google.Chrome")
+            .map(|b| b.ms)
+            .sum();
+        assert_eq!(browser_ms, 10 * 60_000, "only the unidentified time");
+        let site_ms: u64 = totals
+            .iter()
+            .filter(|b| b.kind == "site")
+            .map(|b| b.ms)
+            .sum();
+        assert_eq!(site_ms, 110 * 60_000);
     }
 
     #[test]

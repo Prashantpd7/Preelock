@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
+import { defaultFocus } from '../types';
+
+const reviewFocus = {
+  ...defaultFocus,
+  apps: ['com.example.focus-app'],
+  domains: ['youtube.com'],
+  website_blocking: 'blocklist' as const,
+  browser_app: 'com.google.Chrome',
+};
 
 function renderDialog(
   over: Partial<Parameters<typeof OneShotConfirmDialog>[0]> = {},
@@ -14,6 +23,12 @@ function renderDialog(
       minutes={25}
       strict={false}
       busy={false}
+      focus={reviewFocus}
+      appNames={{ 'com.example.focus-app': 'Focus App' }}
+      browserName="Chrome"
+      browserConnected
+      cameraPermission="granted"
+      platform="darwin"
       onCreate={onCreate}
       onCancel={onCancel}
       {...over}
@@ -32,6 +47,19 @@ describe('OneShotConfirmDialog', () => {
       screen.getByRole('button', { name: 'Create one-shot' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('shows the session review and updates its start when a time is picked', () => {
+    renderDialog();
+    expect(screen.getByText('One-shot session')).toBeInTheDocument();
+    expect(screen.getByText('Focus App')).toBeInTheDocument();
+    expect(screen.getByText('Pick a date and time')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Start at'), {
+      target: { value: '2099-01-01T09:00' },
+    });
+    // Start and end are both in 2099.
+    expect(screen.getAllByText(/2099/)).toHaveLength(2);
+    expect(screen.queryByText('Pick a date and time')).not.toBeInTheDocument();
   });
 
   it('shows the strict warning only for strict sessions', () => {

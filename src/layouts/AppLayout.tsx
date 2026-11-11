@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { FirstRunPermissions } from '../components/PermissionsGuide';
+import { ActiveSessionBanner } from '../components/ActiveSessionBanner';
 import { BreakBar } from '../components/BreakBar';
+import { PreSessionWarning } from '../components/PreSessionWarning';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -39,7 +41,7 @@ const pagePaths = [
 ];
 export function AppLayout() {
   useApplication();
-  const { pathname } = useLocation();
+  const { pathname, search, key } = useLocation();
   const activePath = pagePaths.includes(pathname) ? pathname : '/';
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
@@ -67,7 +69,9 @@ export function AppLayout() {
       </aside>
       <div className="main-shell">
         <main>
+          <ActiveSessionBanner />
           <BreakBar />
+          <PreSessionWarning />
           {!desktop && (
             <div className="notice">
               Browser preview · Launch with <code>npm run desktop</code> to use
@@ -106,7 +110,9 @@ export function AppLayout() {
               <div hidden={activePath !== '/screen-time'}>
                 <ScreenTime />
               </div>
-              {activePath === '/settings' && <SettingsPage />}
+              {activePath === '/settings' && (
+                <SettingsPage locationSearch={search} navigationKey={key} />
+              )}
             </>
           )}
         </main>

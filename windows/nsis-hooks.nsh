@@ -3,6 +3,9 @@
 Var PreelockLegacyInstall
 Var PreelockLegacyRun
 !macro NSIS_HOOK_PREINSTALL
+  nsExec::Exec 'taskkill /F /IM preelock.exe /T'
+  Pop $0
+  Sleep 300
   ReadRegStr $PreelockLegacyRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "VYSTRIQ"
   ${If} $PreelockLegacyRun != ""
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock" "$PreelockLegacyRun"
@@ -51,6 +54,9 @@ Var PreelockLegacyRun
 ; database, pairing token and settings live under AppData and the
 ; uninstaller never removes them (see scripts/smoke-windows.ps1).
 !macro NSIS_HOOK_PREUNINSTALL
+  nsExec::Exec 'taskkill /F /IM preelock.exe /T'
+  Pop $0
+  Sleep 300
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock Background"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "VYSTRIQ"

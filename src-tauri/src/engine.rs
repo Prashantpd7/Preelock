@@ -3,7 +3,7 @@ use crate::{
     browser::{self, Bridge, Policy},
     clock,
     database::Database,
-    focus::{rule_matches, Mode, WebsiteBlocking, ADULT_DOMAINS},
+    focus::{rule_matches, FocusConfig, Mode, WebsiteBlocking, ADULT_DOMAINS},
     models::{Action, Snapshot, Status},
     platform, sessions,
 };
@@ -339,8 +339,9 @@ impl Engine {
                 );
                 continue;
             }
-            // Only a confirmed OS shutdown or a different boot restores work.
-            // Same-boot process loss keeps the existing Force Quit warning.
+            // Only a confirmed OS shutdown or a different boot uses the
+            // OS-restart wording. Every other live-session reopen is a
+            // continuation, never a force quit (see the fallback below).
             if matches!(
                 s.status,
                 Status::Running | Status::Preparing | Status::Paused
@@ -385,29 +386,30 @@ impl Engine {
                     );
                     continue;
                 }
-                // Step 11 anti-tamper: a same-boot kill no longer
-                // ends the block. The session resumes with its
-                // checkpointed remaining time intact (publish() at
-                // the end of this function republishes its policy
-                // before any tick counts time, exactly as the
-                // OS-restart path does), and the force_quit flag
-                // plus event are KEPT as visibility — the flag
-                // now means "the app died mid-session and the
-                // block resumed", not "the block ended". Only a
-                // session whose state cannot be loaded at all
-                // (legacy upgrade, storage failure) still ends
-                // as Interrupted; every live session here is
+                // Same-boot recovery is a continuation, not a force
+                // quit. The desktop UI is only a view of a session the
+                // engine owns: closing its window, quitting it normally,
+                // a UI process crash, or a handover to the independent
+                // background engine all resume the same session with its
+                // remaining time, restrictions and scheduled end intact
+                // (publish() at the end of this function republishes its
+                // policy before any tick counts time, exactly as the
+                // OS-restart path does). Nothing here is recorded as the
+                // user forcing Preelock closed, so the obsolete
+                // `force_quit` flag is no longer set — it stays only on
+                // historical records. Only a session whose state cannot
+                // be loaded at all (legacy upgrade, storage failure)
+                // still ends as Interrupted; every live session here is
                 // recoverable from its SQLite checkpoint.
                 attention::recover(s, clock::now());
-                s.force_quit = true;
                 s.status = crate::tamper::resume_status(&s.status);
                 s.ended_at = None;
                 s.deadline_ms = None;
                 s.report.camera_status = "off".into();
                 s.report.event(
                     clock::now(),
-                    "force_quit",
-                    "Preelock was closed during this session; the block resumed with its remaining time preserved instead of ending early.",
+                    "session_resumed",
+                    "Preelock had no running engine for a moment (the desktop app closed, restarted or handed over to the background engine); this session resumed with its remaining time, restrictions and scheduled end intact. Time while no engine ran was not counted.",
                 );
                 continue;
             }
@@ -581,6 +583,7 @@ impl Engine {
         match Bridge::start(&self.data_dir) {
             Ok(bridge) => {
                 bridge.set_screen_time_tracking(true);
+                bridge.set_connection_locked(self.has_active_strict());
                 self.bridge = Some(bridge);
                 self.bridge_error = String::new();
                 self.bridge_retry_at = 0;
@@ -781,6 +784,26 @@ impl Engine {
             .map(|b| b.status_for(browser_id))
             .unwrap_or_else(|| self.bridge_unavailable())
     }
+    /// True when every browser this session's website rules cover is
+    /// properly paired: connected, no bridge error, and the extension
+    /// reports living in that browser. Mirrors the browser loop of
+    /// the manual start preflight, so the 5-minute warning and the
+    /// manual start agree on what "connected" means. A session with
+    /// no browsers to pair (no website rules, or a frozen session
+    /// with no browser picked) is ready by definition.
+    pub fn session_browsers_ready(&self, focus: &FocusConfig) -> bool {
+        let ids = focus.session_browsers();
+        if ids.is_empty() {
+            return true;
+        }
+        ids.iter().all(|browser_id| {
+            let status = self.browser_status_for(browser_id);
+            status.connected
+                && status.error.is_empty()
+                && !status.client_browser.is_empty()
+                && crate::browser::same_browser(browser_id, &status.client_browser)
+        })
+    }
     /// Status of the connected browser matching the foreground app sample
     /// id, if any. Site attribution uses this so another paired browser's
     /// report can never be credited to the foreground app.
@@ -893,6 +916,13 @@ impl Engine {
             return Err("This session checks you're at your desk with the camera, but camera access isn't allowed. Allow it in setup, or start a session without camera checks.".into());
         }
         if s.focus.network_required() {
+            // Session-specific Safari restriction, re-checked here because
+            // a stored session can predate it (or be restored from a
+            // backup): Safari has no extension, so it can never enforce
+            // this session's website rules.
+            if s.focus.safari_approved() {
+                return Err("This session includes Safari, which can't enforce website rules. Edit the session and choose a supported browser. No session has started.".into());
+            }
             // The website rules are enforced in every selected browser, so
             // each one must be paired before the session starts. A selected
             // browser without the extension would browse unfiltered.
@@ -922,6 +952,20 @@ impl Engine {
                 s.status,
                 Status::Running | Status::Paused | Status::Preparing
             )
+        })
+    }
+    /// True while a strict focus session is live (Running, Paused or
+    /// Preparing). Browser connection management — extension
+    /// disconnect, pairing reset, connecting another browser — is
+    /// locked then, and the lock lifts as soon as no strict session
+    /// is live anymore.
+    pub fn has_active_strict(&self) -> bool {
+        self.data.sessions.iter().any(|s| {
+            s.focus.mode == Mode::Strict
+                && matches!(
+                    s.status,
+                    Status::Running | Status::Paused | Status::Preparing
+                )
         })
     }
     /// Step 12: record a frozen-overlay creation failure as a
@@ -1201,6 +1245,14 @@ impl Engine {
                     })
             };
             b.publish(policy);
+            // Browser-connection lock, derived from the authoritative
+            // session state above: while a strict session is live the
+            // bridge refuses explicit disconnects, and the desktop
+            // pairing reset already refuses while any session is live
+            // (see `reset_pairing`). Publish runs on every tick and on
+            // every session transition, so the lock lifts on the same
+            // publish that ends the session — no restart needed.
+            b.set_connection_locked(self.has_active_strict());
         }
     }
     /// Per-rule block causes for the currently enforced
@@ -1514,7 +1566,27 @@ impl Engine {
     ///   `desktop_settings::notify` path (no-op on Linux test
     ///   builds, where only the fired markers are observable).
     ///   Returns whether anything changed (and was saved).
+    /// - A due point is only recorded as fired when the
+    ///   notification can actually be shown from this process
+    ///   (`desktop_settings::can_notify`): on Windows the
+    ///   background engine has no Tauri app handle, so its
+    ///   notifications would silently vanish — the point is left
+    ///   unfired instead of consumed, and the crossing due rule
+    ///   means it still fires on a later tick once the GUI is
+    ///   open. A warning whose block already started is never
+    ///   fired late.
     fn evaluate_warnings(&mut self, now: i64) -> Result<bool, String> {
+        self.evaluate_warnings_deliverable(now, crate::desktop_settings::can_notify())
+    }
+
+    /// The real warning evaluation. `deliverable` is whether an OS
+    /// notification can be shown from this process right now; see
+    /// the `evaluate_warnings` docs above.
+    fn evaluate_warnings_deliverable(
+        &mut self,
+        now: i64,
+        deliverable: bool,
+    ) -> Result<bool, String> {
         let preferences = self.data.preferences.clone();
         if !preferences.notifications_enabled {
             return Ok(false);
@@ -1557,9 +1629,31 @@ impl Engine {
                 now,
             );
             for minutes in due {
+                // No channel to show this on (Windows background
+                // engine): leave the point unfired so it stays due
+                // for a later tick instead of being consumed unseen.
+                if !deliverable {
+                    continue;
+                }
+                // Readiness rides on the warning: if the session
+                // needs a browser or camera it does not have yet,
+                // the notification says so, so the user can fix it
+                // before the block starts instead of hitting the
+                // fail-closed browser block at start time.
+                let missing = crate::notifications::missing_prerequisites(
+                    &schedule.focus,
+                    self.session_browsers_ready(&schedule.focus),
+                    platform::camera_permission() == "granted",
+                    cfg!(target_os = "macos"),
+                );
                 crate::desktop_settings::notify(
                     "Block starting soon",
-                    &crate::notifications::warning_body(&schedule.title, start, now),
+                    &crate::notifications::warning_body_with_readiness(
+                        &schedule.title,
+                        start,
+                        now,
+                        &missing,
+                    ),
                 );
                 slot.warning_fired
                     .push(crate::notifications::schedule_warning_key(start, minutes));
@@ -1583,9 +1677,26 @@ impl Engine {
                 continue;
             }
             for minutes in due {
+                // No channel to show this on (Windows background
+                // engine): leave the point unfired so it stays due
+                // for a later tick instead of being consumed unseen.
+                if !deliverable {
+                    continue;
+                }
+                let missing = crate::notifications::missing_prerequisites(
+                    &shot.focus,
+                    self.session_browsers_ready(&shot.focus),
+                    platform::camera_permission() == "granted",
+                    cfg!(target_os = "macos"),
+                );
                 crate::desktop_settings::notify(
                     "Block starting soon",
-                    &crate::notifications::warning_body(&shot.title, shot.fire_at_ms, now),
+                    &crate::notifications::warning_body_with_readiness(
+                        &shot.title,
+                        shot.fire_at_ms,
+                        now,
+                        &missing,
+                    ),
                 );
                 let slot = next
                     .one_shots
@@ -1932,7 +2043,8 @@ impl Engine {
     }
     /// M5: the single screen-time recording path. Attributes one
     /// sampled interval (at most one bucket — a website replaces
-    /// the browser app, never adds to it) and writes it once: an
+    /// the browser app, never adds to it, and the extension and the
+    /// native adapter never both contribute) and writes it once: an
     /// incrementing row in the `screen_time_usage` table plus the
     /// same amount in the in-memory usage the snapshot later saves
     /// with overwrite semantics, so a save after a record can never
@@ -1949,8 +2061,15 @@ impl Engine {
         delta: u64,
         sample: &crate::platform::Sample,
         browser_for_site: &crate::browser::BrowserStatus,
+        native_site: Option<&crate::websites::NativeSite>,
     ) -> Result<bool, String> {
-        let buckets = crate::screen_time::sample_buckets(now, delta, sample, browser_for_site);
+        let buckets = crate::screen_time::sample_buckets_with_native(
+            now,
+            delta,
+            sample,
+            browser_for_site,
+            native_site,
+        );
         if buckets.is_empty() {
             return Ok(false);
         }
@@ -1979,7 +2098,25 @@ impl Engine {
         // before (its own frontmost check handles apps).
         let browser_for_site = self.browser_status_for_app(&sample.id);
         let browser = self.browser_status();
-        let has_usage = self.record_screen_time_buckets(now, delta, &sample, &browser_for_site)?;
+        // Native website identification (extension-free), sampled only for
+        // a browser this platform has an adapter for, and skipped when the
+        // extension already reports a fresh, focused domain for it — the
+        // credited result is identical and no OS query is spent.
+        let native_site = if browser_for_site.activity_fresh
+            && browser_for_site.browser_focused
+            && !browser_for_site.active_domain.is_empty()
+        {
+            None
+        } else {
+            crate::websites::native_site(&sample.id)
+        };
+        let has_usage = self.record_screen_time_buckets(
+            now,
+            delta,
+            &sample,
+            &browser_for_site,
+            native_site.as_ref(),
+        )?;
         let day_ms = crate::screen_time::local_day_start_ms(now);
         if self.has_active() {
             return Ok(());
@@ -2618,6 +2755,20 @@ impl Engine {
                             } else if crate::focus::known_browser(&sample.id) {
                                 signals.browser_required = true;
                             }
+                            // Problem B: a lecture playing in the foreground
+                            // exempts the session from the five-minute input
+                            // requirement. The extension measures real
+                            // playback on the active tab of its focused
+                            // window; the site must be allowed by this
+                            // session, and the report must be fresh, so a
+                            // stale heartbeat or background media never
+                            // grants the exemption.
+                            signals.lecture_playing = crate::attention::verified_lecture(
+                                browser.media_playing,
+                                browser.activity_fresh,
+                                browser.browser_focused,
+                                signals.browser_relevant,
+                            );
                             if sample.id != s.report.active_app {
                                 s.report.active_app = sample.id.clone();
                                 s.report.event(
@@ -2999,12 +3150,12 @@ mod tests {
         let observer = Engine::open(&path).unwrap();
         assert!(!observer.owns_engine_lock());
         // Recovery transforms ran in memory only: the live session
-        // reads Running with the force-quit flag set, and the expired
-        // one-shot is purged from this engine's copy — but nothing was
-        // persisted, so the database still holds the pre-recovery rows
-        // for the owner.
+        // reads Running (a reopened UI is not a force quit), and the
+        // expired one-shot is purged from this engine's copy — but
+        // nothing was persisted, so the database still holds the
+        // pre-recovery rows for the owner.
         assert_eq!(observer.data.sessions[0].status, Status::Running);
-        assert!(observer.data.sessions[0].force_quit);
+        assert!(!observer.data.sessions[0].force_quit);
         assert!(observer.data.one_shots.is_empty());
         let stored = Database::open(&path).unwrap().load().unwrap();
         assert_eq!(stored.sessions[0].status, Status::Running);
@@ -3145,6 +3296,13 @@ mod tests {
         let _guard = fixed_port_guard();
         let dir = tempfile::tempdir().unwrap();
         let (mut e, id) = network_engine(dir.path());
+        // Use a browser id whose resolution is independent of which
+        // chromium browsers happen to be installed on the host.
+        e.data.sessions[0].focus.browser_app = "com.brave.browser".into();
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, "com.brave.browser", "");
         e.execute(Action::StartSession { id: id.clone() }).unwrap();
         e.set_native_for_test(true);
         // Kill the bridge's server thread for real (a fake stale
@@ -3168,7 +3326,7 @@ mod tests {
         // so it uses the lowercase id.
         let body = serde_json::json!({
             "client": TEST_CLIENT,
-            "browser": "com.google.chrome",
+            "browser": "com.brave.browser",
             "applied_id": "",
         })
         .to_string();
@@ -3623,19 +3781,229 @@ mod tests {
         engine.db.save(&engine.data).unwrap();
         drop(engine);
         // Step 11: a same-boot kill no longer ends the block. The
-        // killed session resumes with its remaining time intact,
-        // still flagged force_quit (visibility, not punishment);
-        // the cleanly ended session is untouched.
+        // killed session resumes with its remaining time intact and is
+        // NOT recorded as a force quit (the old warning is obsolete:
+        // closing or losing the UI never stops the block); the cleanly
+        // ended session is untouched.
         let engine = Engine::open_inner(&path, false, false).unwrap();
-        assert!(engine.data.sessions[0].force_quit);
+        assert!(!engine.data.sessions[0].force_quit);
         assert_eq!(engine.data.sessions[0].status, Status::Running);
         assert_eq!(engine.data.sessions[0].remaining_ms, 25 * 60_000);
         assert!(engine.data.sessions[0]
             .report
             .events
             .iter()
+            .any(|e| e.kind == "session_resumed"));
+        assert!(!engine.data.sessions[0]
+            .report
+            .events
+            .iter()
             .any(|e| e.kind == "force_quit"));
         assert!(!engine.data.sessions[1].force_quit);
+    }
+    // Closing the Preelock window, quitting the app normally, or losing
+    // the UI process is not a force quit: the engine owns the session, so
+    // the same session continues with its remaining time and none of the
+    // obsolete warning is recorded.
+    #[test]
+    fn normal_app_closure_resumes_strict_session_without_force_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("closure.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let state = engine
+            .execute(Action::CreateSession {
+                title: "Strict".into(),
+                minutes: 25,
+                allow_pause: false,
+                focus: FocusConfig {
+                    mode: Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = state.sessions[0].id.clone();
+        engine
+            .execute(Action::StartSession { id: id.clone() })
+            .unwrap();
+        let remaining = engine.data.sessions[0].remaining_ms;
+        engine.db.save(&engine.data).unwrap();
+        // The desktop app closes: its engine process goes away while the
+        // session is live.
+        drop(engine);
+        let mut background = Engine::open(&path).unwrap();
+        let s = &background.data.sessions[0];
+        assert_eq!(s.id, id, "the same session continues");
+        assert_eq!(s.status, Status::Running);
+        assert_eq!(s.remaining_ms, remaining, "no time is added or lost");
+        assert!(matches!(s.focus.mode, Mode::Strict));
+        assert!(!s.force_quit, "normal closure is not a force quit");
+        assert!(s.report.events.iter().any(|e| e.kind == "session_resumed"));
+        assert!(!s.report.events.iter().any(|e| e.kind == "force_quit"));
+        // The background engine keeps the session live on its next tick.
+        background.tick().unwrap();
+        assert_eq!(background.data.sessions[0].status, Status::Running);
+        assert!(background.has_active());
+    }
+    // The background engine still owns enforcement and timing after the
+    // UI goes away: the session stays Running, its policy is republished,
+    // and the extension's acknowledgement keeps it from failing closed.
+    #[test]
+    fn background_engine_keeps_enforcing_after_app_closure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut e, id) = network_engine(dir.path());
+        e.execute(Action::StartSession { id: id.clone() }).unwrap();
+        e.bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
+        e.tick().unwrap();
+        assert_eq!(e.data.sessions[0].status, Status::Running);
+        e.db.save(&e.data).unwrap();
+        let remaining = e.data.sessions[0].remaining_ms;
+        drop(e);
+        // The desktop app closed and the background engine takes over the
+        // same database.
+        let mut background = Engine::open(&dir.path().join("test.sqlite")).unwrap();
+        assert_eq!(background.data.sessions[0].id, id);
+        assert_eq!(background.data.sessions[0].status, Status::Running);
+        assert_eq!(background.data.sessions[0].remaining_ms, remaining);
+        assert!(!background.data.sessions[0].force_quit);
+        background.bridge = Some(Bridge::test_bridge(dir.path()));
+        background.publish();
+        background.tick().unwrap();
+        background
+            .bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
+        background.tick().unwrap();
+        assert_eq!(background.browser_status().applied_id, id);
+        assert!(!background.data.sessions[0].browser_fail_closed);
+        assert_eq!(background.data.sessions[0].status, Status::Running);
+        assert!(background.has_active());
+    }
+    // Reopening the UI during a live session shows that session (same id,
+    // remaining time, no interruption) and never writes it back as
+    // interrupted; the reopened UI can then take over the tick.
+    #[test]
+    fn reopened_ui_restores_the_live_session_without_interrupting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        let state = holder
+            .execute(Action::CreateSession {
+                title: "Strict".into(),
+                minutes: 25,
+                allow_pause: false,
+                focus: FocusConfig {
+                    mode: Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = state.sessions[0].id.clone();
+        holder
+            .execute(Action::StartSession { id: id.clone() })
+            .unwrap();
+        holder.data.sessions[0].remaining_ms = 300_000;
+        holder.db.save(&holder.data).unwrap();
+        // The UI reopens while the background engine owns the session.
+        let mut ui = Engine::open(&path).unwrap();
+        assert!(!ui.owns_engine_lock());
+        let shown = ui.snapshot().unwrap();
+        assert_eq!(shown.sessions[0].id, id);
+        assert_eq!(shown.sessions[0].status, Status::Running);
+        assert_eq!(shown.sessions[0].remaining_ms, 300_000);
+        assert!(!shown.sessions[0].force_quit);
+        drop(holder);
+        // The reopened UI takes over and keeps the same session running.
+        ui.tick().unwrap();
+        assert!(ui.owns_engine_lock());
+        assert_eq!(ui.data.sessions[0].id, id);
+        assert_eq!(ui.data.sessions[0].status, Status::Running);
+        assert_eq!(ui.data.sessions[0].remaining_ms, 300_000);
+    }
+    // Historical records keep their legacy flag: removing the old
+    // classification must not rewrite or hide existing data.
+    #[test]
+    fn legacy_force_quit_records_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let state = engine
+            .execute(Action::CreateSession {
+                title: "Old".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = state.sessions[0].id.clone();
+        engine
+            .execute(Action::StartSession { id: id.clone() })
+            .unwrap();
+        engine
+            .execute(Action::EndSession {
+                id,
+                password: None,
+                challenge_answer: None,
+            })
+            .unwrap();
+        // A record written by an older build that flagged the closure.
+        engine.data.sessions[0].force_quit = true;
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+        let restored = Engine::open(&path).unwrap();
+        assert_eq!(restored.data.sessions[0].status, Status::Ended);
+        assert!(
+            restored.data.sessions[0].force_quit,
+            "historical force-quit records stay truthful"
+        );
+    }
+    // A quit request during a strict session only closes/hides the UI: the
+    // session is neither ended nor interrupted and its row is untouched.
+    #[test]
+    fn quit_request_during_strict_session_does_not_interrupt_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quit-live.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let state = engine
+            .execute(Action::CreateSession {
+                title: "Strict".into(),
+                minutes: 25,
+                allow_pause: false,
+                focus: FocusConfig {
+                    mode: Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = state.sessions[0].id.clone();
+        engine
+            .execute(Action::StartSession { id: id.clone() })
+            .unwrap();
+        let remaining = engine.data.sessions[0].remaining_ms;
+        engine.db.save(&engine.data).unwrap();
+        assert_eq!(
+            engine.quit_decision(),
+            crate::quit::QuitDecision::CloseUiOnly
+        );
+        assert_eq!(engine.data.sessions[0].status, Status::Running);
+        let stored = Database::open(&path).unwrap().load().unwrap();
+        assert_eq!(stored.sessions[0].id, id);
+        assert_eq!(stored.sessions[0].status, Status::Running);
+        assert_eq!(stored.sessions[0].remaining_ms, remaining);
     }
     #[test]
     fn restart_lock_resumes_locked_session_instead_of_flagging_it() {
@@ -3841,11 +4209,11 @@ mod tests {
         let state = restored.snapshot().unwrap();
         assert_eq!(state.tasks[0].title, "Read");
         assert_eq!(state.preferences.theme, "light");
-        // Step 11: a paused session on disk means the app was killed
-        // mid-session: it resumes Paused (its pause and remaining
-        // time preserved), still flagged force_quit.
+        // A paused session on disk means the app stopped mid-session:
+        // it resumes Paused (its pause and remaining time preserved)
+        // without being labelled a force quit.
         assert_eq!(state.sessions[0].status, crate::models::Status::Paused);
-        assert!(state.sessions[0].force_quit);
+        assert!(!state.sessions[0].force_quit);
     }
     #[test]
     fn rejected_action_does_not_persist_partial_changes() {
@@ -3993,18 +4361,17 @@ mod tests {
             .acknowledge(TEST_CLIENT, TEST_BROWSER, &id);
         e.tick().unwrap();
         drop(e);
-        // Step 11: the app was killed mid-session: the session
-        // resumes Running with its remaining time preserved,
-        // still flagged force_quit, and no enforcement is claimed
-        // across the restart beyond the resumed block itself.
+        // The app stopped mid-session: the session resumes Running with
+        // its remaining time preserved and is not labelled a force quit
+        // (closing or losing the UI never stops the block).
         let restored = Engine::open(&dir.path().join("test.sqlite")).unwrap();
         assert_eq!(restored.data.sessions[0].status, Status::Running);
-        assert!(restored.data.sessions[0].force_quit);
+        assert!(!restored.data.sessions[0].force_quit);
         assert!(restored.data.sessions[0]
             .report
             .events
             .iter()
-            .any(|e| e.kind == "force_quit"));
+            .any(|e| e.kind == "session_resumed"));
     }
     #[test]
     fn kill_resume_preserves_remaining_and_allowance_usage() {
@@ -4049,7 +4416,7 @@ mod tests {
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.remaining_ms, 100_000);
         assert_eq!(s.focused_ms, 50_000);
-        assert!(s.force_quit);
+        assert!(!s.force_quit);
         assert_eq!(restored.data.allowances.len(), 1);
         assert_eq!(restored.data.allowances[0].usage.len(), 1);
         assert_eq!(restored.data.allowances[0].usage[0].ms, 7_000);
@@ -4215,6 +4582,71 @@ mod tests {
             .events
             .iter()
             .any(|ev| ev.kind == "extension_connected"));
+    }
+
+    #[test]
+    fn connection_lock_follows_live_strict_sessions_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(&dir.path().join("test.sqlite")).unwrap();
+        assert!(!e.has_active_strict());
+        // A live standard session does not lock.
+        e.data.sessions.push(running_session("standard"));
+        assert!(!e.has_active_strict());
+        // A live strict session locks (Running, Paused, Preparing).
+        let mut strict = running_session("strict");
+        strict.focus.mode = Mode::Strict;
+        e.data.sessions.push(strict);
+        assert!(e.has_active_strict());
+        e.data.sessions[1].status = Status::Paused;
+        assert!(e.has_active_strict());
+        e.data.sessions[1].status = Status::Preparing;
+        assert!(e.has_active_strict());
+        // Ending the strict session unlocks again; a completed strict
+        // session on its own never locks.
+        e.data.sessions[1].status = Status::Completed;
+        assert!(!e.has_active_strict());
+    }
+
+    #[test]
+    fn pairing_reset_is_refused_during_a_live_strict_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(&dir.path().join("test.sqlite")).unwrap();
+        e.bridge = Some(Bridge::test_bridge(dir.path()));
+        // No session: reset works (rotates the pairing token).
+        assert!(e.reset_pairing(dir.path()).is_ok());
+        // Live strict session: reset is refused and the token is
+        // untouched, so paired browsers stay paired.
+        let token_before = e.pairing_token();
+        let mut strict = running_session("strict");
+        strict.focus.mode = Mode::Strict;
+        e.data.sessions.push(strict);
+        let err = e.reset_pairing(dir.path()).unwrap_err();
+        assert!(err.contains("End the session"), "got: {err}");
+        assert_eq!(e.pairing_token(), token_before);
+        // Session over: reset works again.
+        e.data.sessions[0].status = Status::Completed;
+        assert!(e.reset_pairing(dir.path()).is_ok());
+        assert_ne!(e.pairing_token(), token_before);
+    }
+
+    #[test]
+    fn publish_pushes_the_connection_lock_and_lifts_it_on_session_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(&dir.path().join("test.sqlite")).unwrap();
+        e.bridge = Some(Bridge::test_bridge(dir.path()));
+        let bridge = e.bridge.as_ref().unwrap();
+        e.publish();
+        assert!(!bridge.connection_locked());
+        // A live strict session locks on the next publish; ending it
+        // unlocks on the following publish — no restart involved.
+        let mut strict = running_session("strict");
+        strict.focus.mode = Mode::Strict;
+        e.data.sessions.push(strict);
+        e.publish();
+        assert!(bridge.connection_locked());
+        e.data.sessions[0].status = Status::Completed;
+        e.publish();
+        assert!(!bridge.connection_locked());
     }
 
     #[test]
@@ -4439,6 +4871,89 @@ mod tests {
         assert_eq!(restored.data.schedules[0].warning_fired.len(), 1);
         assert!(!restored.evaluate_warnings(at_warning).unwrap());
         assert_eq!(restored.data.schedules[0].warning_fired.len(), 1);
+    }
+
+    #[test]
+    fn undeliverable_warnings_are_deferred_not_consumed() {
+        // Windows background engine: no Tauri app handle, so the OS
+        // notification cannot be shown. A due warning must stay due
+        // (nothing recorded) until a tick where delivery works —
+        // otherwise the user would never see it and the dedupe
+        // would stop it ever firing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warn-deferred.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.preferences.warning_minutes = "5".into();
+        engine.data.schedules.push(upcoming_schedule(10));
+        let now = clock::now();
+        let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
+        let fire_at = at_warning + 5 * 60_000;
+        engine.data.one_shots.push(one_shot_timer(fire_at));
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, false)
+            .unwrap());
+        assert!(engine.data.schedules[0].warning_fired.is_empty());
+        assert!(engine.data.one_shots[0].warning_fired.is_empty());
+        // Same tick again with delivery available: each fires
+        // exactly once, then never again.
+        assert!(engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
+        assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
+        assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, true)
+            .unwrap());
+        assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
+        assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
+    }
+
+    #[test]
+    fn schedule_warning_with_missing_browser_still_fires_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warn-readiness.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.preferences.warning_minutes = "5".into();
+        // A schedule whose website rules need a browser that is not
+        // connected (no bridge on this test build): the readiness
+        // check must not break the warning — it fires once, with
+        // the same dedupe, and the notification body (verified by
+        // the pure warning_body_with_readiness tests; notify is a
+        // no-op here) carries the missing-browser line.
+        let mut schedule = upcoming_schedule(10);
+        schedule.focus.domains = vec!["example.com".into()];
+        schedule.focus.browser_app = "com.google.chrome".into();
+        engine.data.schedules.push(schedule);
+        let now = clock::now();
+        let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
+        assert!(engine.evaluate_warnings(at_warning).unwrap());
+        assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
+        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert_eq!(engine.data.schedules[0].warning_fired.len(), 1);
+    }
+
+    #[test]
+    fn one_shot_warning_with_missing_prerequisites_still_fires_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warn-oneshot.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.preferences.warning_minutes = "5".into();
+        let now = clock::now();
+        let fire_at = now + 10 * 60_000;
+        let mut shot = one_shot_timer(fire_at);
+        shot.focus.domains = vec!["example.com".into()];
+        shot.focus.browser_app = "com.google.chrome".into();
+        shot.focus.camera = true;
+        engine.data.one_shots.push(shot);
+        // Probe exactly at the 5-minute point: the one-shot fire time
+        // keeps second precision (unlike minute-aligned schedule
+        // starts), so flooring `now` to the minute would probe up to
+        // 59s early and the warning would not be due yet.
+        let at_warning = fire_at - 5 * 60_000;
+        assert!(engine.evaluate_warnings(at_warning).unwrap());
+        assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
+        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert_eq!(engine.data.one_shots[0].warning_fired, vec![5]);
     }
 
     #[test]
@@ -4669,6 +5184,7 @@ mod tests {
             browser_focused: true,
             search_distracted: false,
             channel_blocked: false,
+            media_playing: false,
             activity_fresh: true,
             extension_stale: false,
             ext_v_debug: 0,
@@ -4721,6 +5237,7 @@ mod tests {
                 1000,
                 &m5_sample("com.google.Chrome", "Google Chrome"),
                 &m5_browser_status("instagram.com"),
+                None,
             )
             .unwrap());
         let usage = engine.db.load_screen_time_usage().unwrap();
@@ -4736,9 +5253,48 @@ mod tests {
                 1000,
                 &m5_sample("com.microsoft.VSCode", "Visual Studio Code"),
                 &m5_browser_status(""),
+                None,
             )
             .unwrap());
         assert_eq!(m5_recorded_total(&engine), 2000);
+    }
+
+    #[test]
+    fn native_site_credits_browser_time_without_the_extension() {
+        // Requirement 2: with no extension connection at all, the browser
+        // is still tracked and the OS adapter's hostname is credited to
+        // the site instead of the browser app — one bucket, no double
+        // count, and nothing invented when the adapter has no page.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("native.sqlite")).unwrap();
+        let now = clock::now();
+        let chrome = m5_sample("com.google.Chrome", "Google Chrome");
+        // No extension client (empty browser id, nothing fresh).
+        let disconnected = crate::browser::unavailable("");
+        let site = crate::websites::NativeSite {
+            app: "com.google.Chrome".into(),
+            domain: "youtube.com".into(),
+        };
+        assert!(engine
+            .record_screen_time_buckets(now, 1000, &chrome, &disconnected, Some(&site))
+            .unwrap());
+        let usage = engine.db.load_screen_time_usage().unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].kind, "site");
+        assert_eq!(usage[0].target, "youtube.com");
+        assert_eq!(usage[0].ms, 1000);
+        // The adapter has no page (private window / browser UI): the
+        // browser app takes the interval instead, so no time is lost.
+        assert!(engine
+            .record_screen_time_buckets(now, 1000, &chrome, &disconnected, None)
+            .unwrap());
+        let usage = engine.db.load_screen_time_usage().unwrap();
+        let total: u64 = usage.iter().map(|b| b.ms).sum();
+        assert_eq!(total, 2000);
+        assert_eq!(usage.len(), 2);
+        assert!(usage
+            .iter()
+            .any(|b| b.kind == "app" && b.target == "com.google.Chrome" && b.ms == 1000));
     }
 
     #[test]
@@ -4768,6 +5324,7 @@ mod tests {
                     1000,
                     &m5_sample("com.google.Chrome", "Google Chrome"),
                     &m5_browser_status("instagram.com"),
+                    None,
                 )
                 .unwrap());
             assert_eq!(m5_recorded_total(&engine), 1000);
@@ -4803,6 +5360,7 @@ mod tests {
                 1000,
                 &m5_sample("com.google.Chrome", "Google Chrome"),
                 &m5_browser_status("instagram.com"),
+                None,
             )
             .unwrap());
         let mut observer = Engine::open(&path).unwrap();

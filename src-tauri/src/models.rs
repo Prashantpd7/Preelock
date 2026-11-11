@@ -30,8 +30,12 @@ pub struct Session {
     pub report: crate::focus::FocusReport,
     #[serde(default)]
     pub attention: crate::attention::Tracking,
-    /// Set when a live session is reopened without evidence of an OS restart
-    /// or orderly logout/shutdown (for example, same-boot Force Quit).
+    /// Legacy visibility flag from when a same-boot process loss meant the
+    /// block had stopped. Sessions are now owned by the engine, so normal app
+    /// closure, a UI crash or a handover to the background engine resume the
+    /// session without setting it. Kept serialized so historical records still
+    /// load and display truthfully; new sessions always load it `false`.
+    /// Reset by `RestartSession`.
     #[serde(default)]
     pub force_quit: bool,
     /// Schedule that auto-created this session, if any. Manual

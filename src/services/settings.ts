@@ -45,6 +45,7 @@ export type SettingsAction =
 export interface SettingsInfo {
   platform?: string;
   login?: number;
+  login_user_pref?: boolean;
   notifications?: number;
   version?: string;
   break_remaining?: number;

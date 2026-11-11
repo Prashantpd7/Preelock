@@ -6,6 +6,7 @@ Never runs against an existing user's database.
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -15,6 +16,63 @@ assert os.environ.get("GITHUB_ACTIONS") == "true", "Only run on disposable CI ru
 app = Path(sys.argv[1]).resolve()
 database = Path.home() / "Library/Application Support/com.preelock.desktop/preelock.sqlite"
 assert not database.exists(), "Refusing to test against existing app data"
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def stop_bundle_processes():
+    binary = str(app / "Contents/MacOS/preelock")
+    plist = Path.home() / "Library/LaunchAgents/com.preelock.background.plist"
+    if plist.exists():
+        uid = os.getuid()
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}/com.preelock.background"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        subprocess.run(
+            ["launchctl", "unload", "-w", str(plist)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        plist.unlink(missing_ok=True)
+    ps = subprocess.run(
+        ["ps", "-axo", "pid=,args="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids = []
+    for line in ps.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2 and (parts[1] == binary or parts[1].startswith(binary + " ")):
+            try:
+                pids.append(int(parts[0]))
+            except ValueError:
+                pass
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        remaining = []
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+                remaining.append(pid)
+            except ProcessLookupError:
+                pass
+        if not remaining:
+            break
+        time.sleep(0.5)
+        pids = [pid for pid in remaining if pid_alive(pid)]
 
 
 def launch():
@@ -38,6 +96,7 @@ def launch():
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+        stop_bundle_processes()
 
 
 launch()

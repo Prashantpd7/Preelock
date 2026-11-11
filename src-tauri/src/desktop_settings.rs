@@ -53,6 +53,12 @@ mod mac {
     pub fn permission() -> bool {
         unsafe { preelock_notification_permission() != 0 }
     }
+    /// macOS notifications go through the native `preelock_notify`
+    /// call, which needs no app handle: they can be shown from any
+    /// process, including the background engine.
+    pub fn can_notify() -> bool {
+        true
+    }
     pub fn notify(title: &str, body: &str) {
         if let (Ok(t), Ok(b)) = (CString::new(title), CString::new(body)) {
             unsafe { preelock_notify(t.as_ptr(), b.as_ptr()) };
@@ -81,6 +87,14 @@ mod other {
     }
     pub fn permission() -> bool {
         false
+    }
+    /// Stub platform (Linux dev builds): `notify` is a no-op, so
+    /// delivery is assumed — this keeps the engine's fire-once
+    /// semantics identical to the shipped platforms. Only Windows
+    /// gates on a real channel (see
+    /// `settings_windows::can_notify`).
+    pub fn can_notify() -> bool {
+        true
     }
     pub fn notify(_: &str, _: &str) {}
     pub fn sound(_: u32) {}

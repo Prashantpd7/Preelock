@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
+import { defaultFocus } from '../types';
+
+const reviewFocus = {
+  ...defaultFocus,
+  apps: ['com.example.focus-app'],
+  domains: ['youtube.com'],
+  website_blocking: 'blocklist' as const,
+  browser_app: 'com.google.Chrome',
+};
 
 function renderDialog(
   over: Partial<Parameters<typeof ScheduleConfirmDialog>[0]> = {},
@@ -14,6 +23,12 @@ function renderDialog(
       minutes={25}
       strict={false}
       busy={false}
+      focus={reviewFocus}
+      appNames={{ 'com.example.focus-app': 'Focus App' }}
+      browserName="Chrome"
+      browserConnected
+      cameraPermission="granted"
+      platform="darwin"
       onCreate={onCreate}
       onCancel={onCancel}
       {...over}
@@ -38,6 +53,34 @@ describe('ScheduleConfirmDialog', () => {
       screen.getByRole('button', { name: 'Create schedule' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('shows the session review with the picked days and times', () => {
+    renderDialog();
+    expect(screen.getByText('Scheduled session')).toBeInTheDocument();
+    expect(screen.getByText('Weekdays · 09:00')).toBeInTheDocument();
+    expect(screen.getByText('Focus App')).toBeInTheDocument();
+    expect(screen.getByText('youtube.com')).toBeInTheDocument();
+  });
+
+  it('updates the review days live when a day is unchecked', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    expect(screen.getByText('Weekdays · 09:00')).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: 'Tue' }));
+    expect(screen.getByText('Mon, Wed, Thu, Fri · 09:00')).toBeInTheDocument();
+    expect(screen.queryByText('Weekdays · 09:00')).not.toBeInTheDocument();
+  });
+
+  it('shows the picked lock in the review', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    expect(screen.queryByText('Locks')).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Lock with a password' }),
+    );
+    await user.type(screen.getByLabelText('Lock password'), 'secret');
+    expect(screen.getByText('password')).toBeInTheDocument();
   });
 
   it('shows the strict warning only for strict sessions', () => {

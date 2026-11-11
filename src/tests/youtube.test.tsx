@@ -224,3 +224,49 @@ it('hides the YouTube subsection when website blocking is off', async () => {
   expect(screen.queryByLabelText('Channels to block')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Allowed channels')).not.toBeInTheDocument();
 });
+it('ignores inactive allowed-channel input and hidden YouTube controls when turned off', async () => {
+  const user = userEvent.setup();
+  await openBlocklistWizard(user);
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Block all except these' }),
+  );
+  await user.type(screen.getByLabelText('Allowed channels'), 'invalid entry!!');
+  await user.click(
+    screen.getByRole('checkbox', {
+      name: 'Allow Watch Later playlist even when YouTube is blocked',
+    }),
+  );
+  // Switch back to block mode with a valid blocked channel -> inactive invalid
+  // allowed-channel input must not block Continue.
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Block these channels' }),
+  );
+  await user.type(screen.getByLabelText('Channels to block'), '@distracting');
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(
+    screen.getByRole('heading', { name: 'Ready to focus?' }),
+  ).toBeInTheDocument();
+
+  // Go back, turn website blocking off, and verify no hidden YouTube rules
+  // leak into the submitted focus config.
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Block distracting websites' }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
+  await user.click(screen.getByRole('button', { name: 'Create session' }));
+  await user.click(screen.getByRole('button', { name: 'Start session' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'create_session',
+      focus: expect.objectContaining({
+        website_blocking: 'none',
+        youtube_blocked_channels: [],
+        youtube_allowed_channels: [],
+        youtube_study_mode: false,
+        youtube_allow_watch_later: false,
+      }),
+    }),
+  );
+});

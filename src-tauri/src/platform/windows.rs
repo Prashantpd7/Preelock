@@ -478,6 +478,84 @@ pub fn camera_status() -> String {
         status.into()
     })
 }
+/// Native website identification (no extension): the foreground
+/// Chromium window's address bar value, read through UI Automation —
+/// the supported accessibility interface for this, with no process
+/// memory inspection and no debugging port. Returns `no_url` when the
+/// browser is not Chromium, runs at a higher integrity level, or has no
+/// address bar in its tree; the caller then keeps browser-level usage.
+fn address_bar_value(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
+        UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_ValuePatternId,
+    };
+    // The sampler thread is not COM-initialized; each thread initializes COM
+    // once on first use. A failure here is harmless (another caller on this
+    // thread may have already initialized it).
+    thread_local! {
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_READY.with(|ready| {
+        if !ready.get() {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ready.set(true);
+        }
+    });
+    unsafe {
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let root = automation.ElementFromHandle(hwnd).ok()?;
+        // One condition-filtered lookup instead of walking the subtree:
+        // the first edit control in tree order is the address bar.
+        let edit = VARIANT::from(UIA_EditControlTypeId.0);
+        let condition = automation
+            .CreatePropertyCondition(UIA_ControlTypePropertyId, &edit)
+            .ok()?;
+        let element = root.FindFirst(TreeScope_Descendants, &condition).ok()?;
+        let pattern = element
+            .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            .ok()?;
+        let value = pattern.CurrentValue().ok()?;
+        let text = value.to_string();
+        // Only a value that validates as an http(s) page is used, so a
+        // page's own text field (or a typed query) is never stored as a
+        // website.
+        if crate::websites::domain_from_url(&text).is_some() {
+            return Some(text);
+        }
+    }
+    None
+}
+pub fn web_sample() -> super::WebSample {
+    let empty = || super::WebSample {
+        url: String::new(),
+        status: "no_url".into(),
+    };
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return empty();
+    }
+    // windows-sys reports the handle as a raw pointer while UI Automation
+    // takes the windows crate's HWND wrapper: same handle, distinct types.
+    let element = windows::Win32::Foundation::HWND(hwnd);
+    match address_bar_value(element) {
+        Some(url) => super::WebSample {
+            url,
+            status: "ok".into(),
+        },
+        None => empty(),
+    }
+}
+/// UI Automation needs no separate user grant for same-integrity
+/// processes; an elevated browser simply yields `no_url` above.
+pub fn web_permission() -> &'static str {
+    "granted"
+}
+pub fn request_web_permission() {}
 pub fn installed_browsers() -> Vec<super::Application> {
     use winreg::{enums::*, RegKey};
     let mut candidates = Vec::new();
@@ -518,11 +596,35 @@ pub fn installed_browsers() -> Vec<super::Application> {
             }
         }
     }
-    let mut result: Vec<Application> = Vec::new();
-    for mut id in candidates {
-        for (key, value) in std::env::vars() {
-            id = id.replace(&format!("%{key}%"), &value);
+    fn expand_env_vars(input: &str, vars: &[(String, String)]) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(start) = rest.find('%') {
+            out.push_str(&rest[..start]);
+            let after_start = &rest[start + 1..];
+            if let Some(end) = after_start.find('%') {
+                let name = &after_start[..end];
+                if let Some((_, val)) = vars.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+                    out.push_str(val);
+                } else {
+                    out.push('%');
+                    out.push_str(name);
+                    out.push('%');
+                }
+                rest = &after_start[end + 1..];
+            } else {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
         }
+        out.push_str(rest);
+        out
+    }
+
+    let env_vars: Vec<(String, String)> = std::env::vars().collect();
+    let mut result: Vec<Application> = Vec::new();
+    for raw_id in candidates {
+        let id = expand_env_vars(&raw_id, &env_vars);
         if !crate::focus::supported_browser(&id)
             || !std::path::Path::new(&id).is_file()
             || result.iter().any(|a| a.id.eq_ignore_ascii_case(&id))

@@ -17,7 +17,9 @@ export interface Session {
   started_at: number | null;
   ended_at: number | null;
   deadline_ms: number | null;
-  /** True when the app was killed mid-session (force quit, crash). */
+  /** Legacy record from when a same-boot process loss meant the block had
+   *  stopped. Closing or quitting the desktop app no longer sets it (the
+   *  engine owns the session); historical records still show it. */
   force_quit?: boolean;
   /** Step 11 anti-tamper: true once any extension has applied this
    *  session's policy (persisted, so a resumed session keeps its
@@ -336,8 +338,9 @@ export interface FocusConfig {
   /** Study mode: only the allowed channels play; the extension also
    *  blocks the YouTube homepage, Shorts, feeds and search results. */
   youtube_study_mode?: boolean;
-  /** Watch Later (list=WL) pages stay open even when YouTube or the
-   *  channel is blocked. Extension-enforced only. */
+  /** The Watch Later playlist page (youtube.com/playlist?list=WL)
+   *  stays open even when YouTube is blocked or not in the allowlist;
+   *  every other YouTube route stays blocked. Extension-enforced only. */
   youtube_allow_watch_later?: boolean;
   block_adult_content?: boolean;
   website_blocking?: 'auto' | 'none' | 'blocklist' | 'allowlist';

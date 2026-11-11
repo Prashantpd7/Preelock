@@ -55,6 +55,8 @@ fn default_browser_id() -> Option<String> {
         "brave.exe"
     } else if prog_id.contains("vivaldi") {
         "vivaldi.exe"
+    } else if prog_id.contains("comet") {
+        "comet.exe"
     } else {
         return None;
     };
@@ -100,7 +102,11 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
         "worker.js",
         "identity.js",
         "rules.js",
+        "website-controls.js",
+        "adult-domains.js",
+        "youtube-controls.js",
         "youtube.js",
+        "page-bridge.js",
         "self-test.js",
         "popup.html",
         "popup.css",
@@ -116,6 +122,46 @@ pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
         }
     }
     Ok(target)
+}
+/// Official download pages for the browsers Preelock can enforce rules in,
+/// keyed by the same ids the app uses (bundle id or executable name). This
+/// is an allowlist: the frontend can never hand an arbitrary URL to the
+/// shell, and nothing is downloaded or installed by Preelock itself.
+fn browser_download_url(browser_id: &str) -> Result<&'static str, String> {
+    let id = browser_id.to_ascii_lowercase();
+    let leaf = id.rsplit(['/', '\\']).next().unwrap_or(&id);
+    Ok(match leaf {
+        "com.google.chrome" | "chrome.exe" => "https://www.google.com/chrome/",
+        "com.microsoft.edgemac" | "msedge.exe" => "https://www.microsoft.com/edge",
+        "com.brave.browser" | "brave.exe" => "https://brave.com/download/",
+        "com.vivaldi.vivaldi" | "vivaldi.exe" => "https://vivaldi.com/download/",
+        "ai.perplexity.comet" | "comet.exe" => "https://www.perplexity.ai/comet",
+        _ => return Err("Unknown browser.".into()),
+    })
+}
+/// The installed supported browser to launch for session setup, or an
+/// error. The id comes from the app's own browser list, and is checked
+/// against the installed/known applications before anything is spawned,
+/// so no arbitrary application or command can be started from here.
+fn launch_target(browser_id: &str) -> Result<String, String> {
+    let id = browser_id.trim();
+    // A path is only acceptable as a Windows executable path; anything
+    // else (a shell command, a URL) is never a browser id.
+    let path_like = id.contains('/') && !id.to_ascii_lowercase().ends_with(".exe");
+    if id.is_empty() || path_like || !crate::focus::supported_browser(id) {
+        return Err("Unknown browser.".into());
+    }
+    let mut candidates = crate::platform::installed_browsers();
+    if let Ok(apps) = crate::platform::applications() {
+        candidates.extend(apps);
+    }
+    candidates
+        .into_iter()
+        .find(|a| a.id.eq_ignore_ascii_case(id) && crate::focus::supported_browser(&a.id))
+        .map(|a| a.id)
+        .ok_or_else(|| {
+            "Couldn't open browser. Open it manually and refresh the app list.".to_string()
+        })
 }
 pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<(), String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -135,6 +181,19 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
             }
             "privacy_settings" => {
                 cmd.arg("x-apple.systempreferences:com.apple.preference.security?Privacy");
+            }
+            // Official download page for a supported browser the user does
+            // not have yet (session browser compatibility). Only the
+            // allowlisted official URLs; Preelock never installs anything.
+            "browser_download" => {
+                cmd.arg(browser_download_url(browser_id)?);
+            }
+            // Bring the browser the user just chose to the front. `open -b`
+            // activates the running instance instead of starting a second
+            // copy, so no extra window is created.
+            "browser" => {
+                let id = launch_target(browser_id)?;
+                cmd.args(["-b", &id]);
             }
             "extensions" => {
                 // Empty id = use the user's default browser.
@@ -187,17 +246,37 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                     return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
                 }
                 // When a specific browser was requested, verify it is installed.
-                // The default browser from the registry is installed by definition.
-                if !browser_id.is_empty()
-                    && !crate::platform::installed_browsers()
-                        .iter()
-                        .chain(crate::platform::applications()?.iter())
-                        .any(|a| a.id.eq_ignore_ascii_case(resolved))
-                {
+                // The default browser from the registry is resolved to its full
+                // executable path when available so Command::new avoids PATH lookups.
+                let installed = crate::platform::installed_browsers();
+                let apps = crate::platform::applications()?;
+                let matched_path = installed
+                    .iter()
+                    .chain(apps.iter())
+                    .find(|a| {
+                        a.id.eq_ignore_ascii_case(resolved)
+                            || std::path::Path::new(&a.id)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .is_some_and(|f| f.eq_ignore_ascii_case(resolved))
+                    })
+                    .map(|a| a.id.as_str());
+                if !browser_id.is_empty() && matched_path.is_none() {
                     return Err("Open your browser first, then refresh.".into());
                 }
-                cmd = std::process::Command::new(resolved);
+                cmd = std::process::Command::new(matched_path.unwrap_or(resolved));
                 cmd.arg("chrome://extensions/");
+            }
+            "browser_download" => {
+                cmd = std::process::Command::new("explorer.exe");
+                cmd.arg(browser_download_url(browser_id)?);
+            }
+            // Chromium browsers are single-instance: starting an installed
+            // executable hands off to the running copy rather than opening a
+            // second window.
+            "browser" => {
+                let exe = launch_target(browser_id)?;
+                cmd = std::process::Command::new(exe);
             }
             "camera_settings" | "notification_settings" | "privacy_settings" => {
                 cmd = std::process::Command::new("explorer.exe");
@@ -219,5 +298,46 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
     {
         cmd.spawn().map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+#[cfg(test)]
+mod download_links {
+    use super::{browser_download_url, launch_target};
+    #[test]
+    fn launch_refuses_anything_but_a_supported_browser_id() {
+        // Empty, Safari, arbitrary URLs and shell strings never reach
+        // the launcher, whatever the frontend sends.
+        for bad in [
+            "",
+            "   ",
+            "com.apple.Safari",
+            "https://example.com/",
+            "open -a Calculator",
+            "/tmp/evil.sh",
+        ] {
+            assert!(launch_target(bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn download_links_are_official_and_allowlisted() {
+        assert_eq!(
+            browser_download_url("com.google.Chrome").unwrap(),
+            "https://www.google.com/chrome/"
+        );
+        assert_eq!(
+            browser_download_url(
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+            )
+            .unwrap(),
+            "https://brave.com/download/"
+        );
+        assert_eq!(
+            browser_download_url("ai.perplexity.comet").unwrap(),
+            "https://www.perplexity.ai/comet"
+        );
+        // Anything else — including Safari and arbitrary URLs — is refused.
+        assert!(browser_download_url("com.apple.Safari").is_err());
+        assert!(browser_download_url("https://example.com/install").is_err());
+        assert!(browser_download_url("").is_err());
     }
 }

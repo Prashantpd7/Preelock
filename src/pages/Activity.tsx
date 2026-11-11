@@ -1,37 +1,49 @@
 import { useState } from 'react';
 import { PageHeading, Empty } from '../components/ui';
 import { SessionCard } from '../components/SessionCard';
+import { Dropdown } from '../components/Dropdown';
+import { PlanningSections } from '../components/PlanningSections';
 import { useAppStore } from '../state/store';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { ANALYTICS_RANGES, type AnalyticsRange } from '../services/analytics';
-function inRange(
-  startedAt: number | null,
-  range: AnalyticsRange,
-  now: Date,
-): boolean {
-  if (range === 'all') return true;
-  if (startedAt == null) return false;
-  const start = new Date(startedAt);
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  if (range === 'today') return start >= today;
-  if (range === 'week') {
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 6);
-    return start >= weekAgo;
-  }
-  return (
-    start.getFullYear() === today.getFullYear() &&
-    start.getMonth() === today.getMonth()
-  );
-}
-export function Activity() {
+import {
+  ACTIVITY_SECTIONS,
+  inDateRange,
+  isLiveSessionStatus,
+  type ActivitySection,
+} from '../services/activitySection';
+type ActivityProps = {
+  /** Which section the dropdown shows. Owned by the Focus Sessions
+   *  page so the cards and the dropdown stay in sync. */
+  section: ActivitySection;
+  onSectionChange: (section: ActivitySection) => void;
+  /** Open the session wizard in schedule / one-shot mode. */
+  onNewSchedule: () => void;
+  onNewOneShot: () => void;
+  /** Increment to open the New allowance form in the Allowances
+   *  section (used by the Allowances card's button). */
+  allowanceFormSignal: number;
+};
+export function Activity({
+  section,
+  onSectionChange,
+  onNewSchedule,
+  onNewOneShot,
+  allowanceFormSignal,
+}: ActivityProps) {
   const { setup, refresh } = useFocusSetup();
   const [range, setRange] = useState<AnalyticsRange>('all');
   const now = new Date();
+  // Historical sessions only: a live session (running, paused,
+  // preparing) stays in the active-session area and must never be
+  // duplicated here as a historical entry.
   const sessions = useAppStore((s) => s.data.sessions)
-    .filter((s) => s.started_at !== null || s.status === 'interrupted')
-    .filter((s) => inRange(s.started_at, range, now))
+    .filter(
+      (s) =>
+        (s.started_at !== null || s.status === 'interrupted') &&
+        !isLiveSessionStatus(s.status),
+    )
+    .filter((s) => inDateRange(s.started_at, range, now))
     .slice()
     .reverse();
   return (
@@ -39,39 +51,69 @@ export function Activity() {
       <div className="activity-heading">
         <PageHeading title="Activity" />
       </div>
-      <div className="segmented" role="group" aria-label="Date range">
-        {ANALYTICS_RANGES.map((r) => (
-          <button
-            key={r.value}
-            type="button"
-            aria-pressed={range === r.value}
-            onClick={() => setRange(r.value)}
-          >
-            {r.label}
-          </button>
-        ))}
+      <div className="activity-toolbar">
+        <div className="activity-section-picker">
+          <Dropdown
+            value={section}
+            options={ACTIVITY_SECTIONS}
+            onChange={(value) => onSectionChange(value as ActivitySection)}
+          />
+        </div>
+        {/* The date filter applies to every section, not just the
+            session history: one-shots filter on their scheduled
+            start, schedules and allowances on their creation date. */}
+        <div className="segmented" role="group" aria-label="Date range">
+          {ANALYTICS_RANGES.map((r) => (
+            <button
+              key={r.value}
+              type="button"
+              aria-pressed={range === r.value}
+              onClick={() => setRange(r.value)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="session-list">
-        {sessions.length ? (
-          sessions.map((s) => (
-            <SessionCard
-              key={s.id}
-              session={s}
-              showStartedAt
-              hideStart
-              setup={setup}
-              onSetupRefresh={refresh}
-            />
-          ))
-        ) : (
-          <div className="panel">
+      {section === 'sessions' ? (
+        <div className="session-list">
+          {sessions.length ? (
+            sessions.map((s) => (
+              <SessionCard
+                key={s.id}
+                session={s}
+                showStartedAt
+                hideStart
+                setup={setup}
+                onSetupRefresh={refresh}
+              />
+            ))
+          ) : (
             <Empty>
               No activity in this period. Start a focus session to build your
               history.
             </Empty>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      ) : section === 'schedules' ? (
+        <PlanningSections
+          only="schedules"
+          range={range}
+          onNewSchedule={onNewSchedule}
+        />
+      ) : section === 'oneshots' ? (
+        <PlanningSections
+          only="oneshots"
+          range={range}
+          onNewOneShot={onNewOneShot}
+        />
+      ) : (
+        <PlanningSections
+          only="allowances"
+          range={range}
+          allowanceFormSignal={allowanceFormSignal}
+        />
+      )}
     </>
   );
 }

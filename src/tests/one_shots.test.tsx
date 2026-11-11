@@ -150,7 +150,11 @@ it('lists pending one-shots and cancels one', async () => {
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole('heading', { name: 'Focus Sessions' });
-  expect(await screen.findByText('Start once at')).toBeInTheDocument();
+  // The one-shot section is auto-selected: a future timer exists, so
+  // the dropdown shows it and the pending timer is listed below.
+  expect(
+    await screen.findByRole('button', { name: 'Start once at' }),
+  ).toBeInTheDocument();
   expect(
     screen.getByRole('button', { name: 'Cancel timer' }),
   ).toBeInTheDocument();

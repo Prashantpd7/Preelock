@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Modal } from './SettingsControls';
+import { SessionReview } from './SessionReview';
 import { DAY_LABELS, validateScheduleForm } from '../services/schedules';
-import type { LockConfig } from '../types';
+import { lockLabel } from '../types';
+import type { FocusConfig, LockConfig } from '../types';
 
 /** Fields the wizard's schedule popup collects. Passed to the
  *  parent, which creates the schedule with the wizard's FocusConfig
@@ -28,6 +30,13 @@ export function ScheduleConfirmDialog({
   minutes,
   strict,
   busy,
+  focus,
+  appNames,
+  browserName,
+  browserConnected,
+  cameraPermission,
+  platform,
+  safariWarning,
   onCreate,
   onCancel,
 }: {
@@ -35,6 +44,14 @@ export function ScheduleConfirmDialog({
   minutes: number;
   strict: boolean;
   busy: boolean;
+  /** The wizard's FocusConfig: the review reads it directly. */
+  focus?: FocusConfig;
+  appNames?: Record<string, string>;
+  browserName?: string;
+  browserConnected?: boolean;
+  cameraPermission?: string;
+  platform?: string;
+  safariWarning?: boolean;
   onCreate: (fields: ScheduleCreateFields) => void;
   onCancel: () => void;
 }) {
@@ -61,8 +78,25 @@ export function ScheduleConfirmDialog({
   const [enabled, setEnabled] = useState(true);
   const [problem, setProblem] = useState('');
 
+  // Days as picked right now — the review below shows them live,
+  // and submit() sends exactly these.
+  const pickedDays = days.map((on, i) => (on ? i : -1)).filter((i) => i >= 0);
+  // Lock summary for the review, in the same words as the details
+  // popup. The hash value is never displayed — only whether a
+  // password lock is on — so a placeholder stands in for it here.
+  const lockText = lockLabel(
+    lockPasswordOn || lockChallengeOn || lockDelayOn || lockRestart
+      ? {
+          password_hash: lockPasswordOn ? 'set' : undefined,
+          challenge_length: lockChallengeOn ? lockChallengeLength : 0,
+          delay_minutes: lockDelayOn ? lockDelayMinutes : 0,
+          restart_lock: lockRestart,
+        }
+      : undefined,
+  );
+
   function submit() {
-    const picked = days.map((on, i) => (on ? i : -1)).filter((i) => i >= 0);
+    const picked = pickedDays;
     const formProblem = validateScheduleForm({
       title: name,
       days: picked,
@@ -262,6 +296,26 @@ export function ScheduleConfirmDialog({
           />
           Enabled
         </label>
+        {focus && (
+          <SessionReview
+            focus={focus}
+            title={name}
+            timing={{
+              kind: 'schedule',
+              minutes,
+              days: pickedDays,
+              startTime: start,
+              endTime: end,
+            }}
+            appNames={appNames}
+            browserName={browserName}
+            browserConnected={browserConnected}
+            cameraPermission={cameraPermission}
+            platform={platform}
+            safariWarning={safariWarning}
+            lockText={lockText}
+          />
+        )}
         {problem && (
           <p className="error small" role="alert">
             {problem}

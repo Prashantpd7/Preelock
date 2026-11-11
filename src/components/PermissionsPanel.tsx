@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
+import { hasLiveStrictSession } from '../services/activitySection';
+import { useAppStore } from '../state/store';
 import { PermissionsGuide } from './PermissionsGuide';
 import { BrowserSetup } from './BrowserSetup';
 import { Modal, SettingRow } from './SettingsControls';
@@ -12,7 +14,13 @@ export function PermissionsPanel() {
   >(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  const [lockedDialog, setLockedDialog] = useState(false);
   const [status, setStatus] = useState<SettingsInfo>({});
+  // Browser connection management is locked while a strict focus
+  // session is live; the backend enforces the same lock, so this is
+  // only the visible half (see `reset_pairing` and the bridge
+  // connection lock in the Rust backend).
+  const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
   const [permissions, setPermissions] = useState(false);
   const camera = setup?.camera_permission;
   // Several browsers can stay paired at once; the row reflects all of them.
@@ -175,7 +183,14 @@ export function PermissionsPanel() {
                 </p>
                 <button
                   className="secondary"
-                  onClick={() => setPanel('add-browser')}
+                  onClick={() => {
+                    if (strictLive) {
+                      setPanel(null);
+                      setLockedDialog(true);
+                      return;
+                    }
+                    setPanel('add-browser');
+                  }}
                 >
                   Connect another browser
                 </button>
@@ -183,10 +198,20 @@ export function PermissionsPanel() {
                   Resetting disconnects every browser; each one will need the
                   connection code again.
                 </p>
+                {strictLive && (
+                  <p className="small muted">
+                    Browser settings are locked during an active focus session.
+                  </p>
+                )}
                 <button
                   className="text-button"
                   disabled={busy}
                   onClick={async () => {
+                    if (strictLive) {
+                      setPanel(null);
+                      setLockedDialog(true);
+                      return;
+                    }
                     setBusy(true);
                     try {
                       await api.resetPairing();
@@ -243,6 +268,23 @@ export function PermissionsPanel() {
                 : notice}
             </p>
           )}
+        </Modal>
+      )}
+      {lockedDialog && (
+        <Modal
+          title="Browser settings locked"
+          onClose={() => setLockedDialog(false)}
+        >
+          <div className="dialog-stack">
+            <p className="muted">
+              Browser connection settings cannot be changed during an active
+              focus session. You can modify these settings after your current
+              session ends.
+            </p>
+            <button type="button" onClick={() => setLockedDialog(false)}>
+              Got it
+            </button>
+          </div>
         </Modal>
       )}
     </section>

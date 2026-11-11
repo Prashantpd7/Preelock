@@ -3,11 +3,59 @@
 // countdown for timed locks stays live while the page sits open.
 // Everything renders via textContent, so user-set titles can never
 // inject markup.
+//
+// Session-scoped YouTube content (k=youtube) gets its own copy: the
+// page never shows the blocked video, a thumbnail, a recommendation or
+// a way back to it — just the reason and the way out.
 (function () {
-  const el = document.getElementById('reason');
-  if (!el) return;
   const params = new URLSearchParams(location.search);
   const kind = params.get('k') || 'unknown';
+  const titleEl = document.getElementById('title');
+  const messageEl = document.getElementById('message');
+  const hintEl = document.getElementById('hint');
+  const el = document.getElementById('reason');
+
+  if (kind === 'youtube') {
+    const channel = params.get('m') === 'channel';
+    document.title = 'Video blocked \u00b7 Preelock';
+    if (titleEl) titleEl.textContent = 'Video blocked';
+    if (messageEl)
+      messageEl.textContent = channel
+        ? "This channel's content is blocked during your focus session."
+        : "This content isn't available during your focus session.";
+    if (hintEl) hintEl.hidden = true;
+    return;
+  }
+
+  if (kind === 'website_adult') {
+    document.title = 'Adult Website blocked \u00b7 Preelock';
+    if (titleEl) titleEl.textContent = 'Adult Website blocked';
+    if (el) {
+      el.textContent = 'Category: Adult Website';
+      el.hidden = false;
+    }
+    if (messageEl)
+      messageEl.textContent =
+        'Access to known adult websites is blocked while browsing by Preelock Website Controls.';
+    if (hintEl) hintEl.hidden = true;
+    return;
+  }
+
+  if (kind === 'website_distracting') {
+    document.title = 'Distracting Website blocked \u00b7 Preelock';
+    if (titleEl) titleEl.textContent = 'Distracting Website blocked';
+    if (el) {
+      el.textContent = 'Category: Distracting Website';
+      el.hidden = false;
+    }
+    if (messageEl)
+      messageEl.textContent =
+        'Distracting sites like Instagram, Facebook and Netflix are blocked by Preelock Website Controls.';
+    if (hintEl) hintEl.hidden = true;
+    return;
+  }
+
+  if (!el) return;
   const title = params.get('t') || '';
   const endsAt = Number(params.get('e') || 0);
 

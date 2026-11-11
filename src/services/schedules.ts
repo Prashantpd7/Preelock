@@ -30,6 +30,36 @@ export function scheduleMinutes(time: string): number | null {
   return hour * 60 + minute;
 }
 
+/** Wall-clock start instant (epoch ms) of the next window start
+ *  after `nowMs`, mirroring the backend `next_window_start_ms`
+ *  (step 14): the `start_time` on a listed day, for same-day and
+ *  overnight windows alike. A start exactly now counts as already
+ *  started, never as "next". Null when no day is listed or the
+ *  start time is invalid. Day arithmetic assumes 24-hour days, the
+ *  same accepted imprecision as the backend. */
+export function nextScheduleStartMs(
+  schedule: Schedule,
+  nowMs: number = Date.now(),
+): number | null {
+  const start = scheduleMinutes(schedule.start_time);
+  if (start === null) return null;
+  const now = new Date(nowMs);
+  const weekday = now.getDay();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  for (let offset = 0; offset <= 7; offset++) {
+    const day = (weekday + offset) % 7;
+    if (!schedule.days.includes(day)) continue;
+    if (offset === 0 && start <= minutes) continue;
+    const midnight = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    ).getTime();
+    return midnight + offset * 86_400_000 + start * 60_000;
+  }
+  return null;
+}
+
 /** Mirrors the backend `window_active` exactly: start-inclusive,
  *  end-exclusive, and an end earlier than the start is an overnight
  *  window whose morning half belongs to the previous day's listing. */

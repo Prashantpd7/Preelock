@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { Settings } from '../pages/Settings';
-import { Dashboard } from '../pages/Dashboard';
+import { ActiveSessionBanner } from '../components/ActiveSessionBanner';
 import { useAppStore } from '../state/store';
 import { api, emptySnapshot } from '../services/api';
 import { settingsAction, preferenceDefaults } from '../services/settings';
@@ -144,9 +144,11 @@ it('shows a starting countdown instead of the timer during grace', async () => {
       },
     },
   });
+  // The grace countdown lives in the global banner (moved out of
+  // the Dashboard into AppLayout), so render the banner itself.
   render(
     <MemoryRouter>
-      <Dashboard />
+      <ActiveSessionBanner />
     </MemoryRouter>,
   );
   expect(await screen.findByText(/starting soon/i)).toBeInTheDocument();

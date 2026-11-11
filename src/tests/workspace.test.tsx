@@ -132,12 +132,13 @@ it('creates a flexible session with app checks', async () => {
       : emptySnapshot,
   );
   await user.click(screen.getByRole('button', { name: 'Create session' }));
-  // Confirmation popup shows the summary before anything is created.
+  // Confirmation popup shows the review before anything is created.
   expect(
     await screen.findByRole('button', { name: 'Start session' }),
   ).toBeInTheDocument();
   expect(screen.getByText('Write outline')).toBeInTheDocument();
-  expect(screen.getByText('25 min · Standard mode')).toBeInTheDocument();
+  expect(screen.getByText('25 minutes')).toBeInTheDocument();
+  expect(screen.getByText('Standard')).toBeInTheDocument();
   expect(api.execute).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Start session' }));
   expect(api.execute).toHaveBeenCalledWith({

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DAY_MS,
   canGoNextWeek,
   dayCategoryTotals,
   formatDayLabel,
   formatSelectedDayLabel,
   localDayStart,
   pickDayForWeek,
+  shiftDays,
   weekDays,
   weekStartMs,
 } from '../services/screenTimeWeek';
@@ -51,7 +51,7 @@ describe('weekStartMs and weekDays', () => {
     expect(days[0]).toBe(SUNDAY);
     expect(days[6]).toBe(SATURDAY);
     days.forEach((day, index) => {
-      expect(day).toBe(SUNDAY + index * DAY_MS);
+      expect(day).toBe(localDayStart(new Date(2026, 9, 25 + index)));
       expect(new Date(day).getDay()).toBe(index);
     });
   });
@@ -139,19 +139,19 @@ describe('week navigation rules', () => {
   });
 
   it('keeps the same weekday when it has usage', () => {
-    const days = weekDays(SUNDAY - 7 * DAY_MS);
+    const days = weekDays(shiftDays(SUNDAY, -7));
     const totals = [0, 0, 0, 0, 45 * 60_000, 0, 0];
     expect(pickDayForWeek(days, 4, totals, THURSDAY)).toBe(days[4]);
   });
 
   it('falls back to the most recent day with usage', () => {
-    const days = weekDays(SUNDAY - 7 * DAY_MS);
+    const days = weekDays(shiftDays(SUNDAY, -7));
     const totals = [10 * 60_000, 0, 0, 0, 0, 20 * 60_000, 0];
     expect(pickDayForWeek(days, 4, totals, THURSDAY)).toBe(days[5]);
   });
 
   it('keeps the same weekday when the week has no usage at all', () => {
-    const days = weekDays(SUNDAY - 7 * DAY_MS);
+    const days = weekDays(shiftDays(SUNDAY, -7));
     expect(pickDayForWeek(days, 4, [0, 0, 0, 0, 0, 0, 0], THURSDAY)).toBe(
       days[4],
     );

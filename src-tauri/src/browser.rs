@@ -19,7 +19,7 @@ pub const PORT: u16 = 47832;
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
-pub const EXTENSION_VERSION: u32 = 7;
+pub const EXTENSION_VERSION: u32 = 12;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
     #[serde(skip)]
@@ -56,7 +56,7 @@ pub struct Policy {
     /// extension blocks the YouTube homepage, Shorts, feeds and
     /// search results. False unless blocking is on.
     pub youtube_study_mode: bool,
-    /// Watch-Later exception (list=WL pages stay open). False unless
+    /// Watch-Later exception (the playlist?list=WL page stays open). False unless
     /// blocking is on. Extension-enforced only: query parameters are
     /// invisible to the engine (see the note on FocusConfig in
     /// focus.rs).
@@ -259,6 +259,7 @@ struct ClientState {
     browser_focused: bool,
     search_distracted: bool,
     channel_blocked: bool,
+    media_playing: bool,
 }
 #[derive(Default)]
 struct State {
@@ -269,6 +270,13 @@ struct State {
     test_result: String,
     test_until: u64,
     clients: HashMap<String, ClientState>,
+    /// Browser-connection lock: while a strict focus session is live
+    /// the engine sets this (see `Bridge::set_connection_locked`) and
+    /// the bridge ignores `disconnect: true` heartbeats instead of
+    /// forgetting the browser. A browser going quiet on its own is
+    /// still a transient disconnect — only an explicit disconnect
+    /// request is refused, and only while the flag is set.
+    connection_locked: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct BrowserStatus {
@@ -292,6 +300,12 @@ pub struct BrowserStatus {
     /// excepted page never reports this: exceptions override channel
     /// rules, so the extension never flags one.
     pub channel_blocked: bool,
+    /// Verified lecture playback: the extension measured actual media
+    /// playback on the active tab of its focused window (a supported
+    /// lecture page, really playing, no ad). Requires the same
+    /// activity consent as the rest of the report, and a focused
+    /// browser window.
+    pub media_playing: bool,
     pub activity_fresh: bool,
     /// The connected extension copy predates the behavior the app shipped
     /// with (it was never reloaded after an app update).
@@ -324,6 +338,9 @@ struct Heartbeat {
     search_distracted: bool,
     #[serde(default)]
     channel_blocked: bool,
+    /// Measured foreground lecture playback (see `BrowserStatus`).
+    #[serde(default)]
+    media_playing: bool,
     #[serde(default)]
     disconnect: bool,
     #[serde(default)]
@@ -598,7 +615,7 @@ impl Bridge {
                 let Ok(mut state) = state2.lock() else {
                     break;
                 };
-                if heartbeat.disconnect {
+                if heartbeat.disconnect && !state.connection_locked {
                     // The extension disconnected on purpose: forget just
                     // this client at once, so the app stops showing it as
                     // connected instead of waiting out the heartbeat window.
@@ -607,7 +624,22 @@ impl Bridge {
                     let _ = req.respond(tiny_http::Response::empty(200));
                     continue;
                 }
+                // A disconnect request while a strict focus session is
+                // live is ignored: the heartbeat below runs as normal,
+                // so the browser keeps receiving its policy and stays
+                // connected. (The popup Disconnect button is gone, but
+                // a stale, never-reloaded extension copy can still send
+                // one — the lock holds against it too.)
                 let resolved_browser = resolve_browser(&heartbeat.browser, &thread_browsers);
+                // The extension reports the browser it detected. An empty
+                // or unrecognised identity means it could not tell which
+                // browser it is (or is not one Preelock supports). Refuse
+                // the connection instead of registering it under the
+                // wrong browser; the extension shows the reason.
+                if !supported_extension_browser(&resolved_browser) {
+                    let _ = req.respond(tiny_http::Response::empty(400));
+                    continue;
+                }
                 let observe = state
                     .policy
                     .as_ref()
@@ -635,6 +667,10 @@ impl Bridge {
                 client.browser_focused = (observe || track) && heartbeat.browser_focused;
                 client.search_distracted = observe && heartbeat.search_distracted;
                 client.channel_blocked = observe && heartbeat.channel_blocked;
+                // Playback only counts for a focused browser window, so
+                // background media never reaches the session.
+                client.media_playing =
+                    (observe || track) && heartbeat.browser_focused && heartbeat.media_playing;
                 if !heartbeat.test_id.is_empty()
                     && heartbeat.test_id == state.test_id
                     && !heartbeat.test_result.is_empty()
@@ -778,6 +814,26 @@ impl Bridge {
             }
         }
     }
+    /// Browser-connection lock, pushed by the engine from its
+    /// authoritative session state (see `Engine::publish`): true while
+    /// a strict focus session is live, false otherwise. The value is
+    /// a projection of engine state, not a second source of truth —
+    /// the engine rewrites it on every publish, so the lock lifts on
+    /// the same publish that ends the session.
+    pub fn set_connection_locked(&self, locked: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.connection_locked = locked;
+        }
+    }
+    /// Test-only read of the connection lock (see
+    /// `set_connection_locked`).
+    #[cfg(test)]
+    pub fn connection_locked(&self) -> bool {
+        self.state
+            .lock()
+            .map(|s| s.connection_locked)
+            .unwrap_or(false)
+    }
     pub fn set_screen_time_tracking(&self, enabled: bool) {
         if let Ok(mut state) = self.state.lock() {
             if !enabled {
@@ -872,6 +928,7 @@ impl Bridge {
                     browser_focused: c.browser_focused,
                     search_distracted: c.search_distracted,
                     channel_blocked: c.channel_blocked,
+                    media_playing: c.media_playing,
                     activity_fresh: c.last_seen != 0
                         && clock::continuous_ms().saturating_sub(c.last_seen) < 6_000,
                     available: true,
@@ -891,6 +948,7 @@ impl Bridge {
                 browser_focused: false,
                 search_distracted: false,
                 channel_blocked: false,
+                media_playing: false,
                 activity_fresh: false,
                 available: true,
                 connected: false,
@@ -973,6 +1031,7 @@ pub fn unavailable(reason: &str) -> BrowserStatus {
         browser_focused: false,
         search_distracted: false,
         channel_blocked: false,
+        media_playing: false,
         activity_fresh: false,
         available: false,
         connected: false,
@@ -1029,10 +1088,63 @@ fn resolve_browser(reported: &str, installed: &[String]) -> String {
     }
     reported.into()
 }
+/// Browser ids the extension can report about itself. Anything else
+/// means the extension could not identify its browser, and the
+/// connection is refused rather than attributed to the wrong one.
+fn supported_extension_browser(id: &str) -> bool {
+    [
+        "com.google.chrome",
+        "com.microsoft.edgemac",
+        "com.brave.browser",
+        "com.vivaldi.vivaldi",
+        "org.chromium.chromium",
+        "ai.perplexity.comet",
+    ]
+    .iter()
+    .any(|known| same_browser(known, id))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extension_browser_identities_are_validated() {
+        // Every supported browser the extension can report.
+        for id in [
+            "com.google.chrome",
+            "com.microsoft.edgemac",
+            "com.brave.browser",
+            "com.vivaldi.vivaldi",
+            "org.chromium.chromium",
+            "ai.perplexity.comet",
+        ] {
+            assert!(supported_extension_browser(id), "{id}");
+        }
+        // Windows executable paths resolve to the same ids.
+        assert!(same_browser(
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "com.brave.browser"
+        ));
+        // Unidentified, unsupported and unrelated identities are refused.
+        assert!(!supported_extension_browser(""));
+        assert!(!supported_extension_browser("com.operasoftware.opera"));
+        assert!(!supported_extension_browser("com.apple.Safari"));
+        assert!(!supported_extension_browser("unknown"));
+        // Chrome reported on a machine that only has Comet is Comet;
+        // with real Chrome installed the report stands.
+        assert_eq!(
+            resolve_browser("com.google.chrome", &["ai.perplexity.comet".into()]),
+            "ai.perplexity.comet"
+        );
+        assert_eq!(
+            resolve_browser("com.google.chrome", &["com.google.Chrome".into()]),
+            "com.google.chrome"
+        );
+        assert_eq!(
+            resolve_browser("com.brave.browser", &["com.google.Chrome".into()]),
+            "com.brave.browser"
+        );
+    }
     #[test]
     fn policies_only_apply_to_selected_browsers() {
         let c = FocusConfig {
@@ -1220,13 +1332,50 @@ mod tests {
         assert!(p.youtube_study_mode);
     }
     #[test]
+    fn policy_carries_the_watch_later_exception_in_allowlist_mode() {
+        // The reported configuration: block all websites except a few,
+        // with YouTube blocked and the Watch Later exception on.
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Allowlist,
+            domains: vec![
+                "github.com".into(),
+                "whatsapp.com".into(),
+                "chatgpt.com".into(),
+            ],
+            youtube_blocked_channels: vec!["@somechannel".into()],
+            youtube_allow_watch_later: true,
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.mode, "allowlist");
+        // youtube.com is not in the allowlist, yet the toggle still
+        // reaches the extension so its one Watch Later route can open.
+        assert!(!p.domains.iter().any(|d| d.contains("youtube")));
+        assert!(p.youtube_allow_watch_later);
+        // Toggled off: the extension is told to keep YouTube blocked.
+        let off = FocusConfig {
+            youtube_allow_watch_later: false,
+            ..c.clone()
+        };
+        assert!(!Policy::new("s", &off, 60_000).youtube_allow_watch_later);
+        // With no blocking at all there is nothing to carve out, even
+        // though the saved toggle says on.
+        let none = FocusConfig {
+            website_blocking: WebsiteBlocking::None,
+            youtube_blocked_channels: Vec::new(),
+            youtube_allow_watch_later: true,
+            ..Default::default()
+        };
+        assert!(!Policy::new("s", &none, 60_000).youtube_allow_watch_later);
+    }
+    #[test]
     fn loopback_auth_activation_acknowledgement_and_cleanup() {
         use std::io::{Read, Write};
         let dir = tempfile::tempdir().unwrap();
         let mut bridge = Bridge::test_bridge(dir.path());
         let port = bridge.server.server_addr().to_ip().unwrap().port();
         let request = |key: &str, id: &str| {
-            let body=serde_json::json!({"client":"11111111-1111-1111-1111-111111111111","applied_id":id}).to_string();
+            let body=serde_json::json!({"client":"11111111-1111-1111-1111-111111111111","browser":"com.google.chrome","applied_id":id}).to_string();
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
@@ -1255,6 +1404,48 @@ mod tests {
         bridge.rotate_token(dir.path()).unwrap();
         assert!(request(&old_token, "").starts_with("HTTP/1.1 403"));
         assert!(request(&bridge.token, "").starts_with("HTTP/1.1 200"));
+    }
+    #[test]
+    fn heartbeat_media_playing_counts_only_for_a_focused_browser_window() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let mut config = FocusConfig {
+            activity_consent: true,
+            ..Default::default()
+        };
+        config.attention.enabled = true;
+        bridge.publish(Some(Policy::new("session", &config, 60_000)));
+        let beat = |playing: bool, focused: bool| {
+            let body = serde_json::json!({
+                "client": "11111111-1111-1111-1111-111111111111",
+                "browser": "com.google.chrome",
+                "applied_id": "session",
+                "active_domain": "youtube.com",
+                "browser_focused": focused,
+                "media_playing": playing,
+            })
+            .to_string();
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(stream,"POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",bridge.token,body.len()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+        };
+        beat(true, true);
+        let status = bridge.status_for("com.google.chrome");
+        assert!(status.media_playing);
+        assert!(status.browser_focused && status.activity_fresh);
+        // A background browser window reports no exemption.
+        beat(true, false);
+        assert!(!bridge.status_for("com.google.chrome").media_playing);
+        // Paused/stopped playback (and an older extension that never
+        // sends the field) reports none.
+        beat(false, true);
+        assert!(!bridge.status_for("com.google.chrome").media_playing);
     }
     #[test]
     fn two_browsers_share_one_code_without_disturbing_each_other() {
@@ -1299,6 +1490,46 @@ mod tests {
         assert!(!bridge.status_for("com.brave.browser").connected);
         assert!(bridge.status_for("ai.perplexity.comet").connected);
         assert_eq!(bridge.connected_browsers(), vec!["ai.perplexity.comet"]);
+    }
+    #[test]
+    fn disconnect_is_ignored_while_the_connection_lock_is_set() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let sync = |key: &str, client: &str, browser: &str, disconnect: bool| {
+            let body = serde_json::json!({
+                "client": client,
+                "browser": browser,
+                "applied_id": "",
+                "disconnect": disconnect,
+            })
+            .to_string();
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(stream,"POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nAuthorization: Bearer {key}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        };
+        let client = "11111111-1111-1111-1111-111111111111";
+        assert!(sync(&bridge.token, client, "com.google.chrome", false).starts_with("HTTP/1.1 200"));
+        assert!(bridge.status_for("com.google.chrome").connected);
+        // Locked (a strict focus session is live): an explicit
+        // disconnect is ignored — the browser stays connected and
+        // keeps syncing, so its rules stay applied.
+        bridge.set_connection_locked(true);
+        assert!(sync(&bridge.token, client, "com.google.chrome", true).starts_with("HTTP/1.1 200"));
+        assert!(bridge.status_for("com.google.chrome").connected);
+        assert_eq!(bridge.connected_browsers().len(), 1);
+        // Unlocked (the session ended): the same disconnect takes
+        // effect at once, exactly as before.
+        bridge.set_connection_locked(false);
+        assert!(sync(&bridge.token, client, "com.google.chrome", true).starts_with("HTTP/1.1 200"));
+        assert!(!bridge.status_for("com.google.chrome").connected);
+        assert!(bridge.connected_browsers().is_empty());
     }
     #[test]
     fn status_for_app_scopes_the_report_to_the_foreground_browser() {

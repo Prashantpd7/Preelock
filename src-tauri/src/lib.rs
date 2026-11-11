@@ -33,6 +33,7 @@ mod setup;
 mod stats;
 mod tamper;
 pub mod tray;
+pub mod websites;
 use engine::Engine;
 use models::{Action, Snapshot};
 use std::sync::{
@@ -233,18 +234,22 @@ fn execute_cli_request(engine: &mut Engine, request: &cli::CliRequest) -> cli::C
     }
 }
 
-/// Register for open-at-login iff a session is currently active
-/// (Running, Paused, or Preparing) OR any schedule is enabled.
-/// Rationale (step 6a): schedules can only fire if the app runs, so
-/// creating an enabled schedule is explicit consent to login launch.
-/// Otherwise — no active session and no enabled schedule — unregister,
-/// so the app never auto-opens without a reason. No-op in dev mode
-/// (macos.m refuses registration there; unregistration is always
-/// allowed). There is no manual toggle: the Settings row stays
-/// informational by an explicit user decision. This is the single
-/// login mechanism; it runs after every `execute` (session AND
-/// schedule/one-shot mutations all flow through `execute`) and once
-/// at launch in `setup`, so no second sync path exists.
+/// Register for open-at-login iff the user enabled the "Open at login"
+/// preference themselves OR a session is currently active (Running,
+/// Paused, or Preparing) OR any schedule is enabled.
+/// Rationale: the preference is the user's own ask for the app at
+/// login; schedules can only fire if the app runs, so creating an
+/// enabled schedule is explicit consent to login launch; and a live
+/// session must survive a shutdown, so its registration must never
+/// depend on the preference (mandatory recovery). Otherwise — preference
+/// off, no active session, no enabled schedule — unregister, so the app
+/// never auto-opens without a reason. No-op in dev mode (macos.m
+/// refuses registration there; unregistration is always allowed).
+/// The decision lives in `login_registration_decision` below — the
+/// single rule, applied here after every `execute` (session AND
+/// schedule/one-shot mutations all flow through `execute`) and once at
+/// launch in `setup`, and in the Settings `Login` action (which needs
+/// the same decision in one OS call so its errors surface).
 /// Documented edge case: on a login launch, schedule evaluation runs
 /// on the first tick (step-5 behavior); if a block starts, normal app
 /// behavior; if no block is active, the app simply opens to the
@@ -253,23 +258,42 @@ fn execute_cli_request(engine: &mut Engine, request: &cli::CliRequest) -> cli::C
 /// NOTE: the pre-step-6 code only ever registered here and had no
 /// removal branch, despite comments implying removal; step 6 adds
 /// the removal branch, which is the documented rule.
+/// The single open-at-login decision (see the doc above): register iff
+/// the user preference, a live session, or an enabled schedule says so.
+/// Reads the user's preference from the `login-user-enabled` marker
+/// file and the session/schedule state from the engine snapshot.
+/// If the engine lock is poisoned and the snapshot cannot be read,
+/// the user's explicit preference alone decides — never silently
+/// unregister on a broken engine read.
+pub(crate) fn login_registration_decision(app: &tauri::AppHandle) -> bool {
+    let user_pref = app
+        .path()
+        .app_data_dir()
+        .map(|dir| crate::settings::login_user_pref_enabled(&dir))
+        .unwrap_or(false);
+    app.state::<Mutex<Engine>>()
+        .lock()
+        .map(|engine| {
+            let snapshot = engine.current();
+            // Screen Time is always on, so it no longer keeps the app
+            // launching at login; login registration stays tied to
+            // the user preference, live sessions and enabled schedules.
+            crate::schedules::login_registration_needed(
+                engine.has_active(),
+                &snapshot.schedules,
+                user_pref,
+            )
+        })
+        .unwrap_or(user_pref)
+}
+
 fn sync_login_for_sessions(app: &tauri::AppHandle) {
     // `tauri dev` runs the raw debug binary, which cannot be registered as
     // an OS login item. Startup cleanup above handles stale registrations.
     if cfg!(debug_assertions) {
         return;
     }
-    let register = app
-        .state::<Mutex<Engine>>()
-        .lock()
-        .map(|engine| {
-            let snapshot = engine.current();
-            // Screen Time is always on, so it no longer keeps the app
-            // launching at login; login registration stays tied to
-            // live sessions and enabled schedules (step 6 rule).
-            crate::schedules::login_registration_needed(engine.has_active(), &snapshot.schedules)
-        })
-        .unwrap_or(false);
+    let register = login_registration_decision(app);
     if register {
         if let Err(e) = desktop_settings::login(true) {
             log::warn!("Could not enable open-at-login: {e}");

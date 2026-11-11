@@ -26,9 +26,10 @@
 // - YouTube channel rules (step 3) are enforced in three places:
 //   channel pages and study-mode surface pages by DNR rules compiled
 //   here, watch pages by the youtube.js content script (their URLs
-//   carry no channel), and Watch-Later (list=WL) navigation by a DNR
-//   allow rule in blocklist mode. The full decision, precedence and
-//   fail behavior are documented above urlBlockedByPolicy.
+//   carry no channel), and the Watch Later playlist route by a DNR
+//   allow rule in both website-blocking modes. The full decision,
+//   precedence and fail behavior are documented above
+//   urlBlockedByPolicy.
 // - The focus timer never sees URLs, only hostnames, so path and
 //   keyword relevance are handled as documented in focus.rs.
 function escapeRegExp(s) {
@@ -127,11 +128,18 @@ const YOUTUBE_SURFACE_PATTERNS = [
   `^https?://${YOUTUBE_HOST_PATTERN}/feed(?:[/?#].*)?$`,
   `^https?://${YOUTUBE_HOST_PATTERN}/results(?:[?#].*)?$`,
 ];
-// A Watch-Later navigation: watch or playlist whose query contains
-// list=WL as its own parameter (not list=WLxyz). Navigation only:
-// see the asset limit noted above — page assets from a
-// domain-blocked youtube.com stay blocked.
-const YOUTUBE_WATCH_LATER_PATTERN = `^https?://${YOUTUBE_HOST_PATTERN}/(?:watch|playlist)[?#].*[?&]list=WL(?:[&#].*)?$`;
+// The Watch Later playlist route, and nothing else: the exact
+// `/playlist` path on the main YouTube hosts with `list=WL` as a whole
+// query parameter (not list=WLxyz, not a `?xlist=WL` lookalike). Watch
+// pages and every other playlist never match. Navigation only: page
+// assets from a domain-blocked youtube.com stay blocked (see the
+// asset limit noted above).
+const YOUTUBE_WATCH_LATER_PATTERN = `^https?://(?:www\\.|m\\.)?youtube\\.com(?::\\d+)?/playlist/?\\?(?:[^#]*&)?list=WL(?:[&#].*)?$`;
+// The Watch Later video route: /watch with list=WL and a video id. It
+// opens at document level so the content script can verify that the
+// video is really in the user's Watch Later playlist; the URL alone
+// never permits playback (youtubeWatchDecision does).
+const YOUTUBE_WATCH_LATER_VIDEO_PATTERN = `^https?://(?:www\\.|m\\.)?youtube\\.com(?::\\d+)?/watch/?\\?(?:[^#]*&)?list=WL(?:[&#].*)?$`;
 const SEARCH_ENGINES = [
   { host: 'google.com', param: 'q', pathPrefix: '/search' },
   { host: 'bing.com', param: 'q', pathPrefix: '/search' },
@@ -202,21 +210,24 @@ export function searchQueryBlocked(keywords, query) {
 // still restrict it.
 //
 // Watch-Later exception: when policy.youtube_allow_watch_later is on,
-// URLs with list=WL (playlist?list=WL and watch?v=...&list=WL) are
-// allowed even when youtube.com is domain-blocked or the channel is
-// otherwise blocked. This is extension-enforced only: query
-// parameters are invisible to the engine, so if the domain is blocked
-// the engine still counts youtube.com as not relevant even on an
-// allowed Watch-Later page. In blocklist mode Watch Later overrides
-// domain and channel rules outright; in allowlist mode the allowlist
-// still decides (a non-listed youtube.com stays blocked), but a
-// Watch-Later page on an allowlisted youtube.com bypasses channel
-// rules. Known limit: in blocklist mode with youtube.com
-// domain-blocked, the Watch-Later navigation itself is allowed, but
-// YouTube's own page assets (also served from youtube.com) remain
-// domain-blocked, so playback may be degraded; Watch Later works
-// fully when youtube.com is not domain-blocked (channel-blocked or
-// study-mode cases).
+// the user's Watch Later playlist page (playlist?list=WL, see
+// isWatchLaterUrl) opens even when youtube.com is not otherwise
+// reachable — domain-blocked in blocklist mode, or absent from the
+// allowlist in allowlist mode. It is one exact route, never the
+// domain: the homepage, Shorts, search, channel pages, other
+// playlists and every watch page (list=WL in a video URL included)
+// stay blocked exactly as they were. Watch Later overrides domain and
+// channel rules for that page only. Adults/offline still win (offline
+// blocks everything, the adult overlay blocks before the exception).
+// This is extension-enforced only: query parameters are invisible to
+// the engine, so the engine still counts youtube.com as not relevant
+// on the allowed page when it is not an allowed website. Known limit:
+// in blocklist mode with youtube.com domain-blocked, the navigation
+// itself is allowed, but YouTube's own page assets (also served from
+// youtube.com) remain domain-blocked, so the page may render
+// degraded; Watch Later works fully in allowlist mode and wherever
+// youtube.com is not domain-blocked (channel-blocked or study-mode
+// cases).
 function validHandle(body) {
   return (
     body.length >= 3 &&
@@ -256,6 +267,14 @@ export function channelKeyFromPath(pathname) {
     .split('/')
     .filter(Boolean);
   return channelKeyFromSegments(segments);
+}
+export function isChannelLivePath(pathname) {
+  const segments = String(pathname || '')
+    .split('/')
+    .filter(Boolean);
+  if (segments.length < 2) return false;
+  if (segments[segments.length - 1].toLowerCase() !== 'live') return false;
+  return Boolean(channelKeyFromSegments(segments));
 }
 // Normalize one channel entry as typed (or one stored key) to its
 // stored key, or null when it is not a channel. Accepts @handle, a
@@ -326,6 +345,15 @@ export function extractChannelKey(hrefs) {
   }
   return null;
 }
+// Main YouTube hosts that serve the user's Watch Later playlist.
+// YouTube Music and any other subdomain is a different surface and
+// never qualifies.
+const WATCH_LATER_HOSTS = ['youtube.com', 'www.youtube.com', 'm.youtube.com'];
+// The Watch Later playlist route, exactly: `/playlist` (optionally
+// with a trailing slash) with the `list` parameter exactly `WL`. A
+// longer id (WLxyz), a parameter that merely contains that text
+// (`?xlist=WL`), another playlist id, a video URL carrying list=WL
+// and any other YouTube path are all rejected.
 export function isWatchLaterUrl(urlString) {
   let url;
   try {
@@ -334,7 +362,79 @@ export function isWatchLaterUrl(urlString) {
     return false;
   }
   if (!/^https?:$/.test(url.protocol)) return false;
-  return isYouTubeHost(url.hostname) && url.searchParams.get('list') === 'WL';
+  if (!WATCH_LATER_HOSTS.includes(url.hostname.toLowerCase())) return false;
+  const pathname = url.pathname.toLowerCase();
+  if (pathname !== '/playlist' && pathname !== '/playlist/') return false;
+  return url.searchParams.get('list') === 'WL';
+}
+// The Watch Later *video* route: a `/watch` page carrying `list=WL`
+// and a video id. This is a route, never a permission — the playlist
+// listing itself proves nothing, so youtube.js verifies the video
+// against the Watch Later playlist YouTube rendered for the user and
+// the worker refuses unverified membership
+// (youtubeWatchDecision). Mirrors youtube.js isWatchLaterVideoUrl.
+export function isWatchLaterVideoUrl(urlString) {
+  let url;
+  try {
+    url = new URL(urlString || '');
+  } catch {
+    return false;
+  }
+  if (!/^https?:$/.test(url.protocol)) return false;
+  if (!WATCH_LATER_HOSTS.includes(url.hostname.toLowerCase())) return false;
+  const pathname = url.pathname.toLowerCase();
+  if (pathname !== '/watch' && pathname !== '/watch/') return false;
+  return (
+    url.searchParams.get('list') === 'WL' && Boolean(url.searchParams.get('v'))
+  );
+}
+// Whether ordinary YouTube *browsing* is closed by this policy: its
+// homepage would be blocked. Watch Later and channel exceptions only
+// matter in that case — when YouTube is open anyway, a video that
+// happens to carry list=WL is just a normal video.
+export function youtubeBrowsingBlocked(policy) {
+  if (!policy) return false;
+  return urlBlockedByPolicy('https://www.youtube.com/', policy);
+}
+// Watch Later is the only permitted YouTube content: browsing is
+// closed and the toggle is on (never in offline mode or when the
+// Watch Later playlist itself is blocked by a higher rule like adult overlay).
+const WATCH_LATER_PLAYLIST_URL = 'https://www.youtube.com/playlist?list=WL';
+export function watchLaterOnly(policy) {
+  return Boolean(
+    policy &&
+    policy.mode !== 'offline' &&
+    policy.youtube_allow_watch_later &&
+    youtubeBrowsingBlocked(policy) &&
+    !urlBlockedByPolicy(WATCH_LATER_PLAYLIST_URL, policy),
+  );
+}
+// The homepage and general feeds are sent to the Watch Later playlist
+// instead of a blocked page when Watch Later is the only permitted
+// YouTube content. Anything else (playlist, watch, channel) is allowed
+// or blocked on its own, so nothing here can loop: the destination is
+// never a redirect source. Only main YouTube hosts qualify (not music/studio).
+export function shouldRedirectToWatchLater(urlString, policy) {
+  if (!watchLaterOnly(policy)) return false;
+  let url;
+  try {
+    url = new URL(urlString || '');
+  } catch {
+    return false;
+  }
+  if (!/^https?:$/.test(url.protocol)) return false;
+  if (!WATCH_LATER_HOSTS.includes(url.hostname.toLowerCase())) return false;
+  const path = url.pathname.toLowerCase();
+  return path === '/' || path === '/feed' || path.startsWith('/feed/');
+}
+export function watchLaterRedirectUrl(urlString, policy) {
+  if (!shouldRedirectToWatchLater(urlString, policy)) return null;
+  const url = new URL(urlString);
+  const host =
+    url.hostname.toLowerCase() === 'm.youtube.com'
+      ? 'm.youtube.com'
+      : 'www.youtube.com';
+  return `https://${host}/playlist?list=WL`;
 }
 // Study-mode surface pages: homepage (/), Shorts, feeds, results.
 // Watch pages and channel pages are NOT surface pages.
@@ -417,10 +517,10 @@ export function channelBlockReason(urlString, policy) {
 //    including keyword blocks on a search engine whose host matches
 //    an exception (the exception is checked before the keyword rule).
 //    Exceptions also disable channel enforcement for that page.
-// 4. Watch Later (blocklist mode only): a list=WL YouTube URL is
-//    ALLOWED, overriding domain and channel rules. In allowlist mode
-//    the allowlist still decides, but Watch Later suppresses channel
-//    rules (see step 6).
+// 4. Watch Later (the exact playlist?list=WL route, both modes):
+//    ALLOWED, overriding domain/allowlist and channel rules. It never
+//    covers any other YouTube route, so videos, Shorts, search,
+//    channels and other playlists keep whatever decision they had.
 // 5. Keyword rules, then block rules: blocklist blocks on rule match;
 //    allowlist blocks anything not in the allowed list (exceptions are
 //    meaningless there, since the allowed list already defines what is
@@ -458,15 +558,16 @@ export function urlBlockedByPolicy(urlString, policy) {
     exceptions.some((d) => ruleMatches(d, hostname, url.pathname))
   )
     return false;
-  // Watch Later overrides domain and channel rules in blocklist mode
-  // (in allowlist mode the allowlist still decides below, but channel
-  // rules are suppressed for Watch-Later pages there too) — but only
-  // when the toggle is on.
-  if (
-    policy.youtube_allow_watch_later &&
-    policy.mode === 'blocklist' &&
-    isWatchLaterUrl(urlString)
-  )
+  // Watch Later overrides domain, allowlist and channel rules for its
+  // one exact playlist route — but only when the toggle is on.
+  // Offline mode and the adult overlay were already decided above, so
+  // they still win.
+  if (policy.youtube_allow_watch_later && isWatchLaterUrl(urlString))
+    return false;
+  // The Watch Later video route opens as well, because its URL alone
+  // cannot prove membership: youtube.js checks the video against the
+  // playlist YouTube rendered and the worker keeps or blocks it.
+  if (policy.youtube_allow_watch_later && isWatchLaterVideoUrl(urlString))
     return false;
   const found = searchPageQuery(urlString);
   if (found && searchQueryBlocked(policy.keywords || [], found.query))
@@ -517,11 +618,9 @@ export function blockDetail(urlString, policy) {
     exceptions.some((d) => ruleMatches(d, hostname, pathname))
   )
     return { blocked: false };
-  if (
-    policy.youtube_allow_watch_later &&
-    policy.mode === 'blocklist' &&
-    isWatchLaterUrl(urlString)
-  )
+  if (policy.youtube_allow_watch_later && isWatchLaterUrl(urlString))
+    return { blocked: false };
+  if (policy.youtube_allow_watch_later && isWatchLaterVideoUrl(urlString))
     return { blocked: false };
   const found = searchPageQuery(urlString);
   if (found && searchQueryBlocked(policy.keywords || [], found.query))
@@ -543,15 +642,63 @@ export function blockDetail(urlString, policy) {
 }
 // Watch-page decision for the worker's youtube_check message, given
 // the channel youtube.js read from the page DOM (or null). Precedence:
-// exceptions (blocklist mode) and Watch Later allow the page outright;
-// otherwise the domain decision applies, then the watch decision.
+// a blocklist exception allows the page outright; otherwise the domain
+// decision applies, then the watch decision. Watch Later is NOT an
+// exemption here: it covers the playlist page only, so a video URL
+// that merely carries list=WL is decided like any other video.
 // `unidentified` is set by youtube.js only after its detection
 // timeout with a loaded player, so study mode fails closed only then.
-export function youtubeWatchDecision(
+// Decision for one video, given the channel youtube.js read from the
+// page (or null) and whether the video is verified to be in the user's
+// Watch Later playlist (`true`), positively not verifiable (`false`),
+// or still being verified (`null`). Precedence is explicit and shared
+// with the rest of the session policy:
+// 1. An exception rule for the page allows it outright.
+// 2. An explicitly blocked channel always wins — over Watch Later, over
+//    study-mode allowlists and over any entry point.
+// 3. Study mode: an approved channel plays; a verified Watch Later
+//    video is the additional exception; everything else is blocked
+//    (unknown channel/identity only after the detection timeout).
+// 4. The page's own domain/allowlist decision applies.
+// 5. When the Watch Later route is the only reason the page opened, the
+//    video must be verified as a Watch Later member; an unverified
+//    video is blocked once the script gives up waiting.
+// `{ pending: true }` means "keep the neutral cover, ask again" — it is
+// never an allow.
+// Every identity the content script could read for one video, normalized
+// to the stored key forms. Junk and duplicates are dropped; an empty list
+// means "identity not known yet", never "allowed".
+export function channelIdentityKeys(raw) {
+  const out = [];
+  for (const entry of raw || []) {
+    const key = normalizeYouTubeChannel(String(entry ?? ''));
+    if (key && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
+// The authoritative video decision. `identities` are all verified
+// identities read for the *currently playing* video (player channel id,
+// owner handle, metadata), already expanded through the learned
+// UC-id/handle alias map. Precedence is explicit:
+// 1. A blocklist exception for the page allows it.
+// 2. Any explicitly blocked identity blocks it — over Watch Later, over
+//    study-mode allowlists, from every entry point.
+// 3. Study mode: an approved identity allows it; a verified Watch Later
+//    video is the additional exception; anything else is blocked.
+// 4. The page's own domain/allowlist decision applies.
+// 5. When the Watch Later route is the only reason the page opened, the
+//    video must be a verified Watch Later member.
+// 6. With channel blocking configured, an unidentified video is never
+//    allowed: it stays pending, then is blocked once the content script
+//    says the resolution window is over.
+// `{ pending: true }` means "keep the player protected, ask again"; it is
+// never an allow.
+export function youtubeVideoDecision(
   urlString,
-  channelKey,
+  identities,
   policy,
   unidentified = false,
+  watchLaterMember = null,
 ) {
   if (!policy) return { blocked: false, reason: null };
   let url;
@@ -569,29 +716,160 @@ export function youtubeWatchDecision(
     )
   )
     return { blocked: false, reason: 'exception' };
-  if (policy.youtube_allow_watch_later && isWatchLaterUrl(urlString)) {
-    // In allowlist mode a non-listed youtube.com stays blocked even
-    // for Watch Later; a listed one bypasses channel rules.
-    if (
-      policy.mode === 'allowlist' &&
-      !(policy.domains || []).some((d) =>
-        ruleMatches(d, url.hostname, url.pathname),
-      )
+  const keys = (identities || []).filter(Boolean);
+  if (keys.some((key) => (policy.youtube_blocked_channels || []).includes(key)))
+    return { blocked: true, reason: 'blocked_channel' };
+  const urlChannelReason =
+    policy.youtube_allow_watch_later && isWatchLaterUrl(urlString)
+      ? null
+      : channelBlockReason(urlString, policy);
+  if (
+    urlChannelReason &&
+    !(
+      urlChannelReason === 'study_channel' &&
+      keys.length &&
+      keys.some((key) => (policy.youtube_allowed_channels || []).includes(key))
     )
-      return { blocked: true, reason: 'domain' };
-    return { blocked: false, reason: 'watch_later' };
+  )
+    return { blocked: true, reason: urlChannelReason };
+  if (!policy.youtube_study_mode && urlBlockedByPolicy(urlString, policy))
+    return { blocked: true, reason: 'domain' };
+  const pathname = url.pathname.toLowerCase();
+  const isVideoRoute =
+    pathname === '/watch' ||
+    pathname === '/watch/' ||
+    pathname.startsWith('/shorts/') ||
+    pathname.startsWith('/live/') ||
+    isChannelLivePath(url.pathname);
+  // Never authorize Watch Later (or anything else) before channel
+  // identity is verified when explicit channel blocks are configured.
+  if (
+    isVideoRoute &&
+    (policy.youtube_blocked_channels || []).length &&
+    !keys.length
+  ) {
+    if (!unidentified) return { blocked: false, reason: null, pending: true };
+    return { blocked: true, reason: 'channel_unidentified' };
+  }
+  const watchLaterRoute = Boolean(
+    policy.youtube_allow_watch_later && isWatchLaterVideoUrl(urlString),
+  );
+  if (policy.youtube_study_mode) {
+    if (
+      keys.some((key) => (policy.youtube_allowed_channels || []).includes(key))
+    )
+      return { blocked: false, reason: null };
+    if (watchLaterRoute) {
+      if (watchLaterMember === true)
+        return { blocked: false, reason: 'watch_later' };
+      if (watchLaterMember === null)
+        return { blocked: false, reason: null, pending: true };
+      return { blocked: true, reason: 'watch_later_unverified' };
+    }
+    if (!keys.length && !unidentified)
+      return { blocked: false, reason: null, pending: true };
+    return {
+      blocked: true,
+      reason: keys.length ? 'study_channel' : 'study_unidentified',
+    };
   }
   if (urlBlockedByPolicy(urlString, policy))
     return { blocked: true, reason: 'domain' };
-  if (youtubeWatchBlocked(channelKey, policy, unidentified))
+  if (watchLaterRoute && watchLaterOnly(policy)) {
+    if (watchLaterMember === true)
+      return { blocked: false, reason: 'watch_later' };
+    if (watchLaterMember === null && !unidentified)
+      return { blocked: false, reason: null, pending: true };
+    return { blocked: true, reason: 'watch_later_unverified' };
+  }
+  return { blocked: false, reason: null };
+}
+// Back-compat wrapper for a single identity.
+export function youtubeWatchDecision(
+  urlString,
+  channelKey,
+  policy,
+  unidentified = false,
+  watchLaterMember = null,
+) {
+  return youtubeVideoDecision(
+    urlString,
+    channelKey ? [channelKey] : [],
+    policy,
+    unidentified,
+    watchLaterMember,
+  );
+}
+// Kept for callers that only have one identity; see youtubeVideoDecision.
+export function legacyYoutubeWatchDecision(
+  urlString,
+  channelKey,
+  policy,
+  unidentified = false,
+  watchLaterMember = null,
+) {
+  if (!policy) return { blocked: false, reason: null };
+  let url;
+  try {
+    url = new URL(urlString || '');
+  } catch {
+    return { blocked: false, reason: null };
+  }
+  if (!/^https?:$/.test(url.protocol)) return { blocked: false, reason: null };
+  if (!isYouTubeHost(url.hostname)) return { blocked: false, reason: null };
+  if (
+    policy.mode === 'blocklist' &&
+    (policy.exceptions || []).some((d) =>
+      ruleMatches(d, url.hostname, url.pathname),
+    )
+  )
+    return { blocked: false, reason: 'exception' };
+  // Explicit channel block: the highest rule after the adult overlay.
+  if (
+    channelKey &&
+    (policy.youtube_blocked_channels || []).includes(channelKey)
+  )
+    return { blocked: true, reason: 'blocked_channel' };
+  const watchLaterRoute = Boolean(
+    policy.youtube_allow_watch_later && isWatchLaterVideoUrl(urlString),
+  );
+  if (policy.youtube_study_mode) {
+    if (
+      channelKey &&
+      (policy.youtube_allowed_channels || []).includes(channelKey)
+    )
+      return { blocked: false, reason: null };
+    if (watchLaterRoute) {
+      if (watchLaterMember === true)
+        return { blocked: false, reason: 'watch_later' };
+      if (watchLaterMember === null && !unidentified)
+        return { blocked: false, reason: null, pending: true };
+      return { blocked: true, reason: 'watch_later_unverified' };
+    }
+    // Still identifying: fail closed only once youtube.js says the
+    // detection window is over.
+    if (!channelKey && !unidentified)
+      return { blocked: false, reason: null, pending: true };
     return {
       blocked: true,
-      reason: policy.youtube_study_mode
-        ? channelKey
-          ? 'study_channel'
-          : 'study_unidentified'
-        : 'blocked_channel',
+      reason: channelKey ? 'study_channel' : 'study_unidentified',
     };
+  }
+  // Domain / allowlist rules for the page itself.
+  if (urlBlockedByPolicy(urlString, policy))
+    return { blocked: true, reason: 'domain' };
+  // A video that only opened because of the Watch Later route must
+  // prove it is in the playlist. `pending` keeps the neutral cover up
+  // while the playlist panel (or a cached id) is still arriving.
+  if (watchLaterRoute && watchLaterOnly(policy)) {
+    if (watchLaterMember === true)
+      return { blocked: false, reason: 'watch_later' };
+    if (watchLaterMember === null && !unidentified)
+      return { blocked: false, reason: null, pending: true };
+    return { blocked: true, reason: 'watch_later_unverified' };
+  }
+  if (youtubeWatchBlocked(channelKey, policy, unidentified))
+    return { blocked: true, reason: 'blocked_channel' };
   return { blocked: false, reason: null };
 }
 // Pure rule compiler: no inspection of page content or URL history.
@@ -696,10 +974,10 @@ export function compileRules(policy) {
     // and an excepted channel page is still allowed by its exception
     // rule. Watch pages get NO DNR rule here — their URLs carry no
     // channel, so the youtube.js content script enforces them.
-    // Watch-Later navigation is allowed at 2 so it outranks a
-    // domain block at 1; its page assets are a separate matter (see
+    // The Watch Later playlist route is allowed at 2 so it outranks
+    // a domain block at 1; its page assets are a separate matter (see
     // the Watch-Later note above).
-    if (watchLater)
+    if (watchLater) {
       add(
         'allow',
         {
@@ -708,6 +986,35 @@ export function compileRules(policy) {
         },
         2,
       );
+      // The video route opens too. Its URL is not a permission: the
+      // content script verifies membership and replaces the tab when
+      // the video is not in the playlist.
+      add(
+        'allow',
+        {
+          regexFilter: YOUTUBE_WATCH_LATER_VIDEO_PATTERN,
+          resourceTypes: ['main_frame', 'sub_frame'],
+        },
+        2,
+      );
+    }
+    // A permitted YouTube page must still load its own scripts, styles
+    // and images when youtube.com is a blocked domain. These rules cover
+    // subresources only — documents stay subject to the block and
+    // channel rules — so no browsing route opens up, and no other
+    // domain is touched.
+    if (watchLater || studyMode || blockedChannels.length > 0) {
+      add(
+        'allow',
+        {
+          regexFilter: `^https?://${YOUTUBE_HOST_PATTERN}(?::\\d+)?/`,
+          resourceTypes: types.filter(
+            (t) => t !== 'main_frame' && t !== 'sub_frame',
+          ),
+        },
+        2,
+      );
+    }
     if (studyMode) {
       for (const pattern of YOUTUBE_SURFACE_PATTERNS)
         add('block', { regexFilter: pattern, resourceTypes: types }, 1);
@@ -783,16 +1090,41 @@ export function compileRules(policy) {
     },
   });
   if (policy.mode === 'allowlist') {
+    // The Watch Later exception is one allowed route at priority 2:
+    // above the catch-all block (1) and below the adult overlay (3),
+    // so the playlist page opens even when youtube.com is not in the
+    // session's allowlist. It never allows the domain — every other
+    // YouTube route still falls through to the catch-all.
+    if (watchLater) {
+      add(
+        'allow',
+        {
+          regexFilter: YOUTUBE_WATCH_LATER_PATTERN,
+          resourceTypes: navigation,
+        },
+        2,
+      );
+      // A Watch Later video opens at document level and is verified (or
+      // replaced) by the content script. Subresources are already
+      // unfiltered in allowlist mode, so the page renders normally.
+      add(
+        'allow',
+        {
+          regexFilter: YOUTUBE_WATCH_LATER_VIDEO_PATTERN,
+          resourceTypes: navigation,
+        },
+        2,
+      );
+    }
     // Channel rules sit above the allowlist allows (priority 2): a
     // listed youtube.com can still have blocked channels, and study
     // mode can still restrict it to allowed channels. The listed
     // allows sit at 5, above the adult overlay (3) — the two never
     // overlap (adult domains are not YouTube), so this changes
-    // nothing for adult blocking. No Watch-Later DNR rule here:
-    // channel pages never carry list=WL, watch pages are never
-    // DNR-blocked by channel rules (the content script enforces them
-    // and honors Watch Later), and a non-listed youtube.com is
-    // already blocked by the catch-all above.
+    // nothing for adult blocking. These rules only match channel and
+    // surface paths, never /playlist, so the Watch Later allow above
+    // is not overridden; watch pages are never DNR-blocked by channel
+    // rules (the content script enforces them).
     if (studyMode) {
       for (const pattern of YOUTUBE_SURFACE_PATTERNS)
         add('block', { regexFilter: pattern, resourceTypes: navigation }, 4);

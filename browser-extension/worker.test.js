@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-let session, local, rules, message;
+let session, local, rules, dynamicRules, message, storageListeners;
 const policy = () => ({
   id: 'test-session',
   mode: 'allowlist',
@@ -12,9 +12,32 @@ const response = (p, status = 200) => ({
   status,
   json: async () => ({ policy: p }),
 });
-const storage = (data) => ({
-  get: async () => ({ ...data }),
-  set: async (p) => Object.assign(data, p),
+const storage = (getData, areaName = null) => ({
+  get: async (keys) => {
+    const data = getData();
+    if (typeof keys === 'string') {
+      return Object.hasOwn(data, keys) ? { [keys]: data[keys] } : {};
+    }
+    if (Array.isArray(keys)) {
+      const out = {};
+      for (const k of keys) {
+        if (Object.hasOwn(data, k)) out[k] = data[k];
+      }
+      return out;
+    }
+    return { ...data };
+  },
+  set: async (p) => {
+    const data = getData();
+    const changes = {};
+    for (const [k, v] of Object.entries(p)) {
+      changes[k] = { oldValue: data[k], newValue: v };
+      data[k] = v;
+    }
+    if (areaName === 'local') {
+      for (const fn of storageListeners) fn(changes, 'local');
+    }
+  },
 });
 async function send(value) {
   return new Promise((resolve) =>
@@ -27,9 +50,17 @@ beforeEach(() => {
   session = {};
   local = { token: 'a'.repeat(64), client: 'test-client' };
   rules = [];
+  dynamicRules = [];
+  storageListeners = [];
   const event = () => ({ addListener: vi.fn() });
   vi.stubGlobal('chrome', {
-    storage: { session: storage(session), local: storage(local) },
+    storage: {
+      session: storage(() => session, 'session'),
+      local: storage(() => local, 'local'),
+      onChanged: {
+        addListener: vi.fn((fn) => storageListeners.push(fn)),
+      },
+    },
     runtime: {
       id: 'test-extension',
       getURL: (path) => `chrome-extension://test-extension/${path}`,
@@ -56,6 +87,13 @@ beforeEach(() => {
       updateSessionRules: async ({ removeRuleIds = [], addRules = [] }) => {
         rules = [
           ...rules.filter((r) => !removeRuleIds.includes(r.id)),
+          ...addRules,
+        ];
+      },
+      getDynamicRules: async () => dynamicRules,
+      updateDynamicRules: async ({ removeRuleIds = [], addRules = [] }) => {
+        dynamicRules = [
+          ...dynamicRules.filter((r) => !removeRuleIds.includes(r.id)),
           ...addRules,
         ];
       },
@@ -261,26 +299,19 @@ it('reports channel_blocked for a DNR-blocked channel page tab', async () => {
   expect(acknowledgement.active_domain).toBe('www.youtube.com');
   expect(JSON.stringify(request.mock.calls)).not.toContain('@blocked');
 });
-it('sends an authenticated goodbye when disconnecting', async () => {
+it('has no disconnect path: a disconnect message sends no goodbye', async () => {
   const request = vi.fn(async () => response(policy()));
   vi.stubGlobal('fetch', request);
   await import('./worker.js');
-  const result = await send({ type: 'disconnect' });
-  expect(result).toEqual({ ok: true });
+  // No handler answers a disconnect message, so the reply promise
+  // never resolves: fire it without awaiting, flush async work, and
+  // assert the bridge was never told this browser disconnected.
+  void send({ type: 'disconnect' });
+  await vi.advanceTimersByTimeAsync(100);
   const goodbyes = request.mock.calls.filter(
     ([, options]) => JSON.parse(options.body).disconnect === true,
   );
-  expect(goodbyes).toHaveLength(1);
-  const [url, options] = goodbyes[0];
-  expect(url).toBe('http://127.0.0.1:47832/sync');
-  expect(options.headers.Authorization).toBe(`Bearer ${'a'.repeat(64)}`);
-  const body = JSON.parse(options.body);
-  expect(body.disconnect).toBe(true);
-  expect(body.client).toBe('test-client');
-  expect(body.applied_id).toBe('');
-  // v7: bumped together with EXTENSION_VERSION in worker.js and
-  // browser.rs when the lease-aware fail-open behaviour landed (M4).
-  expect(body.v).toBe(7);
+  expect(goodbyes).toHaveLength(0);
 });
 
 it('reports the extension version on every sync', async () => {
@@ -288,10 +319,82 @@ it('reports the extension version on every sync', async () => {
   vi.stubGlobal('fetch', request);
   await import('./worker.js');
   await send({ type: 'sync' });
-  const body = JSON.parse(request.mock.calls[0][1].body);
-  // v7: bumped together with EXTENSION_VERSION in worker.js and
-  // browser.rs when the lease-aware fail-open behaviour landed (M4).
-  expect(body.v).toBe(7);
+  expect(request).toHaveBeenCalledTimes(2);
+  for (const [, init] of request.mock.calls) {
+    const body = JSON.parse(init.body);
+    // Kept in sync with EXTENSION_VERSION in worker.js and browser.rs.
+    expect(body.v).toBe(12);
+  }
+});
+
+it('reports measured lecture playback from the focused window active tab', async () => {
+  chrome.tabs.query = async () => [
+    { id: 5, url: 'https://www.youtube.com/watch?v=lecture' },
+  ];
+  chrome.tabs.sendMessage = vi.fn((id, message, callback) => {
+    if (message.type === 'preelock_media_state') {
+      expect(id).toBe(5);
+      callback({ playing: true });
+    }
+    return Promise.resolve();
+  });
+  const request = vi.fn(async () => response(policy()));
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  // The acknowledgement (last call) carries the activity report.
+  const body = JSON.parse(request.mock.calls.at(-1)[1].body);
+  expect(body.media_playing).toBe(true);
+  // Only the measured boolean travels; never the page's URL.
+  expect(JSON.stringify(request.mock.calls)).not.toContain('v=lecture');
+});
+
+it('reports no lecture playback when the video is paused or the tab cannot answer', async () => {
+  chrome.tabs.query = async () => [
+    { id: 6, url: 'https://www.youtube.com/watch?v=lecture' },
+  ];
+  chrome.tabs.sendMessage = vi.fn((id, message, callback) => {
+    if (message.type === 'preelock_media_state') callback({ playing: false });
+    return Promise.resolve();
+  });
+  const request = vi.fn(async () => response(policy()));
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(JSON.parse(request.mock.calls.at(-1)[1].body).media_playing).toBe(
+    false,
+  );
+  // A tab with no content script (a rejected message) is not playing.
+  chrome.tabs.sendMessage = vi.fn((id, message, callback) => {
+    if (message.type !== 'preelock_media_state') return Promise.resolve();
+    chrome.runtime.lastError = { message: 'no receiver' };
+    callback();
+    return Promise.resolve();
+  });
+  await send({ type: 'sync' });
+  const body = JSON.parse(request.mock.calls.at(-1)[1].body);
+  expect(body.media_playing).toBe(false);
+});
+
+it('reports no lecture playback for a background browser window', async () => {
+  chrome.windows.getLastFocused = async () => ({ id: 1, focused: false });
+  chrome.tabs.query = async () => [
+    { id: 7, url: 'https://www.youtube.com/watch?v=lecture' },
+  ];
+  chrome.tabs.sendMessage = vi.fn(() => Promise.resolve());
+  const request = vi.fn(async () => response(policy()));
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  const body = JSON.parse(request.mock.calls.at(-1)[1].body);
+  expect(body.browser_focused).toBe(false);
+  expect(body.media_playing).toBeUndefined();
+  // Playback is never even queried for an unfocused window.
+  expect(
+    chrome.tabs.sendMessage.mock.calls.filter(
+      ([, message]) => message.type === 'preelock_media_state',
+    ),
+  ).toHaveLength(0);
 });
 
 it('uses the chosen Comet identity when Chrome is installed too', async () => {
@@ -346,4 +449,522 @@ it('passes the resolved block cause to the blocked page', async () => {
       'chrome-extension://test-extension/blocked.html' +
       '?h=example.com&k=session&t=Deep+work',
   });
+});
+
+// The Watch Later exception must survive the navigation listener too:
+// DNR cannot stop a service-worker-served page, so the tab replacement
+// is what actually blocks YouTube. A direct URL and a link click both
+// arrive as an onUpdated navigation to the same route.
+const watchLaterPolicy = () => ({
+  id: 'test-session',
+  mode: 'allowlist',
+  domains: ['github.com'],
+  youtube_allow_watch_later: true,
+  expires_at: Date.now() + 60000,
+  observe_activity: true,
+});
+it('opens the Watch Later playlist but replaces every other YouTube route', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(watchLaterPolicy())),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  chrome.tabs.update.mockClear();
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+  // Direct URL (typed or pasted) and a clicked link: both land here.
+  onUpdated(30, { url: 'https://www.youtube.com/playlist?list=WL' });
+  onUpdated(
+    31,
+    { status: 'loading' },
+    {
+      id: 31,
+      pendingUrl: 'https://m.youtube.com/playlist?list=WL',
+    },
+  );
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+  // No redirect loop: the block page itself is never re-blocked.
+  onUpdated(30, {
+    url: `chrome-extension://test-extension/blocked.html?h=www.youtube.com`,
+  });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+  // Homepage and general feeds redirect to Watch Later so navigation never
+  // dead-ends on blocked.html, while every other disallowed route is blocked.
+  onUpdated(40, { url: 'https://www.youtube.com/' });
+  onUpdated(39, { url: 'https://www.youtube.com/feed/subscriptions' });
+  const blocked = [
+    'https://www.youtube.com/shorts/abc',
+    'https://www.youtube.com/results?search_query=cats',
+    'https://www.youtube.com/watch?v=x',
+    'https://www.youtube.com/playlist?list=PL123',
+    'https://www.youtube.com/playlist?list=WLxyz',
+    'https://www.youtube.com/@channel',
+  ];
+  blocked.forEach((url, i) => onUpdated(41 + i, { url }));
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(40, {
+    url: 'https://www.youtube.com/playlist?list=WL',
+  });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(39, {
+    url: 'https://www.youtube.com/playlist?list=WL',
+  });
+  for (let i = 0; i < blocked.length; i++) {
+    expect(chrome.tabs.update).toHaveBeenCalledWith(41 + i, {
+      url: expect.stringContaining(
+        'chrome-extension://test-extension/blocked.html',
+      ),
+    });
+  }
+  // A Watch Later *video* route now opens so the content script can
+  // verify that the video is really in the playlist; the URL alone is
+  // not a permission.
+  onUpdated(48, { url: 'https://www.youtube.com/watch?v=x&list=WL' });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(48);
+});
+it('leaves an already-open Watch Later tab alone and redirects open YouTube Home when a session starts', async () => {
+  chrome.tabs.query = async () => [
+    { id: 50, url: 'https://www.youtube.com/playlist?list=WL' },
+    { id: 51, url: 'https://www.youtube.com/' },
+  ];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(watchLaterPolicy())),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).toHaveBeenCalledTimes(1);
+  expect(chrome.tabs.update).toHaveBeenCalledWith(51, {
+    url: 'https://www.youtube.com/playlist?list=WL',
+  });
+});
+it('drops the Watch Later exception when the session policy ends', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(watchLaterPolicy())),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(rules.some((r) => /list=WL/.test(r.condition.regexFilter || ''))).toBe(
+    true,
+  );
+  // The engine publishes no policy once the session completes.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(null)),
+  );
+  await send({ type: 'sync' });
+  expect(rules).toEqual([]);
+  expect(session.policy).toBeNull();
+  // With no live policy nothing is replaced, so YouTube blocking is back
+  // to its out-of-session state.
+  chrome.tabs.update.mockClear();
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+  onUpdated(60, { url: 'https://www.youtube.com/playlist?list=WL' });
+  onUpdated(61, { url: 'https://www.youtube.com/' });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+});
+
+// The content script cannot import rules.js, so every decision it needs
+// is answered by the worker: the policy, each SPA route, each video
+// (channel + verified Watch Later membership), and the blocked-screen
+// wording. These tests exercise those handlers directly.
+async function sendFromTab(value, tab) {
+  return new Promise((resolve) =>
+    message(value, { id: 'test-extension', tab }, resolve),
+  );
+}
+it('answers the content script with routes and verified membership', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(watchLaterPolicy())),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  const policyResponse = await send({ type: 'youtube_policy' });
+  expect(policyResponse.policy.youtube_allow_watch_later).toBe(true);
+  // Ordinary YouTube browsing is closed, so the script may redirect the
+  // homepage and hide the feeds.
+  expect(policyResponse.browsingClosed).toBe(true);
+  // Routes: the playlist opens, a channel page does not.
+  expect(
+    await send({
+      type: 'youtube_page_check',
+      url: 'https://www.youtube.com/playlist?list=WL',
+    }),
+  ).toEqual({ blocked: false });
+  expect(
+    await send({
+      type: 'youtube_page_check',
+      url: 'https://www.youtube.com/@channel',
+    }),
+  ).toEqual({ blocked: true });
+  const wlVideo = 'https://www.youtube.com/watch?v=abc123&list=WL';
+  // A video is decided by membership, never by the list=WL parameter.
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: wlVideo,
+      channel: '@other',
+      watchLaterMember: true,
+    }),
+  ).toEqual({ blocked: false, reason: 'watch_later' });
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: wlVideo,
+      channel: '@other',
+      watchLaterMember: null,
+    }),
+  ).toEqual({ blocked: false, reason: null, pending: true });
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: wlVideo,
+      channel: '@other',
+      watchLaterMember: false,
+    }),
+  ).toEqual({ blocked: true, reason: 'watch_later_unverified' });
+});
+it('replaces blocked YouTube content with the matching blocked screen', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response({
+        ...watchLaterPolicy(),
+        youtube_blocked_channels: ['@blocked'],
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  chrome.tabs.update.mockClear();
+  const videoTab = {
+    id: 70,
+    url: 'https://www.youtube.com/watch?v=abc123&list=WL',
+  };
+  await sendFromTab(
+    {
+      type: 'youtube_block',
+      url: videoTab.url,
+      channel: '@other',
+      watchLaterMember: false,
+    },
+    videoTab,
+  );
+  expect(chrome.tabs.update).toHaveBeenCalledWith(70, {
+    url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=content',
+  });
+  // A channel block gets the channel wording.
+  const channelTab = { id: 71, url: 'https://www.youtube.com/@blocked' };
+  await sendFromTab(
+    { type: 'youtube_block', url: channelTab.url, channel: null },
+    channelTab,
+  );
+  expect(chrome.tabs.update).toHaveBeenCalledWith(71, {
+    url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=channel',
+  });
+});
+it('leaves blocked content alone once the session has ended', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(null)),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  chrome.tabs.update.mockClear();
+  const tab = { id: 72, url: 'https://www.youtube.com/watch?v=abc123' };
+  await sendFromTab(
+    {
+      type: 'youtube_block',
+      url: tab.url,
+      channel: null,
+      watchLaterMember: false,
+    },
+    tab,
+  );
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+});
+it('echos videoId, learns UC-id aliases across checks, and fails closed when channel rules require identity', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response({
+        ...watchLaterPolicy(),
+        youtube_blocked_channels: ['@blocked'],
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  const ucId = 'UCBlockedChannelId123456';
+  // First observation reports both the UC channel id and the @handle:
+  // blocked immediately, and aliases are learned for subsequent lookups.
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=vid1',
+      videoId: 'vid1',
+      channels: [ucId, '@blocked'],
+    }),
+  ).toEqual({
+    videoId: 'vid1',
+    blocked: true,
+    reason: 'blocked_channel',
+  });
+  // Later observation reports only the UC id (e.g., an embed or minimal
+  // player response without an owner handle link): alias expansion still blocks.
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=vid2&list=WL',
+      videoId: 'vid2',
+      channels: [ucId],
+      watchLaterMember: true,
+    }),
+  ).toEqual({
+    videoId: 'vid2',
+    blocked: true,
+    reason: 'blocked_channel',
+  });
+  // When no channel identity arrives on a Watch Later video while blocked
+  // channels exist, the check stays pending first and then fails closed.
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=vid3&list=WL',
+      videoId: 'vid3',
+      channels: [],
+      watchLaterMember: true,
+      unidentified: false,
+    }),
+  ).toEqual({
+    videoId: 'vid3',
+    blocked: false,
+    reason: null,
+    pending: true,
+  });
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=vid3&list=WL',
+      videoId: 'vid3',
+      channels: [],
+      watchLaterMember: true,
+      unidentified: true,
+    }),
+  ).toEqual({
+    videoId: 'vid3',
+    blocked: true,
+    reason: 'channel_unidentified',
+  });
+  chrome.tabs.update.mockClear();
+  const tab = {
+    id: 73,
+    url: 'https://www.youtube.com/watch?v=vid3&list=WL',
+  };
+  await sendFromTab(
+    {
+      type: 'youtube_block',
+      url: tab.url,
+      channels: [],
+      watchLaterMember: true,
+      unidentified: true,
+    },
+    tab,
+  );
+  expect(chrome.tabs.update).toHaveBeenCalledWith(73, {
+    url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=content',
+  });
+});
+
+it('blocks aliased /@handle and /@handle/live pages in youtube_page_check and youtube_block without learning ambiguous multi-channel tuples', async () => {
+  const ucBlocked = 'UCHnyfMqiRRG1u-2MsSQLbXA';
+  const ucOther = 'UCYo1b5k3x9n7pQ2rStUvWx1';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response({
+        ...policy(),
+        mode: 'blocklist',
+        domains: [],
+        youtube_blocked_channels: [ucBlocked],
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+
+  // Ambiguous array with two UC IDs must NOT poison alias map.
+  await send({
+    type: 'youtube_check',
+    url: 'https://www.youtube.com/watch?v=ambig01',
+    videoId: 'ambig01',
+    channels: [ucBlocked, ucOther, '@innocent'],
+  });
+  expect(
+    await send({
+      type: 'youtube_page_check',
+      url: 'https://www.youtube.com/@innocent/live',
+    }),
+  ).toEqual({ blocked: false });
+
+  // Clean 1 UC ID + 1 @handle observation learns bidirectional alias.
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=ver01',
+      videoId: 'ver01',
+      channels: [ucBlocked, '@veritasium'],
+    }),
+  ).toEqual({
+    videoId: 'ver01',
+    blocked: true,
+    reason: 'blocked_channel',
+  });
+
+  expect(
+    await send({
+      type: 'youtube_page_check',
+      url: 'https://www.youtube.com/@veritasium',
+    }),
+  ).toEqual({ blocked: true });
+  expect(
+    await send({
+      type: 'youtube_page_check',
+      url: 'https://www.youtube.com/@veritasium/live',
+    }),
+  ).toEqual({ blocked: true });
+
+  chrome.tabs.update.mockClear();
+  const liveTab = {
+    id: 88,
+    url: 'https://www.youtube.com/@veritasium/live',
+  };
+  await sendFromTab(
+    {
+      type: 'youtube_block',
+      url: liveTab.url,
+      channels: [],
+    },
+    liveTab,
+  );
+  expect(chrome.tabs.update).toHaveBeenCalledWith(88, {
+    url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=channel',
+  });
+});
+
+it('enforces local Website Controls independently of desktop sessions and combines additively with active policies', async () => {
+  // Disconnected state: no token, no session policy.
+  local = {
+    websiteControls: {
+      blockAdultWebsites: true,
+      blockDistractingWebsites: true,
+    },
+  };
+  chrome.tabs.query = async () => [
+    { id: 90, url: 'https://www.instagram.com/reels/' },
+    { id: 91, url: 'https://www.youtube.com/' },
+    { id: 92, url: 'https://web.whatsapp.com/' },
+    { id: 93, url: 'https://www.pornhub.com/' },
+  ];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(null)),
+  );
+  await import('./worker.js');
+  await send({ type: 'reconcile_website_controls' });
+
+  // Dynamic rules installed for both local categories; session rules empty.
+  expect(rules).toEqual([]);
+  expect(dynamicRules.some((r) => r.id === 100001 && r.priority === 6)).toBe(
+    true,
+  );
+  expect(dynamicRules.some((r) => r.id >= 101000 && r.priority === 6)).toBe(
+    true,
+  );
+
+  // Open distracting & adult tabs immediately replaced; YouTube & WhatsApp untouched.
+  expect(chrome.tabs.update).toHaveBeenCalledWith(90, {
+    url: 'chrome-extension://test-extension/blocked.html?h=www.instagram.com&k=website_distracting',
+  });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(93, {
+    url: 'chrome-extension://test-extension/blocked.html?h=www.pornhub.com&k=website_adult',
+  });
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(91);
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(92);
+
+  // Idempotent sync must NOT churn or duplicate dynamic rules.
+  const updateDynamicSpy = vi.spyOn(
+    chrome.declarativeNetRequest,
+    'updateDynamicRules',
+  );
+  await send({ type: 'reconcile_website_controls' });
+  expect(updateDynamicSpy).not.toHaveBeenCalled();
+
+  // Disconnected tabs.onUpdated still enforces local categories.
+  chrome.tabs.update.mockClear();
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+  onUpdated(94, { url: 'https://m.facebook.com/' });
+  onUpdated(95, { url: 'https://www.netflix.com/browse' });
+  onUpdated(96, { url: 'https://www.youtube.com/watch?v=x' });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(94, {
+    url: 'chrome-extension://test-extension/blocked.html?h=m.facebook.com&k=website_distracting',
+  });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(95, {
+    url: 'chrome-extension://test-extension/blocked.html?h=www.netflix.com&k=website_distracting',
+  });
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(96);
+
+  // Now connect desktop session with an allowlist that includes instagram.com:
+  // additive combined precedence means local Distracting toggle (priority 6) still blocks Instagram!
+  chrome.tabs.update.mockClear();
+  local.token = 'a'.repeat(64);
+  local.client = 'test-client';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response({
+        id: 'allow-ig-session',
+        mode: 'allowlist',
+        domains: ['instagram.com', 'github.com'],
+        expires_at: Date.now() + 60000,
+      }),
+    ),
+  );
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).toHaveBeenCalledWith(90, {
+    url: 'chrome-extension://test-extension/blocked.html?h=www.instagram.com&k=website_distracting',
+  });
+  expect(rules.length).toBeGreaterThan(0);
+  expect(dynamicRules.some((r) => r.id === 100001)).toBe(true);
+
+  // Ending desktop session removes ONLY session rules; local Website Controls persist.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response(null)),
+  );
+  await send({ type: 'sync' });
+  expect(rules).toEqual([]);
+  expect(dynamicRules.some((r) => r.id === 100001)).toBe(true);
+  expect(dynamicRules.some((r) => r.id >= 101000)).toBe(true);
+  expect(local.websiteControls).toEqual({
+    blockAdultWebsites: true,
+    blockDistractingWebsites: true,
+  });
+
+  // Turning off only Distracting removes 100001 while leaving Adult rules intact.
+  await chrome.storage.local.set({
+    websiteControls: {
+      blockAdultWebsites: true,
+      blockDistractingWebsites: false,
+    },
+  });
+  await send({ type: 'reconcile_website_controls' });
+  expect(dynamicRules.some((r) => r.id === 100001)).toBe(false);
+  expect(dynamicRules.some((r) => r.id >= 101000)).toBe(true);
 });

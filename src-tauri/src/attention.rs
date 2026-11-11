@@ -75,6 +75,27 @@ pub struct Signals {
     pub browser_relevant: Option<bool>,
     pub browser_required: bool,
     pub camera_status: String,
+    /// Verified foreground lecture playback (see `verified_lecture`):
+    /// the extension reports actual media playback on the active tab of
+    /// the focused browser window, on a site the session allows.
+    pub lecture_playing: bool,
+}
+/// Five minutes without genuine mouse or keyboard input stops credit.
+/// The countdown is the OS idle time of the last input event, not a
+/// timer that polling resets.
+pub const ACTIVITY_LIMIT_MS: u64 = 5 * 60_000;
+/// A lecture exemption needs all of these: the extension actually
+/// measured playback (`media_playing`), its report is fresh, the
+/// browser window is focused, and the active site is allowed by the
+/// session. Anything less is not a verified lecture, so the ordinary
+/// five-minute input requirement applies.
+pub fn verified_lecture(
+    media_playing: bool,
+    activity_fresh: bool,
+    browser_focused: bool,
+    site_relevant: Option<bool>,
+) -> bool {
+    media_playing && activity_fresh && browser_focused && site_relevant == Some(true)
 }
 pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
     let p = &config.attention;
@@ -118,19 +139,25 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
             _ => return (State::Unknown, "Camera unavailable. Timer paused.".into()),
         }
     }
-    let idle_limit = match p.task.as_str() {
-        "reading" | "lecture" => 20 * 60_000,
-        _ => 5 * 60_000,
-    };
-    if signal.idle_ms > idle_limit && signal.camera_status != "person_detected" {
+    // Camera presence and physical activity are independent: a person
+    // in front of the camera who has not touched the computer for five
+    // minutes is present but not working. A verified lecture playing in
+    // the foreground is the one exception, because watching it requires
+    // no mouse or keyboard input. The countdown comes from the OS idle
+    // time of the last genuine input event.
+    if !signal.lecture_playing && signal.idle_ms >= ACTIVITY_LIMIT_MS {
         return (
             State::Absent,
-            "You seem to be away. Time will resume when you return.".into(),
+            "No input for 5 minutes. Move the mouse or type, or play a lecture, to resume. Inactive time is not counted.".into(),
         );
     }
     (
         State::Focused,
-        if p.verification == "camera_and_activity" && signal.camera_status != "person_detected" {
+        if signal.lecture_playing {
+            "Verified lecture playback. Camera presence still applies."
+        } else if p.verification == "camera_and_activity"
+            && signal.camera_status != "person_detected"
+        {
             "Camera off. Counting your work app activity."
         } else {
             "Working in a chosen app. Focus is estimated."
@@ -352,13 +379,32 @@ mod tests {
         assert!(s.attention.elapsed_ms > 120000);
     }
     #[test]
+    fn quiet_reading_without_input_stops_credit_after_five_minutes() {
+        let mut s = configured();
+        s.focus.attention.task = "reading".into();
+        // Four minutes without input: still focused.
+        let mut signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            idle_ms: 240_000,
+            ..Default::default()
+        };
+        assert_eq!(classify(&s.focus, &signal).0, State::Focused);
+        // Five minutes: the input requirement applies to every task now.
+        signal.idle_ms = ACTIVITY_LIMIT_MS;
+        assert_eq!(classify(&s.focus, &signal).0, State::Absent);
+        // A verified lecture is the exception.
+        signal.lecture_playing = true;
+        assert_eq!(classify(&s.focus, &signal).0, State::Focused);
+    }
+    #[test]
     fn quiet_reading_and_camera_conflict_are_not_distraction() {
         let mut s = configured();
         s.focus.attention.task = "reading".into();
         let mut signal = Signals {
             activity_available: true,
             approved_app: true,
-            idle_ms: 600000,
+            idle_ms: 60_000,
             ..Default::default()
         };
         assert_eq!(classify(&s.focus, &signal).0, State::Focused);
@@ -368,6 +414,155 @@ mod tests {
         assert_eq!(classify(&s.focus, &signal).0, State::Unknown);
         signal.idle_ms = 600000;
         assert_eq!(classify(&s.focus, &signal).0, State::Absent);
+    }
+    #[test]
+    fn five_minutes_without_input_stops_crediting_productive_time() {
+        let mut s = configured();
+        s.focus.attention.verification = "camera_and_activity".into();
+        let mut signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_detected".into(),
+            idle_ms: 0,
+            ..Default::default()
+        };
+        // A person present and interacting: the timer runs.
+        for tick in 1..=3 {
+            observe(&mut s, &signal, 1000, tick * 1000);
+        }
+        assert_eq!(s.focused_ms, 2000);
+        // Present but quiet for less than five minutes: still counted.
+        signal.idle_ms = ACTIVITY_LIMIT_MS - 1;
+        let before = s.focused_ms;
+        observe(&mut s, &signal, 1000, 4000);
+        assert_eq!(s.focused_ms, before + 1000);
+        // Five minutes without input: no more productive time, but the
+        // session itself keeps running with its scheduled end.
+        signal.idle_ms = ACTIVITY_LIMIT_MS;
+        let before = s.focused_ms;
+        let remaining = s.remaining_ms;
+        for tick in 5..12 {
+            observe(&mut s, &signal, 1000, tick * 1000);
+        }
+        assert_eq!(s.focused_ms, before);
+        assert_eq!(s.remaining_ms, remaining);
+        assert_eq!(s.status, Status::Running);
+        assert_eq!(s.attention.state, State::Absent);
+        // Genuine input resets the countdown and credit resumes.
+        signal.idle_ms = 0;
+        for tick in 12..15 {
+            observe(&mut s, &signal, 1000, tick * 1000);
+        }
+        assert!(s.focused_ms > before);
+        assert_eq!(s.attention.state, State::Focused);
+    }
+    #[test]
+    fn input_at_four_minutes_keeps_the_timer_running() {
+        let mut s = configured();
+        let mut signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            idle_ms: 240_000,
+            ..Default::default()
+        };
+        observe(&mut s, &signal, 1000, 1000);
+        observe(&mut s, &signal, 1000, 2000);
+        assert_eq!(s.attention.state, State::Focused);
+        assert_eq!(s.focused_ms, 1000);
+        // A keypress at four minutes restarts the five-minute window.
+        signal.idle_ms = 0;
+        observe(&mut s, &signal, 1000, 3000);
+        assert_eq!(s.focused_ms, 2000);
+        signal.idle_ms = ACTIVITY_LIMIT_MS - 1000;
+        observe(&mut s, &signal, 1000, 4000);
+        assert_eq!(s.focused_ms, 3000);
+        assert_eq!(s.attention.state, State::Focused);
+    }
+    #[test]
+    fn a_verified_lecture_exempts_the_input_requirement() {
+        let mut s = configured();
+        s.focus.attention.verification = "camera_and_activity".into();
+        let signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_detected".into(),
+            idle_ms: 30 * 60_000,
+            lecture_playing: true,
+            ..Default::default()
+        };
+        for tick in 1..=3 {
+            observe(&mut s, &signal, 1000, tick * 1000);
+        }
+        assert_eq!(s.attention.state, State::Focused);
+        assert_eq!(s.focused_ms, 2000);
+        // Without verified playback the same silence stops credit.
+        let paused = Signals {
+            lecture_playing: false,
+            ..signal
+        };
+        for tick in 4..12 {
+            observe(&mut s, &paused, 1000, tick * 1000);
+        }
+        assert_eq!(s.focused_ms, 2000);
+        assert_eq!(s.attention.state, State::Absent);
+    }
+    #[test]
+    fn camera_absence_overrides_the_lecture_exemption() {
+        let mut s = configured();
+        s.focus.attention.verification = "camera_and_activity".into();
+        let signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_not_detected".into(),
+            idle_ms: 0,
+            lecture_playing: true,
+            ..Default::default()
+        };
+        assert_eq!(classify(&s.focus, &signal).0, State::Unknown);
+        assert_eq!(s.focused_ms, 0);
+        observe(&mut s, &signal, 1000, 1000);
+        assert_eq!(s.focused_ms, 0);
+        // A camera that is unavailable keeps its own safe state, and the
+        // lecture exemption does not override it either.
+        let unavailable = Signals {
+            camera_status: "camera_unavailable".into(),
+            ..signal
+        };
+        assert_eq!(classify(&s.focus, &unavailable).0, State::Unknown);
+    }
+    #[test]
+    fn only_foreground_playback_on_an_allowed_site_verifies_a_lecture() {
+        assert!(verified_lecture(true, true, true, Some(true)));
+        // Paused, stopped or unmeasured playback.
+        assert!(!verified_lecture(false, true, true, Some(true)));
+        // A background browser window or a background tab's media.
+        assert!(!verified_lecture(true, true, false, Some(true)));
+        // A stale heartbeat from a browser that stopped reporting.
+        assert!(!verified_lecture(true, false, true, Some(true)));
+        // Playback on a site the session does not allow, or an unknown
+        // relevance, is never a verified lecture.
+        assert!(!verified_lecture(true, true, true, Some(false)));
+        assert!(!verified_lecture(true, true, true, None));
+    }
+    #[test]
+    fn productive_credit_is_never_double_counted() {
+        let mut s = configured();
+        let signal = Signals {
+            activity_available: true,
+            approved_app: true,
+            camera_status: "person_detected".into(),
+            idle_ms: 0,
+            ..Default::default()
+        };
+        s.focus.attention.verification = "camera_and_activity".into();
+        for tick in 1..=10 {
+            observe(&mut s, &signal, 1000, tick * 1000);
+        }
+        // Ten ticks of 1 s with one settle tick: exactly 9 s credited.
+        assert_eq!(s.focused_ms, 9000);
+        assert_eq!(s.attention.elapsed_ms, 10_000);
+        let intervals: u64 = s.attention.intervals.iter().map(|i| i.duration_ms).sum();
+        assert_eq!(intervals, s.attention.elapsed_ms);
     }
     #[test]
     fn long_idle_without_camera_counts_as_away() {

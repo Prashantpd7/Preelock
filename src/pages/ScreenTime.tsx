@@ -12,7 +12,6 @@ import {
 import { RowIcon } from '../components/AppIcon';
 import type { ScreenTimeBucket } from '../types';
 import {
-  DAY_MS,
   WEEKDAY_LETTERS,
   canGoNextWeek,
   dayCategoryTotals,
@@ -20,6 +19,7 @@ import {
   formatSelectedDayLabel,
   localDayStart,
   pickDayForWeek,
+  shiftDays,
   weekDays,
   weekStartMs,
   type UsageKind,
@@ -66,7 +66,7 @@ export function ScreenTime() {
     `screen-time-category-${rawId}-option-${index}`;
 
   const today = localDayStart(new Date());
-  const weekStart = weekStartMs(today + weekOffset * 7 * DAY_MS);
+  const weekStart = weekStartMs(shiftDays(today, weekOffset * 7));
   const days = weekDays(weekStart);
   const dayTotals = days.map((day) => ({
     day,
@@ -108,7 +108,7 @@ export function ScreenTime() {
   function goWeek(delta: number) {
     const nextOffset = weekOffset + delta;
     if (nextOffset > 0) return;
-    const nextWeekStart = weekStartMs(today + nextOffset * 7 * DAY_MS);
+    const nextWeekStart = weekStartMs(shiftDays(today, nextOffset * 7));
     const nextDays = weekDays(nextWeekStart);
     const nextTotals = nextDays.map(
       (day) => dayCategoryTotals(buckets, day, kind, overrides).total,

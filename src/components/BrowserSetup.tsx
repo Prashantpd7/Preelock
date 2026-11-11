@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { hasLiveStrictSession } from '../services/activitySection';
+import { useAppStore } from '../state/store';
 import type { FocusSetup } from '../types';
 import { Modal } from './SettingsControls';
 export function BrowserSetup({
@@ -15,6 +17,10 @@ export function BrowserSetup({
   const [copied, setCopied] = useState(false);
   const [installGuide, setInstallGuide] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
+  const [lockedDialog, setLockedDialog] = useState(false);
+  // Disconnecting and reconnecting is locked while a strict focus
+  // session is live; the backend rejects reset_pairing then too.
+  const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
   // Detected live on this PC by the app — never a hardcoded path.
   const folderPath = setup?.extension_directory ?? '';
   // The app already filters the connection status to this browser:
@@ -46,6 +52,10 @@ export function BrowserSetup({
             type="button"
             className="text-link"
             onClick={() => {
+              if (strictLive) {
+                setLockedDialog(true);
+                return;
+              }
               void api
                 .resetPairing()
                 .then(() => refresh())
@@ -55,10 +65,32 @@ export function BrowserSetup({
             Disconnect and reconnect
           </button>
         </p>
+        {strictLive && (
+          <p className="muted small">
+            Browser settings are locked during an active focus session.
+          </p>
+        )}
         {notice && (
           <p role="status" className="small">
             {notice}
           </p>
+        )}
+        {lockedDialog && (
+          <Modal
+            title="Browser settings locked"
+            onClose={() => setLockedDialog(false)}
+          >
+            <div className="dialog-stack">
+              <p className="muted">
+                Browser connection settings cannot be changed during an active
+                focus session. You can modify these settings after your current
+                session ends.
+              </p>
+              <button type="button" onClick={() => setLockedDialog(false)}>
+                Got it
+              </button>
+            </div>
+          </Modal>
         )}
       </div>
     );

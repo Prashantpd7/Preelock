@@ -105,6 +105,8 @@
 //!   report event, the productive target is untouched, and a
 //!   schedule session still ends at its window end.
 
+use crate::focus::FocusConfig;
+
 /// Maximum number of warning points in the global list. Ten is far
 /// more than anyone needs (the UI hint shows two); the cap keeps a
 /// mistyped paste from producing a notification storm.
@@ -187,6 +189,67 @@ pub fn grace_until_for(grace_seconds: u32, now_ms: i64) -> Option<i64> {
 /// Only called when `now < start`, so the result is at least 1.
 pub fn minutes_until(start_ms: i64, now_ms: i64) -> u64 {
     ((start_ms - now_ms).max(1) as u64).div_ceil(60_000)
+}
+
+/// What a scheduled / one-shot session still needs before it can
+/// start cleanly: a connected browser extension, camera permission,
+/// or nothing. Pure, so the warning text and the tests can use it
+/// without an engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MissingPrerequisites {
+    /// The session needs website blocking but its browser is not
+    /// properly connected.
+    pub browser: bool,
+    /// The session needs camera checks but access is not granted.
+    pub camera: bool,
+}
+
+/// Which fixable prerequisites one auto-starting block is still
+/// missing, from the session's own focus snapshot:
+/// - Browser: the focus needs website blocking
+///   (`network_required`, the same rule the manual start preflight
+///   enforces) and the caller says its browser(s) are not ready.
+///   `browser_ready` is computed by the engine from the live bridge
+///   state, so a connection from the wrong browser does not count.
+/// - Camera: the focus needs camera checks (`camera` on, or
+///   `camera_and_activity` verification) and access is not granted.
+///   Camera checks exist on macOS only (Windows camera work is
+///   still pending), so `camera_checks_available` is false
+///   elsewhere and a camera requirement never warns there.
+pub fn missing_prerequisites(
+    focus: &FocusConfig,
+    browser_ready: bool,
+    camera_granted: bool,
+    camera_checks_available: bool,
+) -> MissingPrerequisites {
+    MissingPrerequisites {
+        browser: focus.network_required() && !browser_ready,
+        camera: camera_checks_available
+            && (focus.camera || focus.attention.verification == "camera_and_activity")
+            && !camera_granted,
+    }
+}
+
+/// Warning body with readiness: the plain warning text plus one
+/// short line per missing prerequisite, so the user can fix it
+/// before the block starts instead of hitting the fail-closed
+/// browser block (or a paused camera timer) at start time.
+pub fn warning_body_with_readiness(
+    title: &str,
+    start_ms: i64,
+    now_ms: i64,
+    missing: &MissingPrerequisites,
+) -> String {
+    let mut body = warning_body(title, start_ms, now_ms);
+    if missing.browser {
+        body.push_str(" Browser is not connected — connect it before the session starts.");
+    }
+    if missing.camera {
+        body.push_str(
+            " Camera access is not granted — allow camera access before the session starts.",
+        );
+    }
+    body
 }
 
 /// Warning body text: the block title plus the true minutes
@@ -426,6 +489,153 @@ mod tests {
         assert_eq!(
             warning_body("Deep work", 10_000_000, 10_000_000 - 30_000),
             "Deep work starts in 1 minute. Finish up — blocking begins then."
+        );
+    }
+
+    fn focus_needing_browser() -> FocusConfig {
+        FocusConfig {
+            domains: vec!["example.com".into()],
+            browser_app: "com.google.chrome".into(),
+            ..FocusConfig::default()
+        }
+    }
+
+    fn focus_needing_camera() -> FocusConfig {
+        FocusConfig {
+            camera: true,
+            ..FocusConfig::default()
+        }
+    }
+
+    #[test]
+    fn missing_prerequisites_covers_browser_and_camera_independently() {
+        // A plain timer session needs neither, whatever the state.
+        let plain = FocusConfig::default();
+        assert_eq!(
+            missing_prerequisites(&plain, false, false, true),
+            MissingPrerequisites {
+                browser: false,
+                camera: false,
+            }
+        );
+        // Website blocking without a connected browser: browser only.
+        let browser_focus = focus_needing_browser();
+        assert_eq!(
+            missing_prerequisites(&browser_focus, false, true, true),
+            MissingPrerequisites {
+                browser: true,
+                camera: false,
+            }
+        );
+        assert_eq!(
+            missing_prerequisites(&browser_focus, true, true, true),
+            MissingPrerequisites {
+                browser: false,
+                camera: false,
+            }
+        );
+        // Camera on without permission: camera only.
+        let camera_focus = focus_needing_camera();
+        assert_eq!(
+            missing_prerequisites(&camera_focus, true, false, true),
+            MissingPrerequisites {
+                browser: false,
+                camera: true,
+            }
+        );
+        assert_eq!(
+            missing_prerequisites(&camera_focus, true, true, true),
+            MissingPrerequisites {
+                browser: false,
+                camera: false,
+            }
+        );
+        // Camera required by verification alone (camera flag off).
+        let mut verification_focus = FocusConfig::default();
+        verification_focus.attention.verification = "camera_and_activity".into();
+        assert_eq!(
+            missing_prerequisites(&verification_focus, true, false, true),
+            MissingPrerequisites {
+                browser: false,
+                camera: true,
+            }
+        );
+        // Camera checks do not exist on this platform: a camera
+        // requirement never warns, even with access ungranted.
+        assert_eq!(
+            missing_prerequisites(&camera_focus, true, false, false),
+            MissingPrerequisites {
+                browser: false,
+                camera: false,
+            }
+        );
+        // Both missing at once.
+        let mut both = focus_needing_browser();
+        both.camera = true;
+        assert_eq!(
+            missing_prerequisites(&both, false, false, true),
+            MissingPrerequisites {
+                browser: true,
+                camera: true,
+            }
+        );
+        // A frozen session needs its browser too (network_required
+        // covers frozen), so a disconnected browser warns for it.
+        let mut frozen = FocusConfig::default();
+        frozen.frozen.enabled = true;
+        frozen.browser_app = "com.google.chrome".into();
+        assert_eq!(
+            missing_prerequisites(&frozen, false, true, true),
+            MissingPrerequisites {
+                browser: true,
+                camera: false,
+            }
+        );
+    }
+
+    #[test]
+    fn warning_body_with_readiness_appends_one_line_per_missing_item() {
+        let none = MissingPrerequisites {
+            browser: false,
+            camera: false,
+        };
+        assert_eq!(
+            warning_body_with_readiness("Deep work", 10_000_000, 10_000_000 - 5 * 60_000, &none),
+            "Deep work starts in 5 minutes. Finish up — blocking begins then."
+        );
+        let browser_only = MissingPrerequisites {
+            browser: true,
+            camera: false,
+        };
+        assert_eq!(
+            warning_body_with_readiness(
+                "Deep work",
+                10_000_000,
+                10_000_000 - 5 * 60_000,
+                &browser_only
+            ),
+            "Deep work starts in 5 minutes. Finish up — blocking begins then. Browser is not connected — connect it before the session starts."
+        );
+        let camera_only = MissingPrerequisites {
+            browser: false,
+            camera: true,
+        };
+        assert_eq!(
+            warning_body_with_readiness(
+                "Deep work",
+                10_000_000,
+                10_000_000 - 5 * 60_000,
+                &camera_only
+            ),
+            "Deep work starts in 5 minutes. Finish up — blocking begins then. Camera access is not granted — allow camera access before the session starts."
+        );
+        let both = MissingPrerequisites {
+            browser: true,
+            camera: true,
+        };
+        assert_eq!(
+            warning_body_with_readiness("Deep work", 10_000_000, 10_000_000 - 5 * 60_000, &both),
+            "Deep work starts in 5 minutes. Finish up — blocking begins then. Browser is not connected — connect it before the session starts. Camera access is not granted — allow camera access before the session starts."
         );
     }
 

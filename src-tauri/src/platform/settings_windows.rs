@@ -197,7 +197,7 @@ pub fn info() -> Result<serde_json::Value, String> {
         "ToastEnabled",
     ) && (packaged
         || enabled(
-            r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\com.vystriq.desktop",
+            r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\com.preelock.desktop",
             "Enabled",
         ));
     Ok(serde_json::json!({
@@ -240,6 +240,16 @@ pub fn login(on: bool) -> Result<(), String> {
 }
 pub fn permission() -> bool {
     info().is_ok_and(|i| i["notifications"] == 2)
+}
+/// Whether an OS notification can actually be shown from this
+/// process: the Windows notifier needs the Tauri `AppHandle`
+/// installed by `install_quit_guard` (GUI setup). The background
+/// process never builds a Tauri app, so it has no handle and its
+/// notifications would silently vanish — callers must defer, not
+/// record, a warning they cannot deliver (see
+/// `Engine::evaluate_warnings`).
+pub fn can_notify() -> bool {
+    APP.get().is_some()
 }
 pub fn notify(title: &str, body: &str) {
     if let Some(app) = APP.get() {

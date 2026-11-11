@@ -30,13 +30,16 @@ from, and reopens, the GUI executable (`launch::gui_executable`).
   engine needs the login session, the camera, and the browser
   bridge. Stdout/stderr go to
   `~/Library/Logs/com.preelock.background.{stdout,stderr}.log`.
-- **Main window:** `SMAppService` login item, registered only while
-  a session is live or a schedule is enabled
-  (`lib.rs::sync_login_for_sessions`); the M6 login-window rule
+- **Main window:** `SMAppService` login item, registered when the
+  user enabled "Open at login" themselves (Settings → General,
+  recorded in the `login-user-enabled` marker file) OR while a
+  session is live OR a schedule is enabled
+  (`lib.rs::login_registration_decision`); the M6 login-window rule
   additionally hides the window at a post-shutdown login when idle
-  and the user never enabled "Start Preelock at login" (the
-  `login-user-enabled` marker file). Background tracking/scheduling
-  always runs regardless.
+  and the user never enabled "Open at login". Background
+  tracking/scheduling always runs regardless, and turning the
+  toggle OFF never unregisters the login item while a session is
+  live, so mandatory recovery after a shutdown still works.
 - **Tray:** spawned by the background when a session is live; the
   GUI waits for the tray lock on relaunch so there is never a
   duplicate icon.
@@ -57,9 +60,10 @@ from, and reopens, the GUI executable (`launch::gui_executable`).
 - **Background:** HKCU `Run` value `"Preelock Background"` →
   `"…\preelock.exe" --background`, written by the GUI on launch;
   `RegisterApplicationRestart` re-registers it for the next login.
-- **Main window:** HKCU `Run` value `"Preelock"`, same
-  session/schedule-conditional rule as macOS; the M6 marker file
-  governs the login-window decision.
+- **Main window:** HKCU `Run` value `"Preelock"`, same rule as
+  macOS — the user's "Open at login" preference, a live session,
+  or an enabled schedule; the M6 marker file governs the
+  login-window decision.
 - **Tray:** spawned by the background when a session is live.
 - **Uninstall:** the `NSIS_HOOK_PREUNINSTALL` hook deletes the
   `Preelock`, `Preelock Background`, and legacy `VYSTRIQ` Run

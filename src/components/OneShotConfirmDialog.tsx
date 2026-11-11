@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Modal } from './SettingsControls';
+import { SessionReview } from './SessionReview';
 import { oneShotFireAtMs } from '../services/one_shots';
+import type { FocusConfig } from '../types';
 
 /**
  * End-of-wizard popup for one-shot mode: instead of "Start session?",
@@ -12,6 +14,13 @@ export function OneShotConfirmDialog({
   minutes,
   strict,
   busy,
+  focus,
+  appNames,
+  browserName,
+  browserConnected,
+  cameraPermission,
+  platform,
+  safariWarning,
   onCreate,
   onCancel,
 }: {
@@ -19,6 +28,14 @@ export function OneShotConfirmDialog({
   minutes: number;
   strict: boolean;
   busy: boolean;
+  /** The wizard's FocusConfig: the review reads it directly. */
+  focus?: FocusConfig;
+  appNames?: Record<string, string>;
+  browserName?: string;
+  browserConnected?: boolean;
+  cameraPermission?: string;
+  platform?: string;
+  safariWarning?: boolean;
   onCreate: (fields: { title: string; fire_at_ms: number }) => void;
   onCancel: () => void;
 }) {
@@ -76,6 +93,23 @@ export function OneShotConfirmDialog({
             onChange={(e) => setWhen(e.target.value)}
           />
         </label>
+        {focus && (
+          <SessionReview
+            focus={focus}
+            title={name}
+            timing={{
+              kind: 'oneshot',
+              minutes,
+              fireAtMs: oneShotFireAtMs(when),
+            }}
+            appNames={appNames}
+            browserName={browserName}
+            browserConnected={browserConnected}
+            cameraPermission={cameraPermission}
+            platform={platform}
+            safariWarning={safariWarning}
+          />
+        )}
         {problem && (
           <p className="error small" role="alert">
             {problem}

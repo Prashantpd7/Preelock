@@ -1,47 +1,73 @@
 <!doctype html>
-<html lang="en">
+<html>
   <head>
     <meta charset="utf-8" />
-    <title>Preelock</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>Preelock</h1>
-    <div id="connected-view" hidden>
-      <p class="pill">Connected</p>
-      <p id="health" class="health" role="status"></p>
-      <p id="browser-line" class="browser-line"></p>
-      <div id="identify-view" hidden>
-        <p class="warn" role="alert">
-          Which browser is this? Preelock needs to know to run your sessions in
-          the right browser.
-        </p>
-        <div id="browser-choices-connected" class="browser-choices"></div>
-        <button id="save-browser" type="button">Save</button>
-      </div>
-      <button id="disconnect" class="ghost" type="button">Disconnect</button>
-    </div>
-    <div id="pair-view" hidden>
-      <p>Connect to the Preelock desktop app.</p>
+    <header class="popup-header">
+      <h1>Preelock</h1>
+      <span
+        id="connection-status"
+        class="status-badge is-unpaired"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="connection-status-text" class="status-text"
+          >Not connected</span
+        >
+      </span>
+    </header>
+    <p id="incognito-warning" class="incognito-warn" role="status" hidden></p>
+    <div id="pair-view" class="pair-card" hidden>
+      <h2 class="pair-heading">Connect to Preelock</h2>
+      <p class="pair-subtitle">
+        Paste your connection code from the Preelock desktop app.
+      </p>
       <form id="pair">
-        <fieldset>
-          <legend>Which browser is this?</legend>
-          <div id="browser-choices" class="browser-choices"></div>
-        </fieldset>
-        <label
-          >Connection code<input
-            id="token"
-            type="password"
-            required
-            minlength="64"
-            maxlength="64"
-            autocomplete="off"
-            placeholder="Paste the code from Preelock Settings"
-        /></label>
-        <button>Connect</button>
+        <label class="sr-only" for="token">Connection code</label>
+        <input
+          id="token"
+          type="password"
+          required
+          minlength="64"
+          maxlength="64"
+          autocomplete="off"
+          placeholder="Paste 64-character connection code"
+        />
+        <button id="connect-btn" type="submit">Connect</button>
       </form>
-      <p id="pair-status" class="warn" role="status"></p>
+      <p id="pair-status" class="warn" role="status" hidden></p>
     </div>
+    <section
+      id="youtube-controls"
+      class="yt-controls"
+      aria-labelledby="yt-controls-heading"
+    >
+      <div class="yt-controls-header">
+        <h2 id="yt-controls-heading">YouTube Controls</h2>
+        <div class="yt-controls-meta">
+          <span id="yt-active-count" class="yt-count" hidden></span>
+          <button id="yt-reset" type="button" class="yt-reset" hidden>
+            Reset
+          </button>
+        </div>
+      </div>
+      <div id="yt-groups" class="yt-groups"></div>
+    </section>
+    <section
+      id="website-controls"
+      class="ws-controls"
+      aria-labelledby="ws-controls-heading"
+    >
+      <div class="yt-controls-header">
+        <h2 id="ws-controls-heading">Website Controls</h2>
+        <span id="ws-active-count" class="yt-count" hidden></span>
+      </div>
+      <div id="ws-list" class="ws-list"></div>
+    </section>
+    <script src="youtube-controls.js"></script>
     <script src="popup.js" type="module"></script>
   </body>
 </html>

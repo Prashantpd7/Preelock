@@ -2,6 +2,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Vision/Vision.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <mach/mach_time.h>
 #import <objc/runtime.h>
 #import <Carbon/Carbon.h>
@@ -91,6 +92,138 @@ int preelock_hide(int pid) {
     __block BOOL result = NO;
     onMain(^{ NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid]; if (app.activationPolicy == NSApplicationActivationPolicyRegular) result = [app hide]; });
     return result;
+}
+// ---- Native website identification (no browser extension) ----
+// Reads only the front window's page URL: the first AXWebArea's AXURL
+// (Chromium browsers and Safari expose the main frame there), or the
+// address bar's value when the page has not exposed a web area yet.
+// Page contents, window titles, form values and passwords are never read
+// or returned; the Rust side validates what it gets and keeps only the
+// hostname.
+static BOOL axContainerRole(NSString *role) {
+    static NSSet<NSString *> *roles;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        roles = [NSSet setWithArray:@[@"AXWindow", @"AXGroup", @"AXSplitGroup", @"AXScrollArea",
+                                      @"AXTabGroup", @"AXLayoutArea", @"AXLayoutItem", @"AXToolbar",
+                                      @"AXWebArea", @"AXUnknown"]];
+    });
+    return [roles containsObject:role];
+}
+static NSString *axStringAttr(AXUIElementRef element, CFStringRef attribute) {
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue(element, attribute, &value) != kAXErrorSuccess || !value) return @"";
+    NSString *result = @"";
+    if (CFGetTypeID(value) == CFStringGetTypeID()) {
+        result = [(__bridge NSString *)value copy];
+    } else if (CFGetTypeID(value) == CFURLGetTypeID()) {
+        result = [(__bridge NSURL *)value absoluteString] ?: @"";
+    }
+    CFRelease(value);
+    return result;
+}
+// Depth- and node-bounded: a pathological accessibility tree can never
+// stall the sampler, and containers only are descended into.
+static NSString *axURLFromWebArea(AXUIElementRef element, int depth, int *budget) {
+    if (depth > 24 || *budget <= 0) return @"";
+    (*budget)--;
+    NSString *role = axStringAttr(element, kAXRoleAttribute);
+    if ([role isEqualToString:@"AXWebArea"]) {
+        NSString *url = axStringAttr(element, kAXURLAttribute);
+        if (url.length) return url;
+    }
+    if (depth > 0 && !axContainerRole(role)) return @"";
+    CFTypeRef raw = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &raw) != kAXErrorSuccess || !raw) return @"";
+    NSString *found = @"";
+    if (CFGetTypeID(raw) == CFArrayGetTypeID()) {
+        CFArrayRef children = (CFArrayRef)raw;
+        for (CFIndex i = 0; i < CFArrayGetCount(children) && *budget > 0; i++) {
+            AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
+            if (!child || CFGetTypeID(child) != AXUIElementGetTypeID()) continue;
+            found = axURLFromWebArea(child, depth + 1, budget);
+            if (found.length) break;
+        }
+    }
+    CFRelease(raw);
+    return found;
+}
+// True only for text that looks like a web address, so a dotted version
+// number (3.14) or a search query typed into the bar is never offered.
+static BOOL looksLikeAddress(NSString *value) {
+    if (value.length == 0 || value.length > 2048) return NO;
+    if ([value containsString:@"://"]) return YES;
+    NSRange cut = [value rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/?#"]];
+    NSString *host = cut.location == NSNotFound ? value : [value substringToIndex:cut.location];
+    NSRange colon = [host rangeOfString:@":"];
+    if (colon.location != NSNotFound) host = [host substringToIndex:colon.location];
+    NSArray<NSString *> *labels = [host componentsSeparatedByString:@"."];
+    if (labels.count < 2) return NO;
+    NSString *tld = labels.lastObject;
+    if (tld.length < 2 || host.length <= tld.length + 1) return NO;
+    for (NSUInteger i = 0; i < tld.length; i++) {
+        unichar c = [tld characterAtIndex:i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return NO;
+    }
+    return YES;
+}
+static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
+    if (depth > 4 || *budget <= 0) return @"";
+    (*budget)--;
+    NSString *role = axStringAttr(element, kAXRoleAttribute);
+    if ([role isEqualToString:@"AXTextField"] || [role isEqualToString:@"AXComboBox"]) {
+        NSString *value = axStringAttr(element, kAXValueAttribute);
+        if (looksLikeAddress(value)) return value;
+    }
+    CFTypeRef raw = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &raw) != kAXErrorSuccess || !raw) return @"";
+    NSString *found = @"";
+    if (CFGetTypeID(raw) == CFArrayGetTypeID()) {
+        CFArrayRef children = (CFArrayRef)raw;
+        for (CFIndex i = 0; i < CFArrayGetCount(children) && *budget > 0; i++) {
+            AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
+            if (!child || CFGetTypeID(child) != AXUIElementGetTypeID()) continue;
+            found = axAddressBar(child, depth + 1, budget);
+            if (found.length) break;
+        }
+    }
+    CFRelease(raw);
+    return found;
+}
+char *preelock_web_sample(void) {
+    @autoreleasepool {
+        if (!AXIsProcessTrusted()) {
+            return strdup("{\"url\":\"\",\"status\":\"permission_required\"}");
+        }
+        __block pid_t pid = 0;
+        onMain(^{
+            NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
+            if (app) pid = app.processIdentifier;
+        });
+        if (pid <= 0) return strdup("{\"url\":\"\",\"status\":\"no_url\"}");
+        // The Accessibility query runs off the main thread: it can block
+        // while the browser builds its tree, and Preelock's UI must not.
+        AXUIElementRef application = AXUIElementCreateApplication(pid);
+        if (!application) return strdup("{\"url\":\"\",\"status\":\"no_url\"}");
+        NSString *url = @"";
+        CFTypeRef window = NULL;
+        if (AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute, &window) == kAXErrorSuccess && window) {
+            int budget = 600;
+            url = axURLFromWebArea((AXUIElementRef)window, 0, &budget);
+            if (url.length == 0) {
+                int barBudget = 200;
+                url = axAddressBar((AXUIElementRef)window, 0, &barBudget);
+            }
+            CFRelease(window);
+        }
+        CFRelease(application);
+        return json(@{@"url": url ?: @"", @"status": @"ok"});
+    }
+}
+int preelock_web_permission(void) { return AXIsProcessTrusted() ? 1 : 0; }
+void preelock_web_request_permission(void) {
+    NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 int preelock_camera_permission(void) { return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]; }
 void preelock_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) { (void)granted; }]; }

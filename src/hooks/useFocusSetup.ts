@@ -5,21 +5,27 @@ export function useFocusSetup(browserId?: string) {
   const [setup, setSetup] = useState<FocusSetup | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const refresh = useCallback(async () => {
-    if (!desktop) return null;
-    setLoading(true);
-    try {
-      const value = await api.focusSetup(browserId);
-      setSetup(value);
-      setError('');
-      return value;
-    } catch (e) {
-      setError(String(e));
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [browserId]);
+  // `forBrowser` lets a caller re-read the setup for a browser it just
+  // chose (the session wizard opens it and waits for it to appear)
+  // without the answer being attributed to a stale selection.
+  const refresh = useCallback(
+    async (forBrowser?: string) => {
+      if (!desktop) return null;
+      setLoading(true);
+      try {
+        const value = await api.focusSetup(forBrowser ?? browserId);
+        setSetup(value);
+        setError('');
+        return value;
+      } catch (e) {
+        setError(String(e));
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [browserId],
+  );
   useEffect(() => {
     if (!desktop) return;
     let active = true;
