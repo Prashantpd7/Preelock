@@ -37,12 +37,16 @@ describe('OneShotConfirmDialog', () => {
   it('shows the strict warning only for strict sessions', () => {
     const { unmount } = renderDialog({ strict: true });
     expect(
-      screen.getByText(/Strict mode will block everything except your work apps/),
+      screen.getByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).toBeInTheDocument();
     unmount();
     renderDialog({ strict: false });
     expect(
-      screen.queryByText(/Strict mode will block everything except your work apps/),
+      screen.queryByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).not.toBeInTheDocument();
   });
 

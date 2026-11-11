@@ -28,9 +28,7 @@ describe('ScheduleConfirmDialog', () => {
     expect(screen.getByText('25 min · Standard mode')).toBeInTheDocument();
     expect(screen.getByLabelText('Schedule name')).toHaveValue('Deep work');
     for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) {
-      expect(
-        screen.getByRole('checkbox', { name: day }),
-      ).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: day })).toBeChecked();
     }
     expect(screen.getByRole('checkbox', { name: 'Sun' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Sat' })).not.toBeChecked();
@@ -45,12 +43,16 @@ describe('ScheduleConfirmDialog', () => {
   it('shows the strict warning only for strict sessions', () => {
     const { unmount } = renderDialog({ strict: true });
     expect(
-      screen.getByText(/Strict mode will block everything except your work apps/),
+      screen.getByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).toBeInTheDocument();
     unmount();
     renderDialog({ strict: false });
     expect(
-      screen.queryByText(/Strict mode will block everything except your work apps/),
+      screen.queryByText(
+        /Strict mode will block everything except your work apps/,
+      ),
     ).not.toBeInTheDocument();
   });
 
@@ -77,7 +79,9 @@ describe('ScheduleConfirmDialog', () => {
       await user.click(screen.getByRole('checkbox', { name: day }));
     }
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
-    expect(await screen.findByText('Pick at least one day.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Pick at least one day.'),
+    ).toBeInTheDocument();
     expect(onCreate).not.toHaveBeenCalled();
   });
 
