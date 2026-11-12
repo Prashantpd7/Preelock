@@ -74,12 +74,8 @@ pub fn sync_overlay(app: &tauri::AppHandle, snapshot: &crate::models::Snapshot) 
 #[tauri::command]
 pub async fn dismiss_blocked_app_page(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let state = app.state::<std::sync::Mutex<crate::engine::Engine>>();
-        let mut engine = state
-            .lock()
-            .map_err(|_| "Session engine unavailable.".to_string())?;
-        engine.dismiss_blocked_app_page();
-        Ok(())
+        app.state::<crate::ipc::IpcClient>()
+            .dismiss_blocked_app_page()
     })
     .await
     .map_err(|e| e.to_string())?

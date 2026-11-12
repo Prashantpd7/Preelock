@@ -447,15 +447,15 @@ label {
   flex-direction: row;
   align-items: center;
 }
-.check-label.block-apps {
-  margin-top: 20px;
-  font-size: 13px;
-  color: var(--text);
-}
 .blocking-section {
   display: grid;
   gap: 12px;
   margin-top: 20px;
+}
+.blocking-suboptions {
+  display: grid;
+  gap: 12px;
+  margin-left: 28px;
 }
 .blocking-heading {
   font-weight: 600;
@@ -752,6 +752,17 @@ td:first-child {
 }
 .active-session-banner .small {
   margin: 0;
+}
+/* Timer and description on the left, Pause/Resume/Stop on the right. */
+.active-session-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.active-session-controls {
+  flex-shrink: 0;
 }
 /* The global banner opens the session details popup, so the
  * whole card is clickable. */
@@ -1656,6 +1667,41 @@ button.toggle[aria-checked='true'] > span {
   color: var(--accent);
   transform: translateX(17px);
 }
+.alert-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+button.sound-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+button.sound-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+button.sound-button[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+button.sound-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .number-control {
   display: flex;
   align-items: center;
@@ -2156,7 +2202,6 @@ input:focus-visible {
 .form-panel .simple-grid,
 .form-panel fieldset,
 .form-panel .form-grid,
-.form-panel .check-label.block-apps,
 .form-panel .blocking-section,
 .form-panel .wizard-steps,
 .form-panel.simple-session > label {
@@ -2181,10 +2226,10 @@ input:focus-visible {
 .form-panel .setup-guide details {
   margin: 0;
 }
-/* Schedule time row: Start and End share the row equally instead of
-   1fr vs 190px, so the End time field is no longer squeezed. */
+/* Schedule time row: Start, End and Total time share the row
+   equally, so no field is squeezed. */
 .time-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 /* Label → control gap, tightened so each label hugs its own box
    (was 12px). Checkbox rows keep their current gap (rule below). */

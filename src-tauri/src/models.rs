@@ -12,6 +12,22 @@ pub enum Status {
     Interrupted,
 }
 
+/// How a session was created. Set at creation and persisted, so
+/// a one-shot session keeps its kind after its timer record is
+/// purged when it fires, and a scheduled session keeps its kind
+/// even if its schedule is later deleted. Serde-default: sessions
+/// saved before this field load as Focus; the frontend still falls
+/// back to `schedule_id` for those, so old scheduled sessions
+/// still show as scheduled.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Focus,
+    Scheduled,
+    OneShot,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -43,6 +59,12 @@ pub struct Session {
     /// manual sessions and are ended at their window end.
     #[serde(default)]
     pub schedule_id: Option<String>,
+    /// How this session was created: an instant focus session, a
+    /// scheduled block, or a one-shot timer. Set at creation (see
+    /// `SessionKind`); a restarted session resets to Focus, like
+    /// `schedule_id` resets to `None`.
+    #[serde(default)]
+    pub kind: SessionKind,
     /// Live Pomodoro phase state (step 7). Serde-default: sessions
     /// saved before this step load as Focus with no time left, which
     /// the phase machine heals to a full phase on first advance.
@@ -82,6 +104,38 @@ pub struct Session {
     /// it or stranding the session. Cleared when the session ends.
     #[serde(default)]
     pub grace_until_ms: Option<i64>,
+    /// Step 14 grace-start notification: true once the engine has
+    /// told the user (one OS notification) that this auto-started
+    /// session is in its grace period and blocking begins when the
+    /// countdown ends. Persisted with the session, so a later
+    /// engine — GUI takeover after the background engine fired,
+    /// or a restart resuming grace — never notifies twice, while
+    /// an undelivered tick (no channel yet, Windows background
+    /// engine) leaves it false so a later tick retries with the
+    /// true remaining seconds. Cleared by RestartSession, like
+    /// the grace itself.
+    #[serde(default)]
+    pub grace_notified: bool,
+    /// Durable persistence metadata: intended end wall-clock timestamp,
+    /// per-occurrence schedule key (anti-duplicate restart guard),
+    /// last durable checkpoint & enforcement confirmation timestamps,
+    /// and recovery status across crashes/reboots.
+    #[serde(default)]
+    pub durability: SessionDurability,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionDurability {
+    #[serde(default)]
+    pub intended_end_at_ms: Option<i64>,
+    #[serde(default)]
+    pub schedule_window_key: Option<String>,
+    #[serde(default)]
+    pub last_checkpoint_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_enforcement_at_ms: Option<i64>,
+    #[serde(default)]
+    pub recovery_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,9 +173,10 @@ pub struct Preferences {
     pub break_minutes: u32,
     pub break_alert: bool,
     pub notifications_enabled: bool,
+    pub notifications_sound: bool,
     /// Step 14 advance warnings: comma-separated minutes before a
-    /// scheduled or one-shot block starts, e.g. `"5, 15"`.
-    /// Default `"5"`; empty means no warnings. Normalized on save
+    /// scheduled or one-shot block starts, e.g. `"2"` or `"5, 15"`.
+    /// Default `"2"`; empty means no warnings. Normalized on save
     /// (deduped, sorted) by `validate_preferences`.
     pub warning_minutes: String,
     /// Step 14 grace period in seconds after a scheduled or
@@ -141,12 +196,12 @@ impl Default for Preferences {
             theme: "dark".into(),
             default_minutes: 25,
             large_text: false,
-            menu_timer: false,
+            menu_timer: true,
             daily_goal: 0,
             session_alert: true,
-            sound: false,
-            session_start_alert: false,
-            session_start_sound: false,
+            sound: true,
+            session_start_alert: true,
+            session_start_sound: true,
             volume: 50,
             reminder: false,
             reminder_time: "09:00".into(),
@@ -155,7 +210,8 @@ impl Default for Preferences {
             break_minutes: 5,
             break_alert: true,
             notifications_enabled: true,
-            warning_minutes: "5".into(),
+            notifications_sound: true,
+            warning_minutes: "2".into(),
             grace_seconds: 60,
             saved_setups: vec![],
             category_overrides: std::collections::HashMap::new(),
@@ -194,7 +250,7 @@ pub struct Snapshot {
     #[serde(default)]
     pub screen_time_usage: Vec<ScreenTimeBucket>,
     pub preferences: Preferences,
-    #[serde(skip_deserializing, default)]
+    #[serde(default)]
     pub browser: Option<crate::browser::BrowserStatus>,
     /// "Why am I blocked" app page: the last blocked app + its true
     /// reason, shown in the fullscreen `blocked-app` overlay window
@@ -224,7 +280,7 @@ pub struct BlockedAppNotice {
     pub at_ms: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
     CreateSession {

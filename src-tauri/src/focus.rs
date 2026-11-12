@@ -62,6 +62,10 @@ pub struct FocusConfig {
     /// With an empty allowed list, study mode blocks every channel
     /// (Watch Later excepted when `youtube_allow_watch_later` is on).
     pub youtube_study_mode: bool,
+    /// Blocks entertainment categories/formats on YouTube (comedy, pranks,
+    /// vlogs, funny/animal clips, gaming, music, Shorts) while keeping
+    /// non-entertainment videos playable.
+    pub youtube_block_entertainment: bool,
     /// Watch-Later exception: exactly the user's Watch Later playlist
     /// page (`youtube.com/playlist?list=WL`) stays open even when
     /// youtube.com is domain-blocked or absent from the allowlist. It
@@ -102,6 +106,7 @@ impl Default for FocusConfig {
             youtube_blocked_channels: vec![],
             youtube_allowed_channels: vec![],
             youtube_study_mode: false,
+            youtube_block_entertainment: false,
             youtube_allow_watch_later: false,
             block_adult_content: false,
             website_blocking: WebsiteBlocking::Auto,
@@ -142,6 +147,7 @@ impl FocusConfig {
             || !self.youtube_blocked_channels.is_empty()
             || !self.youtube_allowed_channels.is_empty()
             || self.youtube_study_mode
+            || self.youtube_block_entertainment
             // Step 12: a frozen session always publishes its
             // allowlist policy, even when it has no other website
             // rules — otherwise a browser opened during a frozen
@@ -1056,10 +1062,12 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     if config.mode == Mode::Strict
         && !config.browser_app.is_empty()
         && config.general_internet
+        && !matches!(config.website_blocking, WebsiteBlocking::None)
         && config.domains.is_empty()
         && config.youtube_blocked_channels.is_empty()
         && config.youtube_allowed_channels.is_empty()
         && !config.youtube_study_mode
+        && !config.youtube_block_entertainment
         && config.frozen.allowed_websites.is_empty()
     {
         return Err("Strict mode needs an approved domain list, or browser offline mode.".into());
@@ -1586,6 +1594,7 @@ mod tests {
         assert!(old.youtube_blocked_channels.is_empty());
         assert!(old.youtube_allowed_channels.is_empty());
         assert!(!old.youtube_study_mode);
+        assert!(!old.youtube_block_entertainment);
         assert!(!old.youtube_allow_watch_later);
         // validate() normalizes channel lists in place. Channel rules
         // require a browser, like domain rules, so the config pairs one.
@@ -1609,6 +1618,16 @@ mod tests {
         };
         assert!(!wl_only.network_required());
         assert!(validate(wl_only).is_ok());
+        // Entertainment blocking alone requires a browser like channel rules.
+        let ent = validate(FocusConfig {
+            browser_app: "ai.perplexity.comet".into(),
+            website_blocking: WebsiteBlocking::None,
+            youtube_block_entertainment: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(ent.youtube_block_entertainment);
+        assert!(ent.network_required());
     }
     #[test]
     fn folder_prefix_needs_separator_boundary() {

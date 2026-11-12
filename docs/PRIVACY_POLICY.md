@@ -30,9 +30,9 @@ yourself.
 - A random local pairing token used to authenticate the browser extension.
 - Files you choose to export (JSON backup, CSV history) at the location you pick.
 
-Location: the per-user application-data folder for `com.vystriq.desktop`
-(for example `%APPDATA%\com.vystriq.desktop` on Windows and
-`~/Library/Application Support/com.vystriq.desktop` on macOS). In a Microsoft
+Location: the per-user application-data folder for `com.preelock.desktop`
+(for example `%APPDATA%\com.preelock.desktop` on Windows and
+`~/Library/Application Support/com.preelock.desktop` on macOS). In a Microsoft
 Store install, Windows may keep newly created files in the package's private
 application-data store. The bundled browser extension is copied to a folder the
 browser can read: `%USERPROFILE%\Preelock\browser-extension` (existing installations retain

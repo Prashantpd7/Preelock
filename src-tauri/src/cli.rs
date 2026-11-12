@@ -88,6 +88,7 @@ pub enum Command {
     ListBlocks,
     Start(String),
     Stop,
+    CheckUninstall,
 }
 
 /// The flags that switch the binary into CLI mode. Any other first
@@ -106,6 +107,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
                 | "--list-blocks"
                 | "--start"
                 | "--stop"
+                | "--check-uninstall"
         )
     )
 }
@@ -121,6 +123,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             _ => Err("Usage: preelock --start <session, saved-setup, or schedule id>".into()),
         },
         Some("--stop") => Ok(Command::Stop),
+        Some("--check-uninstall") => Ok(Command::CheckUninstall),
         Some(other) => Err(format!("Unknown command: {other}\n{HELP}")),
         None => Err(HELP.into()),
     }
@@ -670,6 +673,196 @@ pub fn run(args: &[String]) -> i32 {
                 std::thread::sleep(std::time::Duration::from_millis(RESULT_POLL_MS));
             }
         }
+        Command::CheckUninstall => {
+            let Ok(dir) = app_data_dir() else {
+                return 0;
+            };
+            let status = uninstall_check_in_dir(&dir);
+            if status.allowed {
+                0
+            } else {
+                eprintln!("{}", status.reason);
+                2
+            }
+        }
+    }
+}
+
+pub fn uninstall_check_in_dir(dir: &Path) -> crate::ipc::UninstallCheck {
+    if let Ok(check) = crate::ipc::IpcClient::new(dir).check_uninstall() {
+        return check;
+    }
+    let strict_in_db = load_snapshot_readonly(&db_path(dir))
+        .map(|snap| {
+            snap.sessions.iter().any(|s| {
+                s.focus.mode == crate::focus::Mode::Strict
+                    && matches!(
+                        s.status,
+                        crate::models::Status::Running
+                            | crate::models::Status::Paused
+                            | crate::models::Status::Preparing
+                    )
+            })
+        })
+        .unwrap_or(false);
+    let strict_in_cp =
+        crate::lifecycle::read_checkpoint(&db_path(dir).with_extension("lifecycle.json"))
+            .and_then(|cp| cp.active_session)
+            .is_some_and(|s| {
+                s.mode == "strict"
+                    && matches!(s.status.as_str(), "running" | "paused" | "preparing")
+            });
+    if strict_in_db || strict_in_cp {
+        crate::ipc::UninstallCheck {
+            allowed: false,
+            reason: "An active strict focus session is currently running. Finish the session before uninstalling Preelock.".into(),
+        }
+    } else {
+        crate::ipc::UninstallCheck {
+            allowed: true,
+            reason: String::new(),
+        }
+    }
+}
+
+fn cli_start_template(
+    engine: &mut crate::engine::Engine,
+    before: &crate::models::Snapshot,
+    title: &str,
+    minutes: u32,
+    focus: crate::focus::FocusConfig,
+    lock: crate::locks::LockConfig,
+) -> Result<String, String> {
+    engine.execute(crate::models::Action::CreateSession {
+        title: title.to_string(),
+        minutes,
+        allow_pause: true,
+        focus,
+        lock,
+        lock_password: None,
+    })?;
+    let after = engine.current();
+    let new_id = after
+        .sessions
+        .iter()
+        .map(|s| &s.id)
+        .find(|id| !before.sessions.iter().any(|s| &s.id == *id))
+        .cloned();
+    let Some(new_id) = new_id else {
+        return Err("The session was created but could not be found to start it.".into());
+    };
+    match engine.execute(crate::models::Action::StartSession { id: new_id }) {
+        Ok(_) => Ok(format!("Started \"{title}\" ({minutes} minutes).")),
+        Err(error) => Err(format!(
+            "Created \"{title}\" as a ready session but could not start it: {error}"
+        )),
+    }
+}
+
+pub fn execute_request_on_engine(
+    engine: &mut crate::engine::Engine,
+    request: &CliRequest,
+) -> CliOutcome {
+    let outcome = |ok: bool, message: String| CliOutcome {
+        id: request.id.clone(),
+        ok,
+        message,
+        created_ms: crate::clock::now(),
+    };
+    match request.kind.as_str() {
+        "stop" => {
+            let snapshot = engine.current();
+            let Some(live) = snapshot.sessions.iter().find(|s| {
+                matches!(
+                    s.status,
+                    crate::models::Status::Running
+                        | crate::models::Status::Paused
+                        | crate::models::Status::Preparing
+                )
+            }) else {
+                return outcome(false, "No session is running.".into());
+            };
+            let (id, title) = (live.id.clone(), live.title.clone());
+            match engine.execute(crate::models::Action::EndSession {
+                id,
+                password: None,
+                challenge_answer: None,
+            }) {
+                Ok(_) => outcome(true, format!("Ended \"{title}\".")),
+                Err(error) => outcome(false, error),
+            }
+        }
+        "start" => {
+            let target = request.target.clone().unwrap_or_default();
+            let snapshot = engine.current();
+            if let Some(session) = snapshot.sessions.iter().find(|s| s.id == target) {
+                let (title, status) = (session.title.clone(), session.status.clone());
+                let action = match session.status {
+                    crate::models::Status::Ready => {
+                        crate::models::Action::StartSession { id: target }
+                    }
+                    crate::models::Status::Paused => {
+                        crate::models::Action::ResumeSession { id: target }
+                    }
+                    _ => {
+                        return outcome(
+                            false,
+                            format!(
+                                "Session \"{title}\" is {:?} and cannot be started from the CLI.",
+                                status
+                            ),
+                        );
+                    }
+                };
+                return match engine.execute(action) {
+                    Ok(_) => outcome(true, format!("Started \"{title}\".")),
+                    Err(error) => outcome(false, error),
+                };
+            }
+            if let Some(setup) = snapshot
+                .preferences
+                .saved_setups
+                .iter()
+                .find(|p| p.id == target)
+            {
+                let (name, minutes, focus) =
+                    (setup.name.clone(), setup.minutes, setup.focus.clone());
+                return match cli_start_template(
+                    engine,
+                    &snapshot,
+                    &name,
+                    minutes,
+                    focus,
+                    crate::locks::LockConfig::default(),
+                ) {
+                    Ok(message) => outcome(true, message),
+                    Err(error) => outcome(false, error),
+                };
+            }
+            if let Some(schedule) = snapshot.schedules.iter().find(|s| s.id == target) {
+                let (title, focus, lock) = (
+                    schedule.title.clone(),
+                    schedule.focus.clone(),
+                    schedule.lock.clone(),
+                );
+                let minutes = schedule_window_minutes(&schedule.start_time, &schedule.end_time);
+                let Some(minutes) = minutes.filter(|m| (1..=480).contains(m)) else {
+                    return outcome(
+                        false,
+                        "That schedule's window is longer than 480 minutes or invalid; start it from the app.".into(),
+                    );
+                };
+                return match cli_start_template(engine, &snapshot, &title, minutes, focus, lock) {
+                    Ok(message) => outcome(true, message),
+                    Err(error) => outcome(false, error),
+                };
+            }
+            outcome(
+                false,
+                format!("No session, saved setup, or schedule with id '{target}'."),
+            )
+        }
+        other => outcome(false, format!("Unknown request kind: {other}")),
     }
 }
 
@@ -857,6 +1050,7 @@ mod tests {
             attention: Default::default(),
             force_quit: false,
             schedule_id: None,
+            kind: crate::models::SessionKind::Focus,
             pomodoro: Default::default(),
             reward: Default::default(),
             lock: Default::default(),
@@ -864,6 +1058,8 @@ mod tests {
             policy_applied: false,
             browser_fail_closed: false,
             grace_until_ms: Some(45_000),
+            grace_notified: false,
+            durability: Default::default(),
         };
         snapshot.sessions.push(session.clone());
         let text = format_status(&snapshot, 1000);
@@ -888,6 +1084,80 @@ mod tests {
         assert_eq!(loaded.preferences.default_minutes, 42);
         // The read-only load wrote nothing to the database file.
         assert_eq!(std::fs::read(&db).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_uninstall_refuses_only_during_active_strict_session() {
+        assert_eq!(
+            parse_args(&["--check-uninstall".to_string()]).unwrap(),
+            Command::CheckUninstall
+        );
+        let dir = temp_dir("uninstall-check");
+        assert!(uninstall_check_in_dir(&dir).allowed);
+
+        // Standard session allows uninstall.
+        let db_path = dir.join("preelock.sqlite");
+        let mut database = crate::database::Database::open(&db_path).unwrap();
+        let mut snapshot = empty_snapshot();
+        let mut session = crate::models::Session {
+            id: "s-std".into(),
+            title: "Standard".into(),
+            duration_minutes: 25,
+            remaining_ms: 25 * 60_000,
+            focused_ms: 0,
+            allow_pause: true,
+            status: Status::Running,
+            started_at: Some(1000),
+            ended_at: None,
+            deadline_ms: None,
+            focus: Default::default(),
+            report: Default::default(),
+            attention: Default::default(),
+            force_quit: false,
+            schedule_id: None,
+            kind: crate::models::SessionKind::Focus,
+            pomodoro: Default::default(),
+            reward: Default::default(),
+            lock: Default::default(),
+            lock_state: Default::default(),
+            policy_applied: false,
+            browser_fail_closed: false,
+            grace_until_ms: None,
+            grace_notified: false,
+            durability: Default::default(),
+        };
+        snapshot.sessions.push(session.clone());
+        database.save(&snapshot).unwrap();
+        assert!(uninstall_check_in_dir(&dir).allowed);
+
+        // Strict active session refuses uninstall.
+        session.focus.mode = crate::focus::Mode::Strict;
+        snapshot.sessions[0] = session;
+        database.save(&snapshot).unwrap();
+        drop(database);
+        let strict_res = uninstall_check_in_dir(&dir);
+        assert!(!strict_res.allowed);
+        assert!(strict_res.reason.contains("strict focus session"));
+
+        // Even if DB is removed, a strict checkpoint in preelock.lifecycle.json refuses uninstall.
+        let _ = std::fs::remove_file(&db_path);
+        let life = db_path.with_extension("lifecycle.json");
+        crate::lifecycle::write_session_checkpoint(
+            &life,
+            None,
+            false,
+            Some(crate::lifecycle::SessionCheckpoint {
+                session_id: "s-strict".into(),
+                status: "running".into(),
+                mode: "strict".into(),
+                intended_end_at_ms: Some(9_999_999_999_999),
+                last_checkpoint_ms: 1000,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(!uninstall_check_in_dir(&dir).allowed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

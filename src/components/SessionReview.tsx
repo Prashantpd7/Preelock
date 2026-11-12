@@ -187,7 +187,7 @@ export function SessionReview({
   const workDomains = focus.attention?.work_domains ?? [];
   const exceptions = focus.exceptions ?? [];
   const yt = youtubePolicy(focus);
-  const showYoutube = yt.mode !== 'none' || yt.watchLater;
+  const showYoutube = yt.mode !== 'none' || yt.watchLater || !!yt.entertainment;
   const browserNeeded = sessionNeedsExtension(focus);
   const showBrowser = browserNeeded || !!browserName;
   const showSafariWarning = !!safariWarning && !isWindows;
@@ -254,7 +254,7 @@ export function SessionReview({
                     focus.attention.task !== 'other'
                       ? ` Type of work: ${typeOfWorkLabel(focus.attention.task)}.`
                       : ''
-                  } Wait before labeling a distraction: ${focus.attention.grace_seconds}s.`
+                  }`
                 : 'Off — timer only, no focus checks.'}
             </dd>
           </div>
@@ -441,7 +441,13 @@ export function SessionReview({
               />
             </>
           )}
-          {yt.mode === 'none' && (
+          {yt.entertainment && (
+            <p className="small">
+              Entertainment content (comedy, pranks, vlogs, funny/animal clips)
+              is blocked.
+            </p>
+          )}
+          {yt.mode === 'none' && !yt.entertainment && (
             <p className="small muted">No channel restrictions.</p>
           )}
           <p className="small muted">

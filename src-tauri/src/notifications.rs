@@ -185,6 +185,19 @@ pub fn grace_until_for(grace_seconds: u32, now_ms: i64) -> Option<i64> {
     }
 }
 
+/// Body for the grace-start notification: the block title plus the
+/// TRUE seconds remaining. The notification fires when the session
+/// enters grace (blocking begins when the countdown ends), and a
+/// deferred one — Windows background engine with no channel yet —
+/// says the remaining time, never the original grace length, the
+/// same true-remaining rule the advance warnings already use.
+pub fn grace_body(title: &str, secs: u64) -> String {
+    let second_word = if secs == 1 { "second" } else { "seconds" };
+    format!(
+        "{title} starts in {secs} {second_word}. Blocking begins when the countdown ends — finish up, nothing is blocked yet."
+    )
+}
+
 /// Minutes until a block starts, rounded UP, for warning text.
 /// Only called when `now < start`, so the result is at least 1.
 pub fn minutes_until(start_ms: i64, now_ms: i64) -> u64 {
@@ -652,5 +665,19 @@ mod tests {
         assert_eq!(grace_remaining_secs(Some(1_060_000), 1_000_000), 60);
         assert_eq!(grace_remaining_secs(Some(1_060_000), 1_060_000), 0);
         assert_eq!(grace_remaining_secs(None, 1_000_000), 0);
+    }
+
+    #[test]
+    fn grace_body_states_true_remaining_seconds() {
+        assert_eq!(
+            grace_body("Morning block", 60),
+            "Morning block starts in 60 seconds. Blocking begins when the countdown ends — finish up, nothing is blocked yet."
+        );
+        // A deferred notification says what is left, never the
+        // original grace length; one second is singular.
+        assert_eq!(
+            grace_body("Evening block", 1),
+            "Evening block starts in 1 second. Blocking begins when the countdown ends — finish up, nothing is blocked yet."
+        );
     }
 }

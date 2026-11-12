@@ -112,7 +112,7 @@ export function validateAllowanceForm(input: {
   if (!input.title.trim() || input.title.trim().length > 160)
     return 'Use a title between 1 and 160 characters.';
   const target = input.target.trim();
-  if (!target) return 'Enter a site or app to budget.';
+  if (!target) return 'Enter a site or app to allow.';
   if (input.kind === 'site') {
     if (target.toLowerCase().startsWith('search:'))
       return 'A site allowance needs a domain, not a search: keyword.';
@@ -130,6 +130,6 @@ export function validateAllowanceForm(input: {
     input.budgetMinutes < 1 ||
     input.budgetMinutes > max
   )
-    return `Choose a budget from 1 to ${max} minutes for a ${input.period === 'day' ? 'daily' : 'weekly'} allowance.`;
+    return `Allow from 1 to ${max} minutes for a ${input.period === 'day' ? 'daily' : 'weekly'} allowance.`;
   return '';
 }

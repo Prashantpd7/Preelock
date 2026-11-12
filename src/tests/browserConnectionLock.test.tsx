@@ -234,4 +234,46 @@ describe('browser connection lock during a strict focus session', () => {
       screen.queryByText('Browser settings locked'),
     ).not.toBeInTheDocument();
   });
+
+  it('displays multiple connected browsers in individual cards and allows adding another with code view', async () => {
+    const multiBrowserSetup: FocusSetup = {
+      ...connectedSetup,
+      connected_browsers: ['ai.perplexity.comet', 'com.google.chrome'],
+      browsers: [
+        { id: 'ai.perplexity.comet', name: 'Comet' },
+        { id: 'com.google.chrome', name: 'Google Chrome' },
+      ],
+      pairing_token: 'PAIR-TOKEN-1234567890',
+    };
+    vi.mocked(api.focusSetup).mockResolvedValue(multiBrowserSetup);
+
+    render(<PermissionsPanel />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Connected' }));
+
+    // Both browsers appear in their own cards
+    expect(screen.getByText('Connected in Comet')).toBeInTheDocument();
+    expect(screen.getByText('Connected in Google Chrome')).toBeInTheDocument();
+
+    // Clicking "Connect another browser" reveals the connection code and instructions
+    await user.click(
+      screen.getByRole('button', { name: 'Connect another browser' }),
+    );
+    expect(screen.getByLabelText('Connection code')).toHaveValue(
+      'PAIR-TOKEN-1234567890',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Copy code' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open Extensions' }),
+    ).toBeInTheDocument();
+
+    // Can navigate back to the connected list
+    await user.click(
+      screen.getByRole('button', { name: '← Back to connected browsers' }),
+    );
+    expect(screen.getByText('Connected in Comet')).toBeInTheDocument();
+    expect(screen.getByText('Connected in Google Chrome')).toBeInTheDocument();
+  });
 });

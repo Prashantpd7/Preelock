@@ -22,7 +22,8 @@ export function setupProblem(
     // FocusConfig::network_required in focus.rs).
     (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
     (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
-    !!focus.youtube_study_mode;
+    !!focus.youtube_study_mode ||
+    !!focus.youtube_block_entertainment;
   // Step 12: a frozen session with a picked browser needs that
   // browser connected (the backend preflight requires it), but a
   // frozen session with no picked browser does not need one
@@ -99,7 +100,8 @@ export function missingPrerequisites(
     p.work_domains.length > 0 ||
     (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
     (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
-    !!focus.youtube_study_mode;
+    !!focus.youtube_study_mode ||
+    !!focus.youtube_block_entertainment;
   const frozenNetwork = !!focus.frozen?.enabled && !!focus.browser_app;
   const needsConnection = network || frozenNetwork;
   const sessionBrowserIds = sessionBrowsers(focus);

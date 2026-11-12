@@ -104,7 +104,7 @@ when rebuilt and installed; published DMG/EXE files do not change automatically.
 1. Finish development and Windows verification. Commit and push to `main`.
 2. Choose an unused higher version (for example, `0.4.2` if still unused).
    Update `package.json`, both root versions in `package-lock.json`,
-   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and only the `vystriq`
+   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and only the `preelock`
    package version in `src-tauri/Cargo.lock`. Run
    `node scripts/release-version.mjs` to verify consistency.
 3. Update `docs/RELEASE_NOTES.md`, then commit and push the version and notes.

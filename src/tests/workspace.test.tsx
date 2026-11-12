@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
-import { defaultFocus, type Session } from '../types';
+import { defaultFocus, type SavedSetup, type Session } from '../types';
 vi.mock('../services/settings', () => ({
   settingsAction: vi.fn().mockResolvedValue({}),
   preferenceDefaults: {
@@ -158,6 +158,7 @@ it('creates a flexible session with app checks', async () => {
       youtube_blocked_channels: [],
       youtube_allowed_channels: [],
       youtube_study_mode: false,
+      youtube_block_entertainment: false,
       youtube_allow_watch_later: false,
       general_internet: true,
       browser_app: '',
@@ -193,6 +194,158 @@ it('creates a flexible session with app checks', async () => {
     }),
   );
 });
+it('renames the start card, drops the block-other-apps choice, and still blocks other apps', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'com.microsoft.VSCode', name: 'VS Code' }],
+  });
+  const user = userEvent.setup();
+  window.location.hash = '#/sessions';
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  // Item 2: the first card is now the instant session card.
+  expect(
+    screen.getByRole('heading', { name: 'Start instant focus session' }),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'New session' }));
+  await user.type(screen.getByLabelText('Task name'), 'Write outline');
+  await user.click(screen.getByRole('radio', { name: /Apps only/ }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('checkbox', { name: 'VS Code' }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  // Item 1: the Ready step no longer offers the choice at all.
+  expect(
+    screen.queryByRole('checkbox', { name: /Block all other apps/i }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText('Block all other apps during this session'),
+  ).not.toBeInTheDocument();
+  const createdSession: Session = {
+    id: 'new1',
+    title: 'Write outline',
+    duration_minutes: 25,
+    remaining_ms: 0,
+    focused_ms: 0,
+    allow_pause: true,
+    status: 'ready',
+    started_at: null,
+    ended_at: null,
+    deadline_ms: null,
+    focus: defaultFocus,
+  };
+  vi.mocked(api.execute).mockImplementation(async (action) =>
+    action.type === 'create_session'
+      ? { ...emptySnapshot, sessions: [createdSession] }
+      : emptySnapshot,
+  );
+  await user.click(screen.getByRole('button', { name: 'Create session' }));
+  expect(
+    await screen.findByRole('button', { name: 'Start session' }),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Start session' }));
+  // Item 6: a Flexible wizard session carries allow_pause through,
+  // and the payload still blocks other apps as if the old default
+  // (checked) were set.
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'create_session',
+      allow_pause: true,
+      focus: expect.objectContaining({ activity_consent: true }),
+    }),
+  );
+});
+it('drops the distraction-grace choice and still submits the 10-second grace', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    applications: [{ id: 'com.microsoft.VSCode', name: 'VS Code' }],
+  });
+  // A setup saved when the choice existed can carry a different grace.
+  const preset: SavedSetup = {
+    id: 'setup1',
+    name: 'Old setup',
+    minutes: 25,
+    focus: {
+      ...defaultFocus,
+      attention: {
+        enabled: true,
+        task: 'other',
+        verification: 'activity_only',
+        grace_seconds: 20,
+        camera_fallback: 'unknown',
+        work_apps: ['com.microsoft.VSCode'],
+        work_domains: [],
+      },
+    },
+  };
+  const seeded = {
+    ...structuredClone(emptySnapshot),
+    preferences: {
+      ...structuredClone(emptySnapshot).preferences,
+      saved_setups: [preset],
+    },
+  };
+  vi.mocked(api.snapshot).mockResolvedValue(seeded);
+  useAppStore.setState({
+    data: seeded,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  const user = userEvent.setup();
+  window.location.hash = '#/sessions';
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Focus Sessions' });
+  // Applying the saved setup opens the wizard with its values.
+  await user.click(screen.getByRole('button', { name: /Old setup/ }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  // Ready step: the distraction-grace choice is gone.
+  expect(
+    screen.queryByText('Wait before labeling a distraction'),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText('10 seconds (recommended)'),
+  ).not.toBeInTheDocument();
+  const createdSession: Session = {
+    id: 'new1',
+    title: 'Old setup',
+    duration_minutes: 25,
+    remaining_ms: 0,
+    focused_ms: 0,
+    allow_pause: true,
+    status: 'ready',
+    started_at: null,
+    ended_at: null,
+    deadline_ms: null,
+    focus: defaultFocus,
+  };
+  vi.mocked(api.execute).mockImplementation(async (action) =>
+    action.type === 'create_session'
+      ? { ...emptySnapshot, sessions: [createdSession] }
+      : emptySnapshot,
+  );
+  await user.click(screen.getByRole('button', { name: 'Create session' }));
+  expect(
+    await screen.findByRole('button', { name: 'Start session' }),
+  ).toBeInTheDocument();
+  // The confirmation review no longer shows the grace either.
+  expect(
+    screen.queryByText(/Wait before labeling a distraction/),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Start session' }));
+  // The submitted payload still carries the old default of 10 seconds,
+  // even though the saved setup stored 20.
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'create_session',
+      focus: expect.objectContaining({
+        attention: expect.objectContaining({ grace_seconds: 10 }),
+      }),
+    }),
+  );
+});
 it('reports persistence errors without inventing success', async () => {
   vi.mocked(api.execute).mockRejectedValue(new Error('Disk is full.'));
   await useAppStore.getState().execute({ type: 'create_task', title: 'Read' });
@@ -217,6 +370,7 @@ it('shows Comet and stops unpaired website setup before session creation', async
   await user.type(screen.getByLabelText('Task name'), 'Read docs');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await user.click(screen.getByRole('checkbox', { name: 'Comet' }));
+  await user.click(screen.getByRole('checkbox', { name: 'Website blocking' }));
   await user.click(
     screen.getByRole('checkbox', { name: 'Block all websites except these' }),
   );

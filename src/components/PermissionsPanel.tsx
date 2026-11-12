@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
@@ -25,9 +26,22 @@ export function PermissionsPanel() {
   const camera = setup?.camera_permission;
   // Several browsers can stay paired at once; the row reflects all of them.
   const connectedIds = setup?.connected_browsers ?? [];
-  const connectedNames = connectedIds.map(
-    (id) => setup?.browsers?.find((b) => b.id === id)?.name ?? id,
-  );
+  const getBrowserName = (id: string) => {
+    const found = setup?.browsers?.find(
+      (b) => b.id.toLowerCase() === id.toLowerCase(),
+    );
+    if (found?.name) return found.name;
+    const lower = id.toLowerCase();
+    if (lower.includes('comet')) return 'Comet';
+    if (lower.includes('chrome')) return 'Google Chrome';
+    if (lower.includes('brave')) return 'Brave';
+    if (lower.includes('edge') || lower.includes('edgemac'))
+      return 'Microsoft Edge';
+    if (lower.includes('vivaldi')) return 'Vivaldi';
+    if (lower.includes('chromium')) return 'Chromium';
+    return id;
+  };
+  const connectedNames = connectedIds.map(getBrowserName);
   const anyBrowserConnected = connectedNames.length > 0;
   useEffect(() => {
     if (!desktop || !panel) return;
@@ -39,6 +53,20 @@ export function PermissionsPanel() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [panel, refresh]);
+  const [refreshing, setRefreshing] = useState(false);
+  async function handleReconnectBrowser() {
+    setRefreshing(true);
+    setNotice('');
+    try {
+      await settingsAction({ type: 'reconnect_browser' }).catch(() => {});
+      await refresh();
+      await useAppStore.getState().refresh();
+    } catch (e) {
+      setNotice(String(e));
+    } finally {
+      window.setTimeout(() => setRefreshing(false), 400);
+    }
+  }
   async function allowCamera() {
     setBusy(true);
     setNotice('');
@@ -164,23 +192,95 @@ export function PermissionsPanel() {
           {panel !== 'camera' ? (
             anyBrowserConnected && panel !== 'add-browser' ? (
               <div className="dialog-stack">
-                <p className="muted">
-                  Connected in: {connectedNames.join(', ')}.
-                </p>
-                <button
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => void test('test_browser')}
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.625rem',
+                  }}
                 >
-                  Test blocking
-                </button>
-                {status.browser_test && (
-                  <p role="status">{status.browser_test}</p>
-                )}
-                <p className="small muted">
-                  After an app update, reload Preelock on each browser's
-                  Extensions page.
-                </p>
+                  {connectedIds.map((id) => {
+                    const name = getBrowserName(id);
+                    return (
+                      <div
+                        key={id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.875rem 1rem',
+                          borderRadius: '8px',
+                          backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid rgba(255, 255, 255, 0.08)',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.75rem',
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: '8px',
+                              height: '8px',
+                              borderRadius: '50%',
+                              backgroundColor: '#22c55e',
+                              boxShadow: '0 0 6px rgba(34, 197, 94, 0.6)',
+                              display: 'inline-block',
+                            }}
+                            aria-hidden="true"
+                          />
+                          <div>
+                            <div
+                              style={{
+                                fontWeight: 500,
+                                fontSize: '0.95rem',
+                                color: '#f8fafc',
+                              }}
+                            >
+                              Connected in {name}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: '0.8rem',
+                                color: 'rgba(255, 255, 255, 0.5)',
+                                marginTop: '0.125rem',
+                              }}
+                            >
+                              Extension is active and enforcing rules
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title="Refresh connection"
+                          aria-label="Refresh connection"
+                          disabled={refreshing || busy}
+                          onClick={() => void handleReconnectBrowser()}
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.06)',
+                            border: '1px solid rgba(255, 255, 255, 0.1)',
+                            cursor: 'pointer',
+                            padding: '0.5rem',
+                            borderRadius: '6px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#f8fafc',
+                          }}
+                        >
+                          <RefreshCw
+                            size={15}
+                            className={refreshing ? 'spin' : undefined}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
                 <button
                   className="secondary"
                   onClick={() => {
@@ -194,37 +294,38 @@ export function PermissionsPanel() {
                 >
                   Connect another browser
                 </button>
-                <p className="small muted">
-                  Resetting disconnects every browser; each one will need the
-                  connection code again.
-                </p>
                 {strictLive && (
                   <p className="small muted">
                     Browser settings are locked during an active focus session.
                   </p>
                 )}
-                <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={async () => {
-                    if (strictLive) {
-                      setPanel(null);
-                      setLockedDialog(true);
-                      return;
-                    }
-                    setBusy(true);
-                    try {
-                      await api.resetPairing();
-                      await refresh();
-                    } catch (e) {
-                      setNotice(String(e));
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  Reset all browser connections
-                </button>
+                <div>
+                  <button
+                    className="text-button"
+                    disabled={busy || refreshing}
+                    onClick={async () => {
+                      if (strictLive) {
+                        setPanel(null);
+                        setLockedDialog(true);
+                        return;
+                      }
+                      setBusy(true);
+                      try {
+                        await api.resetPairing();
+                        await refresh();
+                      } catch (e) {
+                        setNotice(String(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Reset all browser connections
+                  </button>
+                  <p className="small muted" style={{ marginTop: '0.25rem' }}>
+                    Disconnects every browser; each will need the code again.
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="dialog-stack">
@@ -233,6 +334,10 @@ export function PermissionsPanel() {
                   refresh={async () => {
                     await refresh();
                   }}
+                  allowAdd={panel === 'add-browser'}
+                  onBack={
+                    anyBrowserConnected ? () => setPanel('browser') : undefined
+                  }
                 />
               </div>
             )

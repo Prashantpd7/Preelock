@@ -118,7 +118,7 @@ loopback bridge at `127.0.0.1:47832`.
 ### Startup
 
 1. Tauri starts and resolves the per-user application-data directory.
-2. The app opens `vystriq.sqlite`.
+2. The app opens `preelock.sqlite` (migrating any legacy `vystriq.sqlite` automatically).
 3. Database migrations are applied up to schema version 4.
 4. Historical live sessions are recovered safely; offline elapsed time is never
    credited.
@@ -182,12 +182,12 @@ not.
 
 The app stores data per operating-system user:
 
-- macOS: `~/Library/Application Support/com.vystriq.desktop/`
-- Windows: `%APPDATA%\com.vystriq.desktop\`
+- macOS: `~/Library/Application Support/com.preelock.desktop/`
+- Windows: `%APPDATA%\com.preelock.desktop\`
 
 Important files include:
 
-- `vystriq.sqlite`: sessions, tasks, preferences, attention intervals, audits
+- `preelock.sqlite`: sessions, tasks, preferences, attention intervals, audits
 - `browser-token`: local bridge authentication secret
 - `browser-extension/`: deployed extension files for the paired browser
 
@@ -204,7 +204,7 @@ Windows installer.
 
 Removing only the application does not necessarily remove the per-user data
 directory. For a completely fresh local test, quit Preelock and delete only
-`com.vystriq.desktop` in the platform-specific application-data directory.
+`com.preelock.desktop` in the platform-specific application-data directory.
 This permanently deletes that user's local sessions, tasks, settings, pairing,
 and history.
 
@@ -238,7 +238,7 @@ Backups are explicit user actions handled by `settings.rs`. Backup payloads are
 validated, versioned, and marked with:
 
 ```text
-format: vystriq-backup
+format: preelock-backup (legacy vystriq-backup also accepted for restore)
 version: 1
 ```
 
@@ -351,7 +351,7 @@ Windows steps. See [docs/STORE_SUBMISSION.md](docs/STORE_SUBMISSION.md) for the
 exact status, listing copy and test plan. Nothing was uploaded or published.
 
 - `windows/msix/identity.json` holds the reserved Partner Center identity
-  (`Prashantpd7.VYSTRIQ`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`,
+  (`Prashantpd7.Preelock`, `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`,
   display name `Prashantpd7`). `scripts/package-msix.ps1` uses it by default and
   `windows/msix/AppxManifest.xml.template` receives the rendered values. The
   script refuses to build without a real identity unless
@@ -364,15 +364,15 @@ exact status, listing copy and test plan. Nothing was uploaded or published.
 - `.github/workflows/msix.yml` builds and validates on a free `windows-2022`
   runner. It never signs, uploads, or publishes.
 - Packaged startup uses the manifest `desktop:StartupTask`
-  (`TaskId=VYSTRIQ`, `Enabled="false"`) plus
+  (`TaskId=Preelock`, `Enabled="false"`) plus
   `Windows.ApplicationModel.StartupTask` in `platform/settings_windows.rs`.
   HKCU is virtualised inside a package, so the unpackaged registry `Run` entry
   cannot be used there. Unpackaged builds keep it; macOS keeps its login item.
 - Packaged AppData is private to the package, so the bundled extension is
-  deployed to `%USERPROFILE%\VYSTRIQ\browser-extension` for packaged builds so
-  the browser and Explorer can read it. Unpackaged and macOS paths are unchanged.
-- Data: existing `%APPDATA%\com.vystriq.desktop` data is reused in place after a
-  Store install; newly created files in a fresh package live in the private
+  deployed to `%USERPROFILE%\Preelock\browser-extension` for packaged builds so
+  the browser and Explorer can read it (existing installations with `%USERPROFILE%\VYSTRIQ\browser-extension` are preserved). Unpackaged and macOS paths are unchanged.
+- Data: existing `%APPDATA%\com.preelock.desktop` data is reused in place after a
+  Store install (legacy `com.vystriq.desktop` is migrated automatically); newly created files in a fresh package live in the private
   AppData store and are removed on uninstall. Never migrate or delete data
   silently.
 - Windows camera presence is still unimplemented and is reported as unavailable.

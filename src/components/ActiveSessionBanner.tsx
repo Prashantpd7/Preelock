@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Pause, Play, Square } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { countdown } from '../services/analytics';
-import { liveSession, sessionNeedsBrowser } from '../services/activeSession';
+import {
+  isLiveSessionStatus,
+  liveSession,
+  sessionNeedsBrowser,
+} from '../services/activeSession';
 import { ActiveSessionDetailsModal } from './ActiveSessionDetailsModal';
 
 /** Global active-session card, mounted once in AppLayout so it
@@ -14,6 +19,8 @@ import { ActiveSessionDetailsModal } from './ActiveSessionDetailsModal';
  *  instead (they stop the click from bubbling). */
 export function ActiveSessionBanner() {
   const { sessions, browser } = useAppStore((s) => s.data);
+  const execute = useAppStore((s) => s.execute);
+  const busy = useAppStore((s) => s.busy);
   const session = liveSession(sessions);
   const [detailsOpen, setDetailsOpen] = useState(false);
   // Step 14 grace: a running session with a future
@@ -47,6 +54,21 @@ export function ActiveSessionBanner() {
       : 0;
   const inGrace = graceRemainingSecs > 0;
   if (!session) return null;
+  // Pause/Stop follow the SessionCard rules exactly: Pause only for a
+  // running flexible session that allows it, Stop only when early
+  // ending is allowed, and neither for a strict or frozen session.
+  // (Locks are enforced by the backend: pausing or stopping a locked
+  // session without proofs fails there, exactly as the SessionCard
+  // head buttons behave. The details popup stays read-only.)
+  const committed = session.focus?.mode !== 'standard';
+  const frozen = !!session.focus?.frozen?.enabled;
+  const canPause =
+    session.status === 'running' &&
+    session.allow_pause &&
+    !committed &&
+    !frozen;
+  const canResume = session.status === 'paused';
+  const canEnd = isLiveSessionStatus(session.status) && !committed && !frozen;
   // Does this session use browser website blocking? Mirrors the Rust
   // FocusConfig::network_required() logic.
   const needsBrowser = sessionNeedsBrowser(session.focus);
@@ -102,18 +124,73 @@ export function ActiveSessionBanner() {
           {session.status === 'paused' && ' · paused'}
           {inGrace && ' · starting soon'}
         </p>
-        <p className="active-session-timer">
-          {inGrace
-            ? `Starts in ${graceRemainingSecs}s`
-            : countdown(session.remaining_ms)}
-        </p>
-        <p className="small muted">
-          {inGrace
-            ? 'Blocking begins when the countdown ends. Finish up — nothing is blocked yet.'
-            : session.status === 'preparing'
-              ? 'Waiting for the browser extension to connect…'
-              : 'Distracting apps and websites stay blocked until this session ends.'}
-        </p>
+        <div className="active-session-main">
+          <div>
+            <p className="active-session-timer">
+              {inGrace
+                ? `Starts in ${graceRemainingSecs}s`
+                : countdown(session.remaining_ms)}
+            </p>
+            <p className="small muted">
+              {inGrace
+                ? 'Blocking begins when the countdown ends. Finish up — nothing is blocked yet.'
+                : session.status === 'preparing'
+                  ? 'Waiting for the browser extension to connect…'
+                  : 'Distracting apps and websites stay blocked until this session ends.'}
+            </p>
+          </div>
+          {(canPause || canResume || canEnd) && (
+            <div className="row controls active-session-controls">
+              {canPause && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void execute({
+                      type: 'pause_session',
+                      id: session.id,
+                    });
+                  }}
+                >
+                  <Pause size={15} />
+                  Pause
+                </button>
+              )}
+              {canResume && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void execute({
+                      type: 'resume_session',
+                      id: session.id,
+                    });
+                  }}
+                >
+                  <Play size={15} />
+                  Resume
+                </button>
+              )}
+              {canEnd && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void execute({ type: 'end_session', id: session.id });
+                  }}
+                >
+                  <Square size={14} />
+                  Stop
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {showFailClosed && (
           <p>
             <Link
@@ -125,11 +202,8 @@ export function ActiveSessionBanner() {
               Connect browser
             </Link>
             <span className="small muted" style={{ marginLeft: '0.75rem' }}>
-              Browser blocked until the extension is connected — this
-              session&apos;s website rules were never applied, so the browser
-              app itself stays blocked. Killing the app or removing the
-              extension cannot end this block early; it resumes when Preelock
-              restarts. This does not prevent uninstall or force-quit itself.
+              Browser disconnected — apps stay blocked. Reconnect to resume
+              website blocking.
             </span>
           </p>
         )}

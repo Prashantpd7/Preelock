@@ -31,6 +31,12 @@ export const api = {
     invoke<FocusSetup>('focus_setup', { browserId: browserId ?? null }),
   requestCamera: () => invoke<void>('request_camera'),
   resetPairing: () => invoke<void>('reset_browser_pairing'),
+  reconnectBrowser: () =>
+    desktop
+      ? invoke<void>('settings_action', {
+          action: { type: 'reconnect_browser' },
+        })
+      : Promise.resolve(),
   snapshot: () =>
     desktop ? invoke<Snapshot>('snapshot') : Promise.resolve(emptySnapshot),
   execute: (action: Action) =>

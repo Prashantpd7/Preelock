@@ -1,4 +1,4 @@
-import type { Snapshot } from '../types';
+import type { Session, Snapshot } from '../types';
 import type { AnalyticsRange } from './analytics';
 
 /** The four sections shown in the Activity dropdown on the Focus
@@ -21,6 +21,29 @@ export const ACTIVITY_SECTIONS: {
  *  session area, never in historical Activity. */
 export function isLiveSessionStatus(status: string): boolean {
   return status === 'running' || status === 'paused' || status === 'preparing';
+}
+
+/** Whether a session was started automatically by a "Start once at"
+ *  one-shot timer rather than a manual Focus Session or recurring
+ *  Schedule. Checks the persisted `one_shot_started` report event and
+ *  falls back to the initial `One-shot block active` enforcement label
+ *  in case older events were trimmed on very long sessions. */
+export function isOneShotSession(session: Session): boolean {
+  if (
+    (session.report?.events ?? []).some((e) => e.kind === 'one_shot_started')
+  ) {
+    return true;
+  }
+  return session.report?.enforcement === 'One-shot block active';
+}
+
+/** Whether a session belongs in historical Activity lists (as opposed
+ *  to the live active-session area). */
+export function isHistoricalSession(session: Session): boolean {
+  return (
+    (session.started_at !== null || session.status === 'interrupted') &&
+    !isLiveSessionStatus(session.status)
+  );
 }
 
 /** True while a strict focus session is live (running, paused or

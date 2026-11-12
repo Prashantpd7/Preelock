@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
 import { defaultFocus } from '../types';
@@ -55,6 +55,49 @@ describe('ScheduleConfirmDialog', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
   });
 
+  it('omits the overnight hint, lock options and Enabled toggle', () => {
+    renderDialog();
+    expect(
+      screen.queryByText('Ends earlier? It runs overnight.'),
+    ).not.toBeInTheDocument();
+    for (const removed of [
+      'Lock with a password',
+      'Lock changes during the window',
+      'Lock with a typed challenge',
+      'Lock with a delay',
+      'Keep the lock after a restart',
+      'Enabled',
+    ]) {
+      expect(
+        screen.queryByRole('checkbox', { name: removed }),
+      ).not.toBeInTheDocument();
+    }
+    expect(screen.queryByText('Locks pass together')).not.toBeInTheDocument();
+  });
+
+  it('shows the total time and updates it live with the times', () => {
+    renderDialog();
+    expect(screen.getByLabelText('Total time')).toHaveValue('1 hr');
+    fireEvent.change(screen.getByLabelText('End time'), {
+      target: { value: '11:30' },
+    });
+    expect(screen.getByLabelText('Total time')).toHaveValue('2 hr 30 min');
+    fireEvent.change(screen.getByLabelText('Start time'), {
+      target: { value: '21:00' },
+    });
+    fireEvent.change(screen.getByLabelText('End time'), {
+      target: { value: '06:00' },
+    });
+    expect(screen.getByLabelText('Total time')).toHaveValue('9 hr · Overnight');
+    // End equal to start follows the overnight rule: a full day.
+    fireEvent.change(screen.getByLabelText('End time'), {
+      target: { value: '21:00' },
+    });
+    expect(screen.getByLabelText('Total time')).toHaveValue(
+      '24 hr · Overnight',
+    );
+  });
+
   it('shows the session review with the picked days and times', () => {
     renderDialog();
     expect(screen.getByText('Scheduled session')).toBeInTheDocument();
@@ -72,15 +115,29 @@ describe('ScheduleConfirmDialog', () => {
     expect(screen.queryByText('Weekdays · 09:00')).not.toBeInTheDocument();
   });
 
-  it('shows the picked lock in the review', async () => {
-    const user = userEvent.setup();
+  it('shows no lock section in the review', () => {
     renderDialog();
     expect(screen.queryByText('Locks')).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole('checkbox', { name: 'Lock with a password' }),
-    );
-    await user.type(screen.getByLabelText('Lock password'), 'secret');
-    expect(screen.getByText('password')).toBeInTheDocument();
+    expect(screen.queryByText('password')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Lock password')).not.toBeInTheDocument();
+  });
+
+  it('creates the schedule with no lock keys', async () => {
+    const user = userEvent.setup();
+    const { onCreate } = renderDialog();
+    await user.click(screen.getByRole('button', { name: 'Create schedule' }));
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    const fields = onCreate.mock.calls[0][0];
+    expect(fields).not.toHaveProperty('lock');
+    expect(fields).not.toHaveProperty('lock_password');
+  });
+
+  it('has no password field to type into', () => {
+    renderDialog();
+    expect(
+      screen.queryByRole('checkbox', { name: 'Lock with a password' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Lock password')).not.toBeInTheDocument();
   });
 
   it('shows the strict warning only for strict sessions', () => {
@@ -126,35 +183,6 @@ describe('ScheduleConfirmDialog', () => {
       await screen.findByText('Pick at least one day.'),
     ).toBeInTheDocument();
     expect(onCreate).not.toHaveBeenCalled();
-  });
-
-  it('rejects a password lock with no password', async () => {
-    const user = userEvent.setup();
-    const { onCreate } = renderDialog();
-    await user.click(
-      screen.getByRole('checkbox', { name: 'Lock with a password' }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Create schedule' }));
-    expect(
-      await screen.findByText('Enter a password for the password lock.'),
-    ).toBeInTheDocument();
-    expect(onCreate).not.toHaveBeenCalled();
-  });
-
-  it('includes the lock when one is set', async () => {
-    const user = userEvent.setup();
-    const { onCreate } = renderDialog();
-    await user.click(
-      screen.getByRole('checkbox', { name: 'Lock with a password' }),
-    );
-    await user.type(screen.getByLabelText('Lock password'), 'secret');
-    await user.click(screen.getByRole('button', { name: 'Create schedule' }));
-    expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        lock: expect.objectContaining({ challenge_length: 0 }),
-        lock_password: 'secret',
-      }),
-    );
   });
 
   it('cancels without creating', async () => {

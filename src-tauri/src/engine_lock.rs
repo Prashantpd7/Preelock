@@ -30,6 +30,12 @@ pub struct EngineLock {
     _file: File,
 }
 
+impl Drop for EngineLock {
+    fn drop(&mut self) {
+        let _ = self._file.unlock();
+    }
+}
+
 const LOCK_FILE: &str = "engine.lock";
 
 impl EngineLock {

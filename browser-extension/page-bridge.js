@@ -66,12 +66,30 @@
       '';
     var ownerUrl =
       (micro && (micro.canonicalBaseUrl || micro.ownerProfileUrl)) || '';
-    if (!videoId && !channelId && !ownerUrl && !author) return null;
+    var title =
+      (details && details.title) ||
+      (micro &&
+        micro.title &&
+        (micro.title.simpleText ||
+          (Array.isArray(micro.title.runs) &&
+            micro.title.runs[0] &&
+            micro.title.runs[0].text))) ||
+      '';
+    var category = (micro && micro.category) || '';
+    var keywords =
+      details && Array.isArray(details.keywords)
+        ? details.keywords.slice(0, 25).map(String)
+        : [];
+    if (!videoId && !channelId && !ownerUrl && !author && !title && !category)
+      return null;
     return {
       videoId: videoId,
       channelId: channelId,
       ownerUrl: ownerUrl,
       author: author,
+      title: title,
+      category: category,
+      keywords: keywords,
     };
   }
 
@@ -240,6 +258,9 @@
     var channelId = '';
     var ownerUrl = '';
     var author = '';
+    var title = '';
+    var category = '';
+    var keywords = [];
     var playerSwapped = false;
 
     for (var i = 0; i < players.length; i++) {
@@ -278,6 +299,9 @@
       channelId = (info && info.channelId) || '';
       ownerUrl = (info && info.ownerUrl) || '';
       author = (info && info.author) || (vdata && vdata.author) || '';
+      title = (info && info.title) || (vdata && vdata.title) || '';
+      category = (info && info.category) || '';
+      keywords = (info && info.keywords) || [];
       if (channelId || ownerUrl) break;
     }
 
@@ -292,6 +316,10 @@
         channelId = channelId || flexyInfo.channelId;
         ownerUrl = ownerUrl || flexyInfo.ownerUrl;
         author = author || flexyInfo.author;
+        title = title || flexyInfo.title || '';
+        category = category || flexyInfo.category || '';
+        if (!keywords.length && flexyInfo.keywords)
+          keywords = flexyInfo.keywords;
       }
     }
 
@@ -312,7 +340,7 @@
     if (
       !playerSwapped &&
       expectedId &&
-      (!videoId || (!channelId && !ownerUrl))
+      (!videoId || (!channelId && !ownerUrl) || !category || !title)
     ) {
       try {
         var initInfo = extractFromResponse(window.ytInitialPlayerResponse);
@@ -321,6 +349,10 @@
           channelId = channelId || initInfo.channelId;
           ownerUrl = ownerUrl || initInfo.ownerUrl;
           author = author || initInfo.author;
+          title = title || initInfo.title || '';
+          category = category || initInfo.category || '';
+          if (!keywords.length && initInfo.keywords)
+            keywords = initInfo.keywords;
         }
       } catch (e) {}
     }
@@ -340,6 +372,10 @@
       '|' +
       author +
       '|' +
+      category +
+      '|' +
+      title +
+      '|' +
       (playerSwapped ? '1' : '0');
     if (!force && key === last) return;
     last = key;
@@ -352,6 +388,9 @@
           channelId: channelId,
           ownerUrl: ownerUrl,
           author: author,
+          title: title,
+          category: category,
+          keywords: keywords,
           urlVideoId: expectedId,
           playerSwapped: playerSwapped,
         },

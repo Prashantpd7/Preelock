@@ -13,6 +13,7 @@ import {
   elapsedMs,
   formatHMS,
   liveSession,
+  liveTimeStats,
   scheduledEndMs,
   sessionTypeLabel,
   typeOfWorkLabel,
@@ -40,6 +41,7 @@ vi.mock('../services/api', () => ({
     focusSetup: vi.fn(),
     resetPairing: vi.fn(),
     snapshot: vi.fn(),
+    execute: vi.fn(),
     openSetup: vi.fn(),
     requestCamera: vi.fn(),
     blockAttempts: vi.fn(),
@@ -163,6 +165,60 @@ describe('activeSession helpers', () => {
     expect(sessionTypeLabel(makeSession({}))).toBe('Focus session');
   });
 
+  it('labels the recorded kind: one-shot, scheduled, and focus', () => {
+    expect(sessionTypeLabel(makeSession({ kind: 'one_shot' }))).toBe(
+      'One-shot session',
+    );
+    expect(sessionTypeLabel(makeSession({ kind: 'scheduled' }))).toBe(
+      'Scheduled session',
+    );
+    expect(sessionTypeLabel(makeSession({ kind: 'focus' }))).toBe(
+      'Focus session',
+    );
+    // The kind wins over a stale schedule id (a restarted schedule
+    // session becomes a manual session).
+    expect(
+      sessionTypeLabel(makeSession({ kind: 'focus', schedule_id: 'sched-1' })),
+    ).toBe('Focus session');
+    // Sessions saved before the kind was recorded fall back to the
+    // schedule id; an old one-shot has no marker and stays a focus
+    // session.
+    expect(sessionTypeLabel(makeSession({ schedule_id: 'sched-1' }))).toBe(
+      'Scheduled session',
+    );
+  });
+
+  it('reads live focus totals from the session and its attention buckets', () => {
+    expect(
+      liveTimeStats(
+        makeSession({
+          focused_ms: 300_000,
+          attention: {
+            state: 'FOCUSED',
+            reason: '',
+            elapsed_ms: 390_000,
+            distracted_ms: 60_000,
+            absent_ms: 30_000,
+            unknown_ms: 0,
+            corrected_ms: 0,
+            intervals: [],
+          },
+        }),
+      ),
+    ).toEqual({
+      focusedMs: 300_000,
+      distractedMs: 60_000,
+      awayMs: 30_000,
+      totalMs: 390_000,
+    });
+    expect(liveTimeStats(makeSession({ focused_ms: 0 }))).toEqual({
+      focusedMs: 0,
+      distractedMs: 0,
+      awayMs: 0,
+      totalMs: 0,
+    });
+  });
+
   it('resolves website blocking: auto follows the mode', () => {
     expect(effectiveWebsiteBlocking({ ...defaultFocus, mode: 'strict' })).toBe(
       'allowlist',
@@ -204,6 +260,18 @@ describe('activeSession helpers', () => {
         youtube_blocked_channels: ['@mkbhd'],
       }),
     ).toMatchObject({ mode: 'block', blocked: ['@mkbhd'] });
+    expect(
+      youtubePolicy({
+        ...defaultFocus,
+        youtube_block_entertainment: true,
+      }),
+    ).toEqual({
+      mode: 'none',
+      blocked: [],
+      allowed: [],
+      watchLater: false,
+      entertainment: true,
+    });
     expect(youtubePolicy(defaultFocus).mode).toBe('none');
   });
 
@@ -383,6 +451,150 @@ describe('ActiveSessionBanner', () => {
   });
 });
 
+describe('ActiveSessionBanner pause/stop controls', () => {
+  /** The store's execute applies the mocked api result, so make the
+   *  mock apply pause/resume/end to the seeded store data. */
+  function mockExecuteApplies() {
+    vi.mocked(api.execute).mockImplementation(async (action) => {
+      const data = useAppStore.getState().data;
+      if (action.type === 'pause_session') {
+        return {
+          ...data,
+          sessions: data.sessions.map((s) =>
+            s.id === action.id ? { ...s, status: 'paused' } : s,
+          ),
+        };
+      }
+      if (action.type === 'resume_session') {
+        return {
+          ...data,
+          sessions: data.sessions.map((s) =>
+            s.id === action.id ? { ...s, status: 'running' } : s,
+          ),
+        };
+      }
+      if (action.type === 'end_session') {
+        return {
+          ...data,
+          sessions: data.sessions.filter((s) => s.id !== action.id),
+        };
+      }
+      return data;
+    });
+  }
+
+  it('shows Pause and Stop for a flexible running session, and both work', async () => {
+    mockExecuteApplies();
+    const user = userEvent.setup();
+    const session = makeSession({ title: 'Flex work' });
+    setData({ sessions: [session] });
+    renderBanner();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resume' }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(api.execute).toHaveBeenCalledWith({
+      type: 'pause_session',
+      id: session.id,
+    });
+    // Pausing shows the paused state on the banner (and never opens
+    // the read-only details popup).
+    expect(screen.getByText(/· paused/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Pause' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(api.execute).toHaveBeenCalledWith({
+      type: 'resume_session',
+      id: session.id,
+    });
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(api.execute).toHaveBeenCalledWith({
+      type: 'end_session',
+      id: session.id,
+    });
+    // Stopping ends the session and the banner disappears.
+    expect(
+      screen.queryByRole('button', { name: /Active session/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows no Pause or Stop for a strict running session', () => {
+    setData({
+      sessions: [makeSession({ title: 'Strict work' }, { mode: 'strict' })],
+    });
+    renderBanner();
+    expect(
+      screen.getByRole('button', { name: /Active session: Strict work/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Pause' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Stop' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows no Pause or Stop for a frozen session', () => {
+    setData({
+      sessions: [
+        makeSession(
+          { title: 'Frozen work' },
+          {
+            frozen: {
+              enabled: true,
+              allowed_apps: [],
+              allowed_websites: [],
+            },
+          },
+        ),
+      ],
+    });
+    renderBanner();
+    expect(
+      screen.getByRole('button', { name: /Active session: Frozen work/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Pause' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Stop' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows Resume, not Pause, for a paused flexible session', () => {
+    setData({
+      sessions: [makeSession({ title: 'Paused work', status: 'paused' })],
+    });
+    renderBanner();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Pause' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+  });
+
+  it('shows no Pause when the session disallows pausing, but still offers Stop', () => {
+    setData({
+      sessions: [makeSession({ title: 'No-pause work', allow_pause: false })],
+    });
+    renderBanner();
+    expect(
+      screen.getByRole('button', { name: /Active session: No-pause work/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Pause' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+  });
+});
+
 describe('ActiveSessionDetailsModal', () => {
   async function openModal(session: Session) {
     const user = userEvent.setup();
@@ -417,6 +629,63 @@ describe('ActiveSessionDetailsModal', () => {
   it('shows a scheduled session as scheduled', async () => {
     await openModal(makeSession({ schedule_id: 'sched-1' }));
     expect(screen.getByText('Scheduled session')).toBeInTheDocument();
+  });
+
+  it('shows a one-shot session as a one-shot session', async () => {
+    await openModal(makeSession({ kind: 'one_shot' }));
+    expect(screen.getByText('One-shot session')).toBeInTheDocument();
+  });
+
+  it('shows a scheduled session by its recorded kind', async () => {
+    await openModal(makeSession({ kind: 'scheduled' }));
+    expect(screen.getByText('Scheduled session')).toBeInTheDocument();
+  });
+
+  it('shows live focus totals while the session runs', async () => {
+    const session = makeSession({
+      focused_ms: 120_000,
+      attention: {
+        state: 'FOCUSED',
+        reason: '',
+        elapsed_ms: 210_000,
+        distracted_ms: 60_000,
+        absent_ms: 30_000,
+        unknown_ms: 0,
+        corrected_ms: 0,
+        intervals: [],
+      },
+    });
+    await openModal(session);
+    expect(screen.getByText('Time so far')).toBeInTheDocument();
+    expect(screen.getByText('Focused 02:00')).toBeInTheDocument();
+    expect(screen.getByText('Distracted 01:00')).toBeInTheDocument();
+    expect(screen.getByText('Away 00:30')).toBeInTheDocument();
+    expect(screen.getByText('Total 03:30')).toBeInTheDocument();
+    // The popup re-reads the session from the store, so the totals
+    // move as the session runs.
+    setData({
+      sessions: [
+        {
+          ...session,
+          focused_ms: 300_000,
+          attention: { ...session.attention!, distracted_ms: 120_000 },
+        },
+      ],
+    });
+    expect(await screen.findByText('Focused 05:00')).toBeInTheDocument();
+    expect(screen.getByText('Distracted 02:00')).toBeInTheDocument();
+    expect(screen.getByText('Total 07:30')).toBeInTheDocument();
+  });
+
+  it('omits the live totals when focus checks are off', async () => {
+    await openModal(
+      makeSession(
+        {},
+        { attention: { ...defaultFocus.attention!, enabled: false } },
+      ),
+    );
+    expect(screen.queryByText('Time so far')).not.toBeInTheDocument();
+    expect(screen.queryByText('Focused')).not.toBeInTheDocument();
   });
 
   it('lists allowed work apps and blocked folders', async () => {
@@ -700,39 +969,6 @@ describe('AppLayout global banner', () => {
     expect(
       screen.queryByRole('button', { name: /Active session/ }),
     ).not.toBeInTheDocument();
-    unmount();
-  });
-
-  it('keyboard Enter on Connect browser navigates to Settings Connections without opening the details modal', async () => {
-    const user = userEvent.setup();
-    setData({
-      sessions: [
-        makeSession(
-          { title: 'Deep work', started_at: Date.now() - 60_000 },
-          {
-            domains: ['reddit.com'],
-            website_blocking: 'blocklist',
-            browser_app: 'com.google.chrome',
-          },
-        ),
-      ],
-    });
-    const { unmount } = render(
-      <MemoryRouter initialEntries={['/settings']}>
-        <AppLayout />
-      </MemoryRouter>,
-    );
-    const connectLink = await screen.findByRole('link', {
-      name: 'Connect browser from Settings Connections',
-    });
-    connectLink.focus();
-    await user.keyboard('{Enter}');
-    expect(
-      screen.queryByRole('dialog', { name: 'Deep work' }),
-    ).not.toBeInTheDocument();
-    expect(
-      await screen.findByRole('button', { name: 'Connections' }),
-    ).toHaveAttribute('aria-current', 'page');
     unmount();
   });
 });

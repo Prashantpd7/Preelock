@@ -20,6 +20,7 @@ pub const PORT: u16 = 47832;
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
 pub const EXTENSION_VERSION: u32 = 13;
+pub const CONNECTION_TIMEOUT_MS: u64 = 65_000;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
     #[serde(skip)]
@@ -56,6 +57,11 @@ pub struct Policy {
     /// extension blocks the YouTube homepage, Shorts, feeds and
     /// search results. False unless blocking is on.
     pub youtube_study_mode: bool,
+    /// Blocks entertainment content on YouTube (comedy, pranks, vlogs,
+    /// funny/animal clips, gaming, music, Shorts). False unless blocking
+    /// is on.
+    #[serde(default)]
+    pub youtube_block_entertainment: bool,
     /// Watch-Later exception (the playlist?list=WL page stays open). False unless
     /// blocking is on. Extension-enforced only: query parameters are
     /// invisible to the engine (see the note on FocusConfig in
@@ -92,6 +98,12 @@ fn normalized_channels(values: &[String]) -> Vec<String> {
     out
 }
 impl Policy {
+    pub fn browsers(&self) -> &[String] {
+        &self.browsers
+    }
+    pub fn clear_browsers(&mut self) {
+        self.browsers.clear();
+    }
     pub fn with_activity_tracking(mut self, enabled: bool) -> Self {
         self.track_activity = enabled;
         self
@@ -109,7 +121,9 @@ impl Policy {
                 _ => "allowlist",
             },
         };
-        let has_youtube_rules = !c.youtube_blocked_channels.is_empty() || c.youtube_study_mode;
+        let has_youtube_rules = !c.youtube_blocked_channels.is_empty()
+            || c.youtube_study_mode
+            || c.youtube_block_entertainment;
         let blocking = (!matches!(&c.website_blocking, WebsiteBlocking::None)
             && c.general_internet)
             || has_youtube_rules;
@@ -198,6 +212,7 @@ impl Policy {
                 Vec::new()
             },
             youtube_study_mode: blocking && c.youtube_study_mode,
+            youtube_block_entertainment: blocking && c.youtube_block_entertainment,
             youtube_allow_watch_later: blocking && c.youtube_allow_watch_later,
             expires_at: clock::now() + remaining.min(65_000) as i64,
         }
@@ -278,7 +293,7 @@ struct State {
     /// request is refused, and only while the flag is set.
     connection_locked: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BrowserStatus {
     pub available: bool,
     pub connected: bool,
@@ -851,6 +866,14 @@ impl Bridge {
             }
         }
     }
+    /// Reset cached client errors and wake the bridge on manual refresh.
+    pub fn refresh(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            for c in state.clients.values_mut() {
+                c.error.clear();
+            }
+        }
+    }
     /// Browser-connection lock, pushed by the engine from its
     /// authoritative session state (see `Engine::publish`): true while
     /// a strict focus session is live, false otherwise. The value is
@@ -887,6 +910,7 @@ impl Bridge {
                 youtube_blocked_channels: Vec::new(),
                 youtube_allowed_channels: Vec::new(),
                 youtube_study_mode: false,
+                youtube_block_entertainment: false,
                 youtube_allow_watch_later: false,
                 expires_at: clock::now() + 65_000,
                 observe_activity: true,
@@ -921,23 +945,35 @@ impl Bridge {
     pub fn status(&self) -> BrowserStatus {
         self.status_for("")
     }
-    /// Pick the best (freshest, current-version) client from the
-    /// candidates the caller already filtered.
+    /// Pick the best client from candidates. Connected clients are always
+    /// preferred over disconnected ones; among connected clients, current-version
+    /// and freshest heartbeat win.
     fn best_client<'s>(
         s: &'s State,
         mut best: Option<&'s ClientState>,
         matches: impl Fn(&ClientState) -> bool,
     ) -> Option<&'s ClientState> {
+        let now = clock::continuous_ms();
         for c in s.clients.values() {
             if !matches(c) {
                 continue;
             }
             let stale = c.ext_v != EXTENSION_VERSION;
+            let connected =
+                c.last_seen != 0 && now.saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS;
             let better = match &best {
                 None => true,
                 Some(b) => {
                     let b_stale = b.ext_v != EXTENSION_VERSION;
-                    (!stale && b_stale) || (stale == b_stale && c.last_seen > b.last_seen)
+                    let b_connected =
+                        b.last_seen != 0 && now.saturating_sub(b.last_seen) < CONNECTION_TIMEOUT_MS;
+                    if connected != b_connected {
+                        connected
+                    } else if stale != b_stale {
+                        !stale
+                    } else {
+                        c.last_seen > b.last_seen
+                    }
                 }
             };
             if better {
@@ -958,8 +994,8 @@ impl Bridge {
     ) -> BrowserStatus {
         match best {
             Some(c) => {
-                let connected =
-                    c.last_seen != 0 && clock::continuous_ms().saturating_sub(c.last_seen) < 45_000;
+                let connected = c.last_seen != 0
+                    && clock::continuous_ms().saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS;
                 BrowserStatus {
                     active_domain: c.active_domain.clone(),
                     browser_focused: c.browser_focused,
@@ -1044,7 +1080,9 @@ impl Bridge {
                 let mut ids: Vec<String> = s
                     .clients
                     .values()
-                    .filter(|c| c.last_seen != 0 && now.saturating_sub(c.last_seen) < 45_000)
+                    .filter(|c| {
+                        c.last_seen != 0 && now.saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS
+                    })
                     .map(|c| resolve_browser(&c.browser, &self.installed))
                     .collect();
                 ids.sort();
@@ -1360,6 +1398,7 @@ mod tests {
         assert_eq!(p.mode, "offline");
         assert!(p.youtube_blocked_channels.is_empty());
         assert!(!p.youtube_study_mode);
+        assert!(!p.youtube_block_entertainment);
         // Offline WITH YouTube rules: not offline mode, channels carried.
         let mut off = c;
         off.general_internet = false;
@@ -1367,6 +1406,15 @@ mod tests {
         assert_ne!(p.mode, "offline");
         assert_eq!(p.youtube_blocked_channels, vec!["@beta"]);
         assert!(p.youtube_study_mode);
+        // Entertainment blocking works even when website_blocking is None.
+        let ent = FocusConfig {
+            website_blocking: WebsiteBlocking::None,
+            youtube_block_entertainment: true,
+            ..Default::default()
+        };
+        let p = Policy::new("s", &ent, 60_000);
+        assert_eq!(p.mode, "blocklist");
+        assert!(p.youtube_block_entertainment);
     }
     #[test]
     fn policy_carries_the_watch_later_exception_in_allowlist_mode() {

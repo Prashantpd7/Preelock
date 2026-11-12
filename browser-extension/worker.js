@@ -56,7 +56,14 @@ function blockedPageUrl(url, policy) {
 function blockedYouTubePageUrl(kind) {
   const params = new URLSearchParams();
   params.set('k', 'youtube');
-  params.set('m', kind === 'channel' ? 'channel' : 'content');
+  params.set(
+    'm',
+    kind === 'channel'
+      ? 'channel'
+      : kind === 'entertainment'
+        ? 'entertainment'
+        : 'content',
+  );
   return chrome.runtime.getURL('blocked.html') + '?' + params.toString();
 }
 import { browserIdentity } from './identity.js';
@@ -669,6 +676,10 @@ async function sync() {
             ? 'Cannot reach Preelock. Open the desktop app, then reconnect.'
             : detail.slice(0, 200);
     await chrome.storage.session.set({ error: message });
+    // Fast automatic retry if connection dropped so active sessions reconnect promptly
+    try {
+      void chrome.alarms.create('sync_retry', { delayInMinutes: 0.05 });
+    } catch {}
   }
 }
 chrome.alarms.onAlarm.addListener(() => {
@@ -752,6 +763,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         live,
         Boolean(message.unidentified),
         message.watchLaterMember ?? null,
+        message.videoMeta ?? null,
       );
       sendResponse(
         message.videoId ? { videoId: message.videoId, ...decision } : decision,
@@ -802,6 +814,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           live,
           Boolean(message.unidentified),
           message.watchLaterMember ?? null,
+          message.videoMeta ?? null,
         );
         if (!live || !decision.blocked) {
           sendResponse({ ok: true });
@@ -812,6 +825,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           channelBlockReason(message.url, live) === 'study_channel' ||
           decision.reason === 'blocked_channel' ||
           decision.reason === 'study_channel';
+        const entertainmentBlocked =
+          decision.reason === 'entertainment' ||
+          decision.reason === 'entertainment_surface';
         const unidentifiedChannelBlock =
           decision.reason === 'channel_unidentified' ||
           decision.reason === 'study_unidentified';
@@ -819,7 +835,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await markChannelBlocked(sender.tab.id);
         await chrome.tabs
           .update(sender.tab.id, {
-            url: blockedYouTubePageUrl(channelBlocked ? 'channel' : 'content'),
+            url: blockedYouTubePageUrl(
+              channelBlocked
+                ? 'channel'
+                : entertainmentBlocked
+                  ? 'entertainment'
+                  : 'content',
+            ),
           })
           .catch(() => {});
       }

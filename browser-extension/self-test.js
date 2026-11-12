@@ -66,7 +66,7 @@ export async function selfTest() {
     );
     await check(
       'blocklist',
-      ['vystriq-test.invalid'],
+      ['preelock-test.invalid'],
       'https://allowed.invalid/',
       false,
     );

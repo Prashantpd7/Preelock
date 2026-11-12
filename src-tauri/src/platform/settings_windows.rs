@@ -87,6 +87,11 @@ pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     if let Err(error) = migrate_login_label() {
         log::warn!("Startup label migration deferred: {error}");
     }
+    if is_packaged() {
+        if let Err(error) = migrate_packaged_startup_task() {
+            log::warn!("Packaged startup task migration deferred: {error}");
+        }
+    }
     APP.set(app.clone())
         .map_err(|_| "Settings already initialized.".to_string())?;
     let window = app
@@ -170,6 +175,29 @@ fn migrate_login_label() -> Result<bool, String> {
     }
     Ok(migrated)
 }
+
+fn migrate_packaged_startup_task() -> Result<bool, String> {
+    use windows::core::HSTRING;
+    let Ok(legacy_task) = windows::ApplicationModel::StartupTask::GetAsync(&HSTRING::from(
+        packaging::LEGACY_STARTUP_TASK_ID,
+    ))
+    .and_then(|operation| operation.join()) else {
+        return Ok(false);
+    };
+    let Ok(state) = legacy_task.State() else {
+        return Ok(false);
+    };
+    let legacy_state = StartupState::from_winrt(state.0);
+    let mut migrated = false;
+    if legacy_state.is_on() {
+        if let Ok(new_task) = startup_task() {
+            let _ = new_task.RequestEnableAsync().and_then(|op| op.join());
+            migrated = true;
+        }
+    }
+    let _ = legacy_task.Disable();
+    Ok(migrated)
+}
 pub fn info() -> Result<serde_json::Value, String> {
     use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
     let mut time: SYSTEMTIME = unsafe { std::mem::zeroed() };
@@ -241,25 +269,64 @@ pub fn login(on: bool) -> Result<(), String> {
 pub fn permission() -> bool {
     info().is_ok_and(|i| i["notifications"] == 2)
 }
-/// Whether an OS notification can actually be shown from this
-/// process: the Windows notifier needs the Tauri `AppHandle`
-/// installed by `install_quit_guard` (GUI setup). The background
-/// process never builds a Tauri app, so it has no handle and its
-/// notifications would silently vanish — callers must defer, not
-/// record, a warning they cannot deliver (see
-/// `Engine::evaluate_warnings`).
+/// Whether an OS notification can be shown from this process.
+/// When the GUI handle is installed, notifications use Tauri's plugin;
+/// in `--background`, notifications use Windows ToastNotificationManager
+/// directly in the logged-in user's interactive session.
 pub fn can_notify() -> bool {
-    APP.get().is_some()
+    true
 }
+
+fn escape_toast_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn notify_headless_toast(title: &str, body: &str) -> Result<(), String> {
+    use windows::{
+        core::HSTRING,
+        Data::Xml::Dom::XmlDocument,
+        Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED},
+        UI::Notifications::{ToastNotification, ToastNotificationManager},
+    };
+    let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+    let xml = format!(
+        "<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text><text id=\"2\">{}</text></binding></visual></toast>",
+        escape_toast_xml(title),
+        escape_toast_xml(body)
+    );
+    let doc = XmlDocument::new().map_err(|e| e.message())?;
+    doc.LoadXml(&HSTRING::from(xml)).map_err(|e| e.message())?;
+    let toast = ToastNotification::CreateToastNotification(&doc).map_err(|e| e.message())?;
+    let notifier = if is_packaged() {
+        ToastNotificationManager::CreateToastNotifier()
+    } else {
+        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from("com.preelock.desktop"))
+    }
+    .map_err(|e| e.message())?;
+    notifier.Show(&toast).map_err(|e| e.message())
+}
+
 pub fn notify(title: &str, body: &str) {
+    if cfg!(test) {
+        return;
+    }
     if let Some(app) = APP.get() {
         if let Err(error) = app.notification().builder().title(title).body(body).show() {
             log::warn!("Windows notification failed: {error}");
         }
+        return;
+    }
+    if let Err(error) = notify_headless_toast(title, body) {
+        log::warn!("Windows headless toast notification failed: {error}");
     }
 }
 pub fn sound(volume: u32) {
-    if volume == 0 {
+    if cfg!(test) || volume == 0 {
         return;
     }
     // A short PCM chime with its own gain; never change the system volume.

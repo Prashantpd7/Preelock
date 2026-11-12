@@ -4,42 +4,129 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         OnceLock,
     },
 };
 
-#[derive(Serialize, Deserialize)]
-struct Checkpoint {
-    boot: Option<String>,
-    orderly: bool,
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCheckpoint {
+    pub session_id: String,
+    pub kind: String,
+    pub status: String,
+    pub mode: String,
+    pub schedule_id: Option<String>,
+    pub schedule_title: Option<String>,
+    #[serde(default)]
+    pub weekdays: Vec<u32>,
+    #[serde(default)]
+    pub start_time: Option<String>,
+    #[serde(default)]
+    pub end_time: Option<String>,
+    pub started_at_ms: Option<i64>,
+    pub intended_end_at_ms: Option<i64>,
+    pub remaining_ms: u64,
+    #[serde(default)]
+    pub blocked_apps: Vec<String>,
+    #[serde(default)]
+    pub allowed_apps: Vec<String>,
+    #[serde(default)]
+    pub blocked_sites: Vec<String>,
+    #[serde(default)]
+    pub allowed_sites: Vec<String>,
+    pub recovery_status: String,
+    pub last_checkpoint_ms: i64,
+    pub last_enforcement_at_ms: Option<i64>,
 }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub boot: Option<String>,
+    pub orderly: bool,
+    #[serde(default)]
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub corrupt_recovered: bool,
+    #[serde(default)]
+    pub active_session: Option<SessionCheckpoint>,
+}
+
 static CHECKPOINT: OnceLock<(PathBuf, Option<String>)> = OnceLock::new();
 static ENDING: AtomicBool = AtomicBool::new(false);
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
+/// Crash-safe atomic write: serialize into a sibling temp file, fsync its
+/// contents, rename over `path`, and clean up the temp file on failure so
+/// a sudden power loss can never truncate `lifecycle.json`.
+pub fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), String> {
     use std::io::Write;
-    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    file.write_all(&serde_json::to_vec(checkpoint).map_err(|e| e.to_string())?)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())
+    let parent = path.parent().ok_or("Invalid lifecycle checkpoint path.")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(checkpoint).map_err(|e| e.to_string())?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(".preelock.lifecycle.{}.{seq}.tmp", std::process::id());
+    let tmp = parent.join(tmp_name);
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+    if write_res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    write_res.map_err(|e| e.to_string())
 }
+
+pub fn read_checkpoint(path: &Path) -> Option<Checkpoint> {
+    let data = std::fs::read(path).ok()?;
+    serde_json::from_slice::<Checkpoint>(&data).ok()
+}
+
 pub fn startup(path: &Path, boot: Option<String>) -> Result<bool, String> {
-    let previous = std::fs::read(path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<Checkpoint>(&data).ok());
-    let resume = previous.is_some_and(|old| {
+    let (previous, corrupt_recovered) = match std::fs::read(path) {
+        Ok(data) => match serde_json::from_slice::<Checkpoint>(&data) {
+            Ok(parsed) => (Some(parsed), false),
+            Err(error) => {
+                log::warn!(
+                    "Recovering corrupted lifecycle checkpoint {}: {error}",
+                    path.display()
+                );
+                (None, true)
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
+        Err(error) => {
+            log::warn!(
+                "Could not read lifecycle checkpoint {}: {error}",
+                path.display()
+            );
+            (None, false)
+        }
+    };
+    let resume = previous.as_ref().is_some_and(|old| {
         old.orderly || matches!((&old.boot, &boot), (Some(a), Some(b)) if a != b)
     });
+    let active_session = previous.and_then(|old| old.active_session);
     write(
         path,
         &Checkpoint {
             boot,
             orderly: false,
+            updated_at_ms: crate::clock::now(),
+            corrupt_recovered,
+            active_session,
         },
     )?;
     Ok(resume)
 }
+
 pub fn initialize(database: &Path) -> Result<bool, String> {
     let path = database.with_extension("lifecycle.json");
     let boot = boot_id();
@@ -49,9 +136,39 @@ pub fn initialize(database: &Path) -> Result<bool, String> {
         .map_err(|_| "Lifecycle already initialized".to_string())?;
     Ok(resume)
 }
+
+/// Update only the durable active-session summary (keeping current `boot`
+/// and clearing `orderly` only if not shutting down).
+pub fn write_session_checkpoint(
+    path: &Path,
+    boot: Option<String>,
+    orderly: bool,
+    active_session: Option<SessionCheckpoint>,
+) -> Result<(), String> {
+    let corrupt_recovered = read_checkpoint(path).is_some_and(|c| c.corrupt_recovered);
+    write(
+        path,
+        &Checkpoint {
+            boot,
+            orderly,
+            updated_at_ms: crate::clock::now(),
+            corrupt_recovered,
+            active_session,
+        },
+    )
+}
+
+pub fn current_boot_id() -> Option<String> {
+    CHECKPOINT
+        .get()
+        .and_then(|(_, b)| b.clone())
+        .or_else(boot_id)
+}
+
 pub fn ending() -> bool {
     ENDING.load(Ordering::Acquire)
 }
+
 // Called from the macOS quit guard (desktop_settings.rs) and the
 // Windows settings path (platform/settings_windows.rs). Linux has
 // no call site, so this is dead code there only — never delete it
@@ -63,11 +180,15 @@ pub extern "C" fn system_shutdown() {
     // Never acquire the engine lock on the OS event thread: sampling may be
     // waiting on that same thread. SQLite already checkpoints every 5 seconds.
     if let Some((path, boot)) = CHECKPOINT.get() {
+        let existing_session = read_checkpoint(path).and_then(|c| c.active_session);
         if let Err(error) = write(
             path,
             &Checkpoint {
                 boot: boot.clone(),
                 orderly: true,
+                updated_at_ms: crate::clock::now(),
+                corrupt_recovered: false,
+                active_session: existing_session,
             },
         ) {
             log::error!("Could not mark system shutdown: {error}");
@@ -138,8 +259,8 @@ mod tests {
         write(
             &path,
             &Checkpoint {
-                boot: None,
                 orderly: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -147,5 +268,46 @@ mod tests {
         assert!(!startup(&path, None).unwrap());
         std::fs::write(&path, "incomplete").unwrap();
         assert!(!startup(&path, None).unwrap());
+        assert!(read_checkpoint(&path).unwrap().corrupt_recovered);
+    }
+    #[test]
+    fn session_checkpoint_and_legacy_json_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lifecycle.json");
+        std::fs::write(&path, r#"{"boot":"old-boot","orderly":false}"#).unwrap();
+        assert!(startup(&path, Some("new-boot".into())).unwrap());
+
+        let summary = SessionCheckpoint {
+            session_id: "sess-1".into(),
+            kind: "scheduled".into(),
+            status: "running".into(),
+            mode: "strict".into(),
+            schedule_id: Some("sched-1".into()),
+            schedule_title: Some("Morning Deep Work".into()),
+            weekdays: vec![1, 2, 3, 4, 5],
+            start_time: Some("09:00".into()),
+            end_time: Some("11:00".into()),
+            started_at_ms: Some(1_700_000_000_000),
+            intended_end_at_ms: Some(1_700_007_200_000),
+            remaining_ms: 4_800_000,
+            blocked_apps: vec!["com.apple.Safari".into()],
+            allowed_apps: vec![],
+            blocked_sites: vec![],
+            allowed_sites: vec!["docs.rs".into()],
+            recovery_status: "clean".into(),
+            last_checkpoint_ms: 1_700_002_400_000,
+            last_enforcement_at_ms: Some(1_700_002_400_000),
+        };
+        write_session_checkpoint(&path, Some("new-boot".into()), false, Some(summary.clone()))
+            .unwrap();
+        let loaded = read_checkpoint(&path).unwrap();
+        assert_eq!(loaded.active_session, Some(summary));
+        // Clean atomic rename leaves no dangling temp files.
+        let temps: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(temps.is_empty());
     }
 }

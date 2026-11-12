@@ -10,6 +10,7 @@ import {
   formatDateTime,
   formatHMS,
   isLiveSessionStatus,
+  liveTimeStats,
   resolveAppName,
   scheduledEndMs,
   sessionTypeLabel,
@@ -85,6 +86,14 @@ export function ActiveSessionDetailsModal({
         : 'Preparing';
   const statusPill = session.status === 'running' ? 'ok' : 'warn';
   const apps = workAppIds(focus);
+  // Live focus totals: the engine credits productive time and
+  // fills the attention buckets on every tick while the session
+  // runs, and the store refreshes every second, so these move
+  // live. Only meaningful when focus checks are on — a
+  // timer-only session has no focus data, so the section is
+  // omitted for it, like every other unconfigured row here.
+  const showTimeSoFar = focus?.attention?.enabled === true;
+  const timeStats = liveTimeStats(session);
   const blockedFolders = focus?.blocked_folders ?? [];
   const blockedTitles = focus?.blocked_titles ?? [];
   const websiteMode = effectiveWebsiteBlocking(focus);
@@ -180,6 +189,18 @@ export function ActiveSessionDetailsModal({
             </p>
           )}
         </section>
+
+        {showTimeSoFar && (
+          <section className="detail-block" aria-label="Time so far">
+            <h4>Time so far</h4>
+            <div className="report-metrics">
+              <span>Focused {countdown(timeStats.focusedMs)}</span>
+              <span>Distracted {countdown(timeStats.distractedMs)}</span>
+              <span>Away {countdown(timeStats.awayMs)}</span>
+              <span>Total {countdown(timeStats.totalMs)}</span>
+            </div>
+          </section>
+        )}
 
         <section className="detail-block" aria-label="Selected apps">
           <h4>Selected apps</h4>
@@ -287,7 +308,7 @@ export function ActiveSessionDetailsModal({
           </section>
         )}
 
-        {yt.mode !== 'none' && (
+        {(yt.mode !== 'none' || yt.entertainment) && (
           <section className="detail-block" aria-label="YouTube restrictions">
             <h4>YouTube restrictions</h4>
             {yt.mode === 'study' && (
@@ -333,6 +354,12 @@ export function ActiveSessionDetailsModal({
                   ))}
                 </ul>
               </>
+            )}
+            {yt.entertainment && (
+              <p className="small">
+                Entertainment content (comedy, pranks, vlogs, funny/animal
+                clips) is blocked.
+              </p>
             )}
             {yt.watchLater && (
               <p className="small muted">Watch Later exception is enabled.</p>

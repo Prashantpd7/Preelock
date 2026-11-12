@@ -202,6 +202,7 @@ mod tests {
             attention: Default::default(),
             force_quit: false,
             schedule_id: None,
+            kind: crate::models::SessionKind::Focus,
             pomodoro: Default::default(),
             reward: Default::default(),
             lock: Default::default(),
@@ -209,6 +210,8 @@ mod tests {
             policy_applied: false,
             browser_fail_closed: false,
             grace_until_ms: None,
+            grace_notified: false,
+            durability: Default::default(),
         };
         one.report.distracting_ms = 60_000;
         let (productive, distracted, total, completed) = sessions_summary(&[one]);

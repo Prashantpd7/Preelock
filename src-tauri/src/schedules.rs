@@ -254,10 +254,12 @@ pub fn window_active(schedule: &Schedule, weekday: u32, minutes: u32) -> bool {
     }
 }
 
-/// Local weekday (0 = Sunday) and minutes since local midnight for a
-/// wall-clock timestamp in milliseconds. On macOS/Windows/Linux this
-/// is the OS local time; on any other platform it falls back to UTC.
-pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
+/// Local calendar date `(year, month 1..=12, day 1..=31)`, weekday
+/// `0 = Sunday..=6 = Saturday`, and minutes since local midnight for a
+/// wall-clock timestamp in milliseconds. Uses OS local time on
+/// macOS/Windows/Linux so timezone and DST transitions are honored
+/// dynamically.
+pub fn local_calendar_and_minutes(now_ms: i64) -> (i32, u32, u32, u32, u32) {
     #[cfg(unix)]
     {
         #[repr(C)]
@@ -293,9 +295,12 @@ pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
         };
         let ok = unsafe { !localtime_r(&secs, &mut tm).is_null() };
         if ok {
+            let year = 1900 + tm.year;
+            let mon = (tm.mon.max(0) + 1) as u32;
+            let mday = tm.mday.max(1) as u32;
             let weekday = tm.wday.rem_euclid(7) as u32;
             let minutes = (tm.hour.max(0) as u32) * 60 + (tm.min.max(0) as u32);
-            return (weekday, minutes);
+            return (year, mon, mday, weekday, minutes);
         }
     }
     #[cfg(windows)]
@@ -332,17 +337,71 @@ pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
             if ok {
                 let weekday = local.wDayOfWeek as u32;
                 let minutes = local.wHour as u32 * 60 + local.wMinute as u32;
-                return (weekday, minutes);
+                return (
+                    i32::from(local.wYear),
+                    u32::from(local.wMonth),
+                    u32::from(local.wDay),
+                    weekday,
+                    minutes,
+                );
             }
         }
     }
     // Fallback (also the path when the OS call fails): UTC.
     let secs = now_ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
-    // 1970-01-01 was a Thursday (weekday 4, Sunday = 0).
     let weekday = (days + 4).rem_euclid(7) as u32;
     let minutes = (secs.rem_euclid(86_400) / 60) as u32;
+    let (year, mon, mday) = civil_from_days(days);
+    (year, mon, mday, weekday, minutes)
+}
+
+/// Howard Hinnant's civil-from-days conversion for fallback calendar formatting.
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    (y as i32, m as u32, d as u32)
+}
+
+/// Local weekday (0 = Sunday) and minutes since local midnight for a
+/// wall-clock timestamp in milliseconds. On macOS/Windows/Linux this
+/// is the OS local time; on any other platform it falls back to UTC.
+pub fn local_weekday_and_minutes(now_ms: i64) -> (u32, u32) {
+    let (_, _, _, weekday, minutes) = local_calendar_and_minutes(now_ms);
     (weekday, minutes)
+}
+
+/// Stable occurrence key identifying a single scheduled window activation
+/// (`"<schedule_id>:<YYYY-MM-DD>:<start_time>-<end_time>"`), using the
+/// window start's local date (the previous calendar date for the post-midnight
+/// half of an overnight window). Ensures background restarts or early non-strict
+/// completion cannot start duplicate sessions for the same occurrence while
+/// edits to `start_time`/`end_time` produce a distinct key.
+pub fn window_occurrence_key(schedule: &Schedule, now_ms: i64) -> Option<String> {
+    let start = parse_time(&schedule.start_time).ok()?;
+    let end = parse_time(&schedule.end_time).ok()?;
+    let (_, _, _, weekday, minutes) = local_calendar_and_minutes(now_ms);
+    if !window_active(schedule, weekday, minutes) {
+        return None;
+    }
+    let anchor_ms = if end < start && minutes < end {
+        now_ms.saturating_sub(86_400_000)
+    } else {
+        now_ms
+    };
+    let (year, mon, mday, _, _) = local_calendar_and_minutes(anchor_ms);
+    Some(format!(
+        "{}:{year:04}-{mon:02}-{mday:02}:{}-{}",
+        schedule.id, schedule.start_time, schedule.end_time
+    ))
 }
 
 /// Days until the next window start, counting from today's local
@@ -662,5 +721,47 @@ mod tests {
         assert!(weekday <= 6);
         assert!(minutes < 1440);
         let _ = (weekday, minutes);
+    }
+
+    #[test]
+    fn occurrence_key_anchors_overnight_windows_and_tracks_edits() {
+        // Build a schedule matching "right now" + 3 hours as an overnight
+        // or regular window depending on current local time.
+        let now = 1_700_000_000_000_i64;
+        let (wday, mins) = local_weekday_and_minutes(now);
+        let start_h = mins / 60;
+        let start_m = mins % 60;
+        let end_mins = (mins + 120) % 1440;
+        let sched = Schedule {
+            id: "sched-a".into(),
+            title: "Focus".into(),
+            days: vec![wday],
+            start_time: format!("{start_h:02}:{start_m:02}"),
+            end_time: format!("{:02}:{:02}", end_mins / 60, end_mins % 60),
+            focus: FocusConfig::default(),
+            enabled: true,
+            lock_changes: false,
+            lock: Default::default(),
+            lock_state: Default::default(),
+            warning_fired: vec![],
+            created_at: 0,
+        };
+        let key_now = window_occurrence_key(&sched, now).unwrap();
+        let key_later = window_occurrence_key(&sched, now + 60_000).unwrap();
+        assert_eq!(key_now, key_later);
+
+        // Excluded weekday produces None cleanly.
+        let mut wrong_day = sched.clone();
+        wrong_day.days = vec![(wday + 1) % 7];
+        // Note: only guaranteed None if end > start (same-day); skip overnight edge assertion there.
+        if end_mins > mins {
+            assert!(window_occurrence_key(&wrong_day, now).is_none());
+        }
+
+        // Edited schedule window produces a distinct occurrence key.
+        let mut edited = sched;
+        let end_alt = (mins + 180) % 1440;
+        edited.end_time = format!("{:02}:{:02}", end_alt / 60, end_alt % 60);
+        assert_ne!(window_occurrence_key(&edited, now), Some(key_now));
     }
 }

@@ -9,27 +9,29 @@ import { ANALYTICS_RANGES, type AnalyticsRange } from '../services/analytics';
 import {
   ACTIVITY_SECTIONS,
   inDateRange,
-  isLiveSessionStatus,
+  isHistoricalSession,
+  isOneShotSession,
   type ActivitySection,
 } from '../services/activitySection';
+import type { Allowance } from '../types';
 type ActivityProps = {
   /** Which section the dropdown shows. Owned by the Focus Sessions
    *  page so the cards and the dropdown stay in sync. */
   section: ActivitySection;
   onSectionChange: (section: ActivitySection) => void;
-  /** Open the session wizard in schedule / one-shot mode. */
+  /** Open the creation/edit forms in the top Focus Sessions area. */
   onNewSchedule: () => void;
   onNewOneShot: () => void;
-  /** Increment to open the New allowance form in the Allowances
-   *  section (used by the Allowances card's button). */
-  allowanceFormSignal: number;
+  onNewAllowance: () => void;
+  onEditAllowance: (allowance: Allowance) => void;
 };
 export function Activity({
   section,
   onSectionChange,
   onNewSchedule,
   onNewOneShot,
-  allowanceFormSignal,
+  onNewAllowance,
+  onEditAllowance,
 }: ActivityProps) {
   const { setup, refresh } = useFocusSetup();
   const [range, setRange] = useState<AnalyticsRange>('all');
@@ -38,11 +40,7 @@ export function Activity({
   // preparing) stays in the active-session area and must never be
   // duplicated here as a historical entry.
   const sessions = useAppStore((s) => s.data.sessions)
-    .filter(
-      (s) =>
-        (s.started_at !== null || s.status === 'interrupted') &&
-        !isLiveSessionStatus(s.status),
-    )
+    .filter((s) => isHistoricalSession(s) && !isOneShotSession(s))
     .filter((s) => inDateRange(s.started_at, range, now))
     .slice()
     .reverse();
@@ -106,12 +104,15 @@ export function Activity({
           only="oneshots"
           range={range}
           onNewOneShot={onNewOneShot}
+          setup={setup}
+          onSetupRefresh={refresh}
         />
       ) : (
         <PlanningSections
           only="allowances"
           range={range}
-          allowanceFormSignal={allowanceFormSignal}
+          onNewAllowance={onNewAllowance}
+          onEditAllowance={onEditAllowance}
         />
       )}
     </>

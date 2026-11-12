@@ -34,10 +34,10 @@ local and CI builds cannot drift. Explicit script parameters still override it.
 | Value                  | Supplied                                  | Used as                                     |
 | ---------------------- | ----------------------------------------- | ------------------------------------------- |
 | Product name           | Preelock                                  | Display name, listing                       |
-| Identity Name          | `Prashantpd7.VYSTRIQ`                     | `Identity/@Name`                            |
+| Identity Name          | `Prashantpd7.Preelock`                    | `Identity/@Name`                            |
 | Publisher              | `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A` | `Identity/@Publisher`                       |
 | Publisher display name | `Prashantpd7`                             | `Properties/PublisherDisplayName`           |
-| Package Family Name    | `Prashantpd7.VYSTRIQ_jkzj39eszd2zgp`      | Informational; printed by `Get-AppxPackage` |
+| Package Family Name    | `Prashantpd7.Preelock_jkzj39eszd2zgp`     | Informational; printed by `Get-AppxPackage` |
 | Store ID               | `9NCZGZM843N5`                            | Store listing link                          |
 
 The Identity Name and Publisher must match Partner Center **character for
@@ -49,7 +49,7 @@ rejected by the Store, not silently accepted.
 publisher hash is 13 base32 characters (`..._8wekyb3d8bbwe`); the supplied value
 has 14. The PFN is not part of the package and does not affect this build, but
 confirm it after the first install:
-`Get-AppxPackage Prashantpd7.VYSTRIQ | Select-Object PackageFamilyName`.
+`Get-AppxPackage Prashantpd7.Preelock | Select-Object PackageFamilyName`.
 
 ### Still needed from the owner
 
@@ -178,7 +178,7 @@ To re-check an artifact later, including one downloaded from CI:
 
 ```powershell
 powershell -File scripts/verify-msix.ps1 -Package <path> `
-  -ExpectedIdentity "Prashantpd7.VYSTRIQ" `
+  -ExpectedIdentity "Prashantpd7.Preelock" `
   -ExpectedPublisher "CN=2A3BE073-2A0A-47AA-958D-9543D60D234A" `
   -ExpectedVersion 1.5.2.0 -ExpectedArchitecture x64
 ```
@@ -191,15 +191,15 @@ build:
 
 ```powershell
 powershell -File scripts/package-msix.ps1 -AllowPlaceholderIdentity `
-  -IdentityName "VYSTRIQ.LocalTest" -Publisher "CN=Preelock Local Test"
+  -IdentityName "Preelock.LocalTest" -Publisher "CN=Preelock Local Test"
 powershell -File scripts/sign-msix-dev.ps1 `
   -Package src-tauri/target/msix/Preelock_0.5.4_x64-validation.msix `
   -Subject "CN=Preelock Local Test" -TrustCertificate
 Add-AppxPackage -Path src-tauri/target/msix/Preelock_0.5.4_x64-validation.msix
-Get-AppxPackage VYSTRIQ.LocalTest | Select-Object PackageFullName, InstallLocation
+Get-AppxPackage Preelock.LocalTest | Select-Object PackageFullName, InstallLocation
 ```
 
-Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!VYSTRIQ`.
+Launch with Start, or `explorer.exe shell:AppsFolder\<PackageFamilyName>!Preelock`.
 Uninstall with `Remove-AppxPackage -Package <PackageFullName>`.
 
 Signing is for local testing only. Never distribute or upload a self-signed
@@ -221,7 +221,7 @@ Record actual results; do not infer them from CI.
 1. Clean Windows 10 1809+ and Windows 11 x64 machines, no Preelock data. Install
    the MSIX. Confirm no administrator prompt and no UAC elevation.
 2. Launch from Start. Confirm the window renders (WebView2 present) and a fresh
-   `vystriq.sqlite` is created with schema version 4.
+   `preelock.sqlite` is created with schema version 4.
 3. Create a task, a session, change a preference. Quit from the tray when idle.
    Reopen: data persists.
 4. Start a session, close the window (X / Alt+F4): the session must not end.

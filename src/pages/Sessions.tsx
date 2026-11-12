@@ -24,11 +24,13 @@ import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
 import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
 import type { ScheduleCreateFields } from '../components/ScheduleConfirmDialog';
 import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
+import { AllowanceForm } from '../components/AllowanceForm';
 import { Activity } from './Activity';
 import {
   cleanDomain,
   cleanYouTubeChannel,
   domainInputError,
+  isYouTubeBlockedByWebsiteRules,
   normalizeDomainInput,
   normalizeYouTubeChannelInput,
   youTubeChannelInputError,
@@ -37,6 +39,7 @@ import { useFocusSetup } from '../hooks/useFocusSetup';
 import {
   defaultFocus,
   sameBrowser,
+  type Allowance,
   type AttentionPolicy,
   type FocusConfig,
   type SavedSetup,
@@ -56,13 +59,14 @@ export function Sessions() {
   const [blockSitesError, setBlockSitesError] = useState('');
   const [ytBlocked, setYtBlocked] = useState('');
   const [ytBlockedError, setYtBlockedError] = useState('');
-  const [ytAllowed, setYtAllowed] = useState('');
-  const [ytAllowedError, setYtAllowedError] = useState('');
-  const [ytMode, setYtMode] = useState<'none' | 'block' | 'study'>('none');
-  const [ytWatchLater, setYtWatchLater] = useState(false);
-  const [blockModeOverride, setBlockModeOverride] = useState<
-    'none' | 'blocklist' | 'allowlist' | null
+  const [websiteEnabled, setWebsiteEnabled] = useState(false);
+  const [websiteSubMode, setWebsiteSubMode] = useState<
+    'blocklist' | 'allowlist' | null
   >(null);
+  const [ytEnabled, setYtEnabled] = useState(false);
+  const [ytBlockChannels, setYtBlockChannels] = useState(false);
+  const [ytBlockEntertainment, setYtBlockEntertainment] = useState(false);
+  const [ytWatchLater, setYtWatchLater] = useState(false);
   const [guide, setGuide] = useState(false),
     [rechecking, setRechecking] = useState(false),
     [problem, setProblem] = useState('');
@@ -83,17 +87,45 @@ export function Sessions() {
   // sticks across re-renders and data changes.
   const storeLoading = useAppStore((s) => s.loading);
   const [section, setSection] = useState<ActivitySection | null>(null);
-  const [allowanceFormSignal, setAllowanceFormSignal] = useState(0);
+  const [allowanceOpen, setAllowanceOpen] = useState(false);
+  const [editingAllowance, setEditingAllowance] = useState<Allowance | null>(
+    null,
+  );
   const defaultSectionApplied = useRef(false);
   useEffect(() => {
     if (defaultSectionApplied.current || storeLoading) return;
     defaultSectionApplied.current = true;
     setSection(defaultActivitySection(data));
   }, [storeLoading, data]);
+  function startNewAllowance() {
+    setCreating(false);
+    setEditingAllowance(null);
+    setAllowanceOpen(true);
+  }
+  function startEditAllowance(allowance: Allowance) {
+    setCreating(false);
+    setEditingAllowance(allowance);
+    setAllowanceOpen(true);
+  }
+  function closeAllowanceForm() {
+    setAllowanceOpen(false);
+    setEditingAllowance(null);
+  }
   function startWizard(mode: 'start' | 'schedule' | 'oneshot') {
+    closeAllowanceForm();
     setProblem('');
     setSafariNotice(false);
     setMinutes(data.preferences.default_minutes);
+    setWebsiteEnabled(false);
+    setWebsiteSubMode(null);
+    setBlockSites('');
+    setBlockSitesError('');
+    setYtEnabled(false);
+    setYtBlockChannels(false);
+    setYtBlockEntertainment(false);
+    setYtBlocked('');
+    setYtBlockedError('');
+    setYtWatchLater(false);
     setStep(0);
     setMaxStep(0);
     setWizardMode(mode);
@@ -139,8 +171,6 @@ export function Sessions() {
       focus: selected,
       enabled: fields.enabled,
       lock_changes: fields.lock_changes,
-      ...(fields.lock ? { lock: fields.lock } : {}),
-      ...(fields.lock_password ? { lock_password: fields.lock_password } : {}),
     });
     if (ok) resetWizard();
   }
@@ -178,7 +208,13 @@ export function Sessions() {
     )
       f.attention.verification = 'activity_only';
     f.camera = false;
-    f.activity_consent = false;
+    // Other apps are always blocked now: the wizard no longer offers
+    // the choice, and `selected` forces activity_consent on too, so a
+    // saved setup can never carry a false value into a session.
+    f.activity_consent = true;
+    // Same for the distraction grace: the wizard no longer offers the
+    // choice, so a saved setup can never carry a different value in.
+    if (f.attention) f.attention.grace_seconds = 10;
     setTitle(preset.name);
     setMinutes(preset.minutes);
     setFocus(f);
@@ -188,35 +224,22 @@ export function Sessions() {
     setBlockSitesError('');
     setYtBlocked((f.youtube_blocked_channels ?? []).join('\n'));
     setYtBlockedError('');
-    setYtAllowed((f.youtube_allowed_channels ?? []).join('\n'));
-    setYtAllowedError('');
-    setYtMode(
-      f.youtube_study_mode
-        ? 'study'
-        : (f.youtube_blocked_channels?.length ?? 0) > 0
-          ? 'block'
-          : 'none',
-    );
+    const hasBlockedChannels = (f.youtube_blocked_channels?.length ?? 0) > 0;
+    const hasEntertainment = !!f.youtube_block_entertainment;
+    setYtBlockChannels(hasBlockedChannels);
+    setYtBlockEntertainment(hasEntertainment);
+    setYtEnabled(hasBlockedChannels || hasEntertainment);
     setYtWatchLater(!!f.youtube_allow_watch_later);
-    // Channel rules live under website blocking too: a setup saved
-    // with only channel rules still opens the blocking section.
-    const hasYouTube =
-      (f.youtube_blocked_channels?.length ?? 0) > 0 ||
-      (f.youtube_allowed_channels?.length ?? 0) > 0 ||
-      !!f.youtube_study_mode ||
-      !!f.youtube_allow_watch_later;
-    if (savedDomains.length || hasYouTube) {
-      const wb = f.website_blocking ?? 'auto';
-      const effectiveWb = hasYouTube && wb === 'none' ? 'blocklist' : wb;
-      setBlockModeOverride(
-        effectiveWb === 'auto'
-          ? f.mode === 'strict'
-            ? 'allowlist'
-            : 'blocklist'
-          : effectiveWb,
-      );
+    const wb = f.website_blocking ?? 'auto';
+    if (wb === 'blocklist' || wb === 'allowlist') {
+      setWebsiteEnabled(true);
+      setWebsiteSubMode(wb);
+    } else if (wb === 'auto' && savedDomains.length > 0) {
+      setWebsiteEnabled(true);
+      setWebsiteSubMode(f.mode === 'strict' ? 'allowlist' : 'blocklist');
     } else {
-      setBlockModeOverride(f.mode === 'strict' ? 'allowlist' : null);
+      setWebsiteEnabled(false);
+      setWebsiteSubMode(null);
     }
     setStep(0);
     setMaxStep(0);
@@ -236,21 +259,33 @@ export function Sessions() {
   const updateAttention = (patch: Partial<AttentionPolicy>) =>
     setFocus((c) => ({ ...c, attention: { ...c.attention!, ...patch } }));
   const strict = focus.mode === 'strict';
-  // Website blocking choice. Defaults follow the session style unless the
-  // user picks an option explicitly.
-  const blockMode = blockModeOverride ?? (strict ? 'allowlist' : 'none');
-  const setBlockMode = (mode: 'none' | 'blocklist' | 'allowlist') =>
-    setBlockModeOverride(blockMode === mode ? 'none' : mode);
-  // YouTube channel rules mirror the website blocking choice: the two
-  // options are mutually exclusive, and unticking the active one clears
-  // the choice. Typed text is kept, so re-ticking restores it.
-  const setYtModeChoice = (mode: 'block' | 'study') =>
-    setYtMode(ytMode === mode ? 'none' : mode);
+  // Website blocking is unchecked by default; checking it reveals the two
+  // mutually-exclusive sub-options ('blocklist' / 'allowlist').
+  const blockMode: 'none' | 'blocklist' | 'allowlist' = websiteEnabled
+    ? (websiteSubMode ?? 'none')
+    : 'none';
+  const chooseWebsiteSubMode = (mode: 'blocklist' | 'allowlist') =>
+    setWebsiteSubMode(websiteSubMode === mode ? null : mode);
+  const watchLaterAvailable = isYouTubeBlockedByWebsiteRules(
+    blockMode,
+    blockSites,
+  );
+  const activeYtBlockChannels = ytEnabled && ytBlockChannels;
+  const activeYtEntertainment = ytEnabled && ytBlockEntertainment;
   const { setup, error, loading, refresh } = useFocusSetup(
     focus.browser_app || undefined,
   );
   const browsers = setup?.browsers ?? [];
-  const browserId = focus.browser_app || browsers[0]?.id || '';
+  const needsBrowser = websiteEnabled || ytEnabled || !focus.general_internet;
+  const connectedBrowser = setup?.connected_browsers?.[0];
+  const preferredBrowserId =
+    connectedBrowser &&
+    browsers.some((b) => sameBrowser(b.id, connectedBrowser))
+      ? (browsers.find((b) => sameBrowser(b.id, connectedBrowser))?.id ??
+        connectedBrowser)
+      : browsers[0]?.id || '';
+  const browserId =
+    focus.browser_app || (needsBrowser ? preferredBrowserId : '');
   // "Connected" counts only when the paired extension reports that it
   // lives in the browser picked above. A connection from another browser —
   // or one that cannot say which browser it is in — does not count.
@@ -265,6 +300,10 @@ export function Sessions() {
     // both off (a saved setup could still carry them enabled).
     reward: { ...defaultFocus.reward!, enabled: false },
     frozen: { ...defaultFocus.frozen!, enabled: false },
+    // The "Block all other apps" choice is gone from the wizard: other
+    // apps are always blocked, so force consent on (a saved setup
+    // could still carry it off).
+    activity_consent: true,
     apps: strict ? workApps : focus.apps,
     blocked_folders: [],
     blocked_titles: [],
@@ -280,32 +319,29 @@ export function Sessions() {
             return cleaned ? [cleaned] : [];
           })
         : [],
-    // YouTube channel rules: the block list is not submitted in
-    // study mode (the allowed list decides what plays), but its
-    // textarea state is kept, so turning study mode off restores
-    // what was typed.
-    youtube_blocked_channels:
-      blockMode !== 'none' && ytMode === 'block'
-        ? splitDomains(ytBlocked).flatMap((entry) => {
-            const cleaned = cleanYouTubeChannel(entry);
-            return cleaned ? [cleaned] : [];
-          })
-        : [],
-    youtube_allowed_channels:
-      blockMode !== 'none' && ytMode === 'study'
-        ? splitDomains(ytAllowed).flatMap((entry) => {
-            const cleaned = cleanYouTubeChannel(entry);
-            return cleaned ? [cleaned] : [];
-          })
-        : [],
-    youtube_study_mode: blockMode !== 'none' && ytMode === 'study',
-    youtube_allow_watch_later: blockMode !== 'none' && ytWatchLater,
+    // YouTube channel and entertainment rules are controlled by the
+    // independent YouTube blocking section; Watch Later is controlled by
+    // whether Website blocking currently blocks YouTube.
+    youtube_blocked_channels: activeYtBlockChannels
+      ? splitDomains(ytBlocked).flatMap((entry) => {
+          const cleaned = cleanYouTubeChannel(entry);
+          return cleaned ? [cleaned] : [];
+        })
+      : [],
+    youtube_allowed_channels: [],
+    youtube_study_mode: false,
+    youtube_block_entertainment: activeYtEntertainment,
+    youtube_allow_watch_later: watchLaterAvailable && ytWatchLater,
     website_blocking: blockMode,
     camera:
       setup?.platform !== 'windows' &&
       attention.verification === 'camera_and_activity',
     attention: {
       ...attention,
+      // The "Wait before labeling a distraction" choice is gone from
+      // the wizard: always use the old default of 10 seconds (a saved
+      // setup could still carry a different value).
+      grace_seconds: 10,
       verification:
         setup?.platform === 'windows'
           ? 'activity_only'
@@ -426,23 +462,25 @@ export function Sessions() {
         title="Focus Sessions"
         description="Choose a task. Pick your work apps. Start focusing."
       />
-      {!creating && !!data.preferences.saved_setups?.length && (
-        <div className="saved-setup-picker">
-          <h2>Saved setups</h2>
-          <div className="row controls">
-            {data.preferences.saved_setups.map((p) => (
-              <button
-                className="secondary"
-                key={p.id}
-                onClick={() => applySavedSetup(p)}
-              >
-                {p.name}
-                <span className="small muted">{p.minutes} min</span>
-              </button>
-            ))}
+      {!creating &&
+        !allowanceOpen &&
+        !!data.preferences.saved_setups?.length && (
+          <div className="saved-setup-picker">
+            <h2>Saved setups</h2>
+            <div className="row controls">
+              {data.preferences.saved_setups.map((p) => (
+                <button
+                  className="secondary"
+                  key={p.id}
+                  onClick={() => applySavedSetup(p)}
+                >
+                  {p.name}
+                  <span className="small muted">{p.minutes} min</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
       {creating ? (
         <>
           <div className="page-back">
@@ -471,19 +509,19 @@ export function Sessions() {
                 setMaxStep(1);
                 return;
               }
-              // In blocklist mode a channel rule counts as a rule too:
-              // a block-listed channel, or study mode on its own
-              // (which blocks every channel until one is allowed).
-              // Allowlist mode still needs a domain list.
-              const hasYouTubeRule = ytBlocked.trim() || ytMode === 'study';
+              if (websiteEnabled && !websiteSubMode) {
+                setProblem(
+                  'Choose a website blocking option below, or uncheck Website blocking.',
+                );
+                return;
+              }
               if (
                 selected.general_internet &&
                 blockMode !== 'none' &&
-                !blockSites.trim() &&
-                !(blockMode === 'blocklist' && hasYouTubeRule)
+                !blockSites.trim()
               ) {
                 setProblem(
-                  'Add at least one website above, or turn off website blocking.',
+                  'Add at least one website below, or turn off website blocking.',
                 );
                 return;
               }
@@ -500,25 +538,26 @@ export function Sessions() {
                 setProblem(`Invalid website: ${badEntry}`);
                 return;
               }
-              // Guards on the channel lists actually submitted.
-              const badBlocked =
-                blockMode !== 'none' && ytMode === 'block'
-                  ? splitDomains(ytBlocked).find(
-                      (entry) => cleanYouTubeChannel(entry) === null,
-                    )
-                  : undefined;
-              if (badBlocked) {
-                setProblem(`Invalid YouTube channel: ${badBlocked}`);
+              if (ytEnabled && !ytBlockChannels && !ytBlockEntertainment) {
+                setProblem(
+                  'Choose a YouTube blocking option below, or uncheck YouTube blocking.',
+                );
                 return;
               }
-              const badAllowed =
-                blockMode !== 'none' && ytMode === 'study'
-                  ? splitDomains(ytAllowed).find(
-                      (entry) => cleanYouTubeChannel(entry) === null,
-                    )
-                  : undefined;
-              if (badAllowed) {
-                setProblem(`Invalid YouTube channel: ${badAllowed}`);
+              if (activeYtBlockChannels && !ytBlocked.trim()) {
+                setProblem(
+                  'Add at least one YouTube channel below, or uncheck Block these channels.',
+                );
+                return;
+              }
+              // Guards on the channel lists actually submitted.
+              const badBlocked = activeYtBlockChannels
+                ? splitDomains(ytBlocked).find(
+                    (entry) => cleanYouTubeChannel(entry) === null,
+                  )
+                : undefined;
+              if (badBlocked) {
+                setProblem(`Invalid YouTube channel: ${badBlocked}`);
                 return;
               }
               // Safari can never enforce this session's website rules:
@@ -770,6 +809,12 @@ export function Sessions() {
                           }
                           if (e.target.checked && isBrowser) {
                             update({ browser_app: app.id });
+                          } else if (
+                            !e.target.checked &&
+                            isBrowser &&
+                            focus.browser_app === app.id
+                          ) {
+                            update({ browser_app: '' });
                           }
                         }}
                       />
@@ -850,189 +895,189 @@ export function Sessions() {
                     </p>
                   )}
                   <div className="blocking-section">
-                    <p className="blocking-heading">Website blocking</p>
                     <label className="blocking-option">
                       <input
                         type="checkbox"
-                        checked={blockMode === 'blocklist'}
-                        onChange={() => setBlockMode('blocklist')}
+                        checked={websiteEnabled}
+                        onChange={(e) => setWebsiteEnabled(e.target.checked)}
                       />
-                      <strong>Block distracting websites</strong>
+                      <strong>Website blocking</strong>
                     </label>
-                    {blockMode === 'blocklist' && (
-                      <>
-                        <textarea
-                          rows={3}
-                          className="blocking-sites"
-                          aria-label="Websites to block"
-                          value={blockSites}
-                          onChange={(e) => {
-                            setBlockSites(e.target.value);
-                            setBlockSitesError(
-                              domainInputError(e.target.value),
-                            );
-                          }}
-                          onBlur={() => {
-                            const next = normalizeDomainInput(blockSites);
-                            setBlockSites(next.text);
-                            setBlockSitesError(domainInputError(next.text));
-                          }}
-                          placeholder={
-                            'youtube.com\ninstagram.com\nfacebook.com'
-                          }
-                        />
-                        <p className="small muted">
-                          One per line. These websites will be blocked during
-                          the session.
-                        </p>
-                        {blockSitesError && (
-                          <p className="error small" role="alert">
-                            {blockSitesError}
-                          </p>
+                    {websiteEnabled && (
+                      <div className="blocking-suboptions">
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={websiteSubMode === 'blocklist'}
+                            onChange={() => chooseWebsiteSubMode('blocklist')}
+                          />
+                          <strong>Block distracting websites</strong>
+                        </label>
+                        {websiteSubMode === 'blocklist' && (
+                          <>
+                            <textarea
+                              rows={3}
+                              className="blocking-sites"
+                              aria-label="Websites to block"
+                              value={blockSites}
+                              onChange={(e) => {
+                                setBlockSites(e.target.value);
+                                setBlockSitesError(
+                                  domainInputError(e.target.value),
+                                );
+                              }}
+                              onBlur={() => {
+                                const next = normalizeDomainInput(blockSites);
+                                setBlockSites(next.text);
+                                setBlockSitesError(domainInputError(next.text));
+                              }}
+                              placeholder={
+                                'youtube.com\ninstagram.com\nfacebook.com'
+                              }
+                            />
+                            <p className="small muted">
+                              One per line. These websites will be blocked
+                              during the session.
+                            </p>
+                            {blockSitesError && (
+                              <p className="error small" role="alert">
+                                {blockSitesError}
+                              </p>
+                            )}
+                          </>
                         )}
-                      </>
-                    )}
-                    <label className="blocking-option">
-                      <input
-                        type="checkbox"
-                        checked={blockMode === 'allowlist'}
-                        onChange={() => setBlockMode('allowlist')}
-                      />
-                      <strong>Block all websites except these</strong>
-                    </label>
-                    {blockMode === 'allowlist' && (
-                      <>
-                        <textarea
-                          rows={3}
-                          className="blocking-sites"
-                          aria-label="Websites to keep open"
-                          value={blockSites}
-                          onChange={(e) => {
-                            setBlockSites(e.target.value);
-                            setBlockSitesError(
-                              domainInputError(e.target.value),
-                            );
-                          }}
-                          onBlur={() => {
-                            const next = normalizeDomainInput(blockSites);
-                            setBlockSites(next.text);
-                            setBlockSitesError(domainInputError(next.text));
-                          }}
-                          placeholder={
-                            'github.com\nstackoverflow.com\ndocs.python.org'
-                          }
-                        />
-                        <p className="small muted">
-                          One per line. Only these websites stay open —
-                          everything else is blocked.
-                        </p>
-                        {blockSitesError && (
-                          <p className="error small" role="alert">
-                            {blockSitesError}
-                          </p>
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={websiteSubMode === 'allowlist'}
+                            onChange={() => chooseWebsiteSubMode('allowlist')}
+                          />
+                          <strong>Block all websites except these</strong>
+                        </label>
+                        {websiteSubMode === 'allowlist' && (
+                          <>
+                            <textarea
+                              rows={3}
+                              className="blocking-sites"
+                              aria-label="Websites to keep open"
+                              value={blockSites}
+                              onChange={(e) => {
+                                setBlockSites(e.target.value);
+                                setBlockSitesError(
+                                  domainInputError(e.target.value),
+                                );
+                              }}
+                              onBlur={() => {
+                                const next = normalizeDomainInput(blockSites);
+                                setBlockSites(next.text);
+                                setBlockSitesError(domainInputError(next.text));
+                              }}
+                              placeholder={
+                                'github.com\nstackoverflow.com\ndocs.python.org'
+                              }
+                            />
+                            <p className="small muted">
+                              One per line. Only these websites stay open —
+                              everything else is blocked.
+                            </p>
+                            {blockSitesError && (
+                              <p className="error small" role="alert">
+                                {blockSitesError}
+                              </p>
+                            )}
+                          </>
                         )}
-                      </>
+                        {watchLaterAvailable && (
+                          <label className="blocking-option">
+                            <input
+                              type="checkbox"
+                              checked={ytWatchLater}
+                              onChange={(e) =>
+                                setYtWatchLater(e.target.checked)
+                              }
+                            />
+                            <strong>
+                              Allow Watch Later playlist when YouTube is blocked
+                            </strong>
+                          </label>
+                        )}
+                      </div>
                     )}
                   </div>
-                  {blockMode !== 'none' && (
-                    <div className="blocking-section">
-                      <p className="blocking-heading">YouTube blocking</p>
-                      <label className="blocking-option">
-                        <input
-                          type="checkbox"
-                          checked={ytMode === 'block'}
-                          onChange={() => setYtModeChoice('block')}
-                        />
-                        <strong>Block these channels</strong>
-                      </label>
-                      {ytMode === 'block' && (
-                        <>
-                          <textarea
-                            rows={3}
-                            className="blocking-sites"
-                            aria-label="Channels to block"
-                            value={ytBlocked}
-                            onChange={(e) => {
-                              setYtBlocked(e.target.value);
-                              setYtBlockedError(
-                                youTubeChannelInputError(e.target.value),
-                              );
-                            }}
-                            onBlur={() => {
-                              const next =
-                                normalizeYouTubeChannelInput(ytBlocked);
-                              setYtBlocked(next.text);
-                              setYtBlockedError(
-                                youTubeChannelInputError(next.text),
-                              );
-                            }}
-                            placeholder={'@mkbhd\n@veritasium'}
+                  <div className="blocking-section">
+                    <label className="blocking-option">
+                      <input
+                        type="checkbox"
+                        checked={ytEnabled}
+                        onChange={(e) => setYtEnabled(e.target.checked)}
+                      />
+                      <strong>YouTube blocking</strong>
+                    </label>
+                    {ytEnabled && (
+                      <div className="blocking-suboptions">
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytBlockChannels}
+                            onChange={(e) =>
+                              setYtBlockChannels(e.target.checked)
+                            }
                           />
-                          <p className="small muted">
-                            One per line. Videos from these channels will not
-                            play.
-                          </p>
-                          {ytBlockedError && (
-                            <p className="error small" role="alert">
-                              {ytBlockedError}
+                          <strong>Block these channels</strong>
+                        </label>
+                        {ytBlockChannels && (
+                          <>
+                            <textarea
+                              rows={3}
+                              className="blocking-sites"
+                              aria-label="Channels to block"
+                              value={ytBlocked}
+                              onChange={(e) => {
+                                setYtBlocked(e.target.value);
+                                setYtBlockedError(
+                                  youTubeChannelInputError(e.target.value),
+                                );
+                              }}
+                              onBlur={() => {
+                                const next =
+                                  normalizeYouTubeChannelInput(ytBlocked);
+                                setYtBlocked(next.text);
+                                setYtBlockedError(
+                                  youTubeChannelInputError(next.text),
+                                );
+                              }}
+                              placeholder={'@mkbhd\n@veritasium'}
+                            />
+                            <p className="small muted">
+                              One per line. Videos from these channels will not
+                              play.
                             </p>
-                          )}
-                        </>
-                      )}
-                      <label className="blocking-option">
-                        <input
-                          type="checkbox"
-                          checked={ytMode === 'study'}
-                          onChange={() => setYtModeChoice('study')}
-                        />
-                        <strong>Block all except these</strong>
-                      </label>
-                      {ytMode === 'study' && (
-                        <>
-                          <textarea
-                            rows={3}
-                            className="blocking-sites"
-                            aria-label="Allowed channels"
-                            value={ytAllowed}
-                            onChange={(e) => {
-                              setYtAllowed(e.target.value);
-                              setYtAllowedError(
-                                youTubeChannelInputError(e.target.value),
-                              );
-                            }}
-                            onBlur={() => {
-                              const next =
-                                normalizeYouTubeChannelInput(ytAllowed);
-                              setYtAllowed(next.text);
-                              setYtAllowedError(
-                                youTubeChannelInputError(next.text),
-                              );
-                            }}
-                            placeholder={'@khanacademy\n@freecodecamp'}
+                            {ytBlockedError && (
+                              <p className="error small" role="alert">
+                                {ytBlockedError}
+                              </p>
+                            )}
+                          </>
+                        )}
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytBlockEntertainment}
+                            onChange={(e) =>
+                              setYtBlockEntertainment(e.target.checked)
+                            }
                           />
+                          <strong>Block all entertainment content</strong>
+                        </label>
+                        {ytBlockEntertainment && (
                           <p className="small muted">
-                            One per line. Only these channels will play.
+                            Blocks comedy, pranks, vlogs, funny clips, animal
+                            vlogs, gaming, music, and Shorts on YouTube.
                           </p>
-                          {ytAllowedError && (
-                            <p className="error small" role="alert">
-                              {ytAllowedError}
-                            </p>
-                          )}
-                        </>
-                      )}
-                      <label className="blocking-option">
-                        <input
-                          type="checkbox"
-                          checked={ytWatchLater}
-                          onChange={(e) => setYtWatchLater(e.target.checked)}
-                        />
-                        <strong>
-                          Allow Watch Later playlist even when YouTube is
-                          blocked
-                        </strong>
-                      </label>
-                    </div>
-                  )}
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -1075,24 +1120,6 @@ export function Sessions() {
                       </div>
                     </div>
                   )}
-                <div className="setup-guide">
-                  <label>
-                    Wait before labeling a distraction
-                    <Dropdown
-                      value={String(attention.grace_seconds)}
-                      onChange={(value) =>
-                        updateAttention({
-                          grace_seconds: Number(value),
-                        })
-                      }
-                      options={[
-                        { value: '3', label: '3 seconds' },
-                        { value: '10', label: '10 seconds (recommended)' },
-                        { value: '20', label: '20 seconds' },
-                      ]}
-                    />
-                  </label>
-                </div>
               </>
             )}
             {step === 2 && (
@@ -1177,18 +1204,6 @@ export function Sessions() {
               </div>
             )}
 
-            {step === 2 && (
-              <label className="check-label block-apps">
-                <input
-                  type="checkbox"
-                  checked={focus.activity_consent}
-                  onChange={(e) =>
-                    update({ activity_consent: e.target.checked })
-                  }
-                />
-                Block all other apps during this session
-              </label>
-            )}
             {(visibleProblem || error) && (
               <p className="error notice" role="alert">
                 {visibleProblem || error}
@@ -1206,6 +1221,28 @@ export function Sessions() {
             </div>
           </form>
         </>
+      ) : allowanceOpen ? (
+        <>
+          <div className="page-back">
+            <button
+              type="button"
+              className="secondary"
+              onClick={closeAllowanceForm}
+            >
+              <ArrowLeft size={16} />
+              Back
+            </button>
+          </div>
+          <AllowanceForm
+            key={editingAllowance?.id ?? 'new'}
+            editing={editingAllowance}
+            onSaved={() => {
+              closeAllowanceForm();
+              setSection('allowances');
+            }}
+            onCancel={closeAllowanceForm}
+          />
+        </>
       ) : (
         <div className="focus-planning-grid">
           <div className="panel focus-planning-card">
@@ -1213,7 +1250,7 @@ export function Sessions() {
               <Timer size={20} />
             </span>
             <div className="section-heading section-start">
-              <h2>Start a new focus session</h2>
+              <h2>Start instant focus session</h2>
             </div>
             <p className="small muted section-desc">
               Choose what matters, set your time, and give it your full
@@ -1269,16 +1306,10 @@ export function Sessions() {
               <h2>Allowances</h2>
             </div>
             <p className="small muted section-desc">
-              Daily or weekly time budgets. Blocks always lift on reset.
+              Daily or weekly time allowances. Blocks always lift on reset.
             </p>
             <div className="row controls">
-              <button
-                type="button"
-                onClick={() => {
-                  setSection('allowances');
-                  setAllowanceFormSignal((n) => n + 1);
-                }}
-              >
+              <button type="button" onClick={startNewAllowance}>
                 <Plus size={16} />
                 New allowance
               </button>
@@ -1291,7 +1322,8 @@ export function Sessions() {
         onSectionChange={setSection}
         onNewSchedule={() => startWizard('schedule')}
         onNewOneShot={() => startWizard('oneshot')}
-        allowanceFormSignal={allowanceFormSignal}
+        onNewAllowance={startNewAllowance}
+        onEditAllowance={startEditAllowance}
       />
       {safariNotice && creating && (
         <SafariBrowserNotice
@@ -1320,6 +1352,10 @@ export function Sessions() {
           safariWarning={safariSelected && extensionNeeded}
           onStart={() => void confirmStartSession()}
           onCancel={resetWizard}
+          onConnectBrowser={() => {
+            setConfirmOpen(false);
+            setGuide(true);
+          }}
         />
       )}
       {scheduleConfirmOpen && (

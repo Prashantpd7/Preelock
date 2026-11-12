@@ -77,7 +77,7 @@ from, and reopens, the GUI executable (`launch::gui_executable`).
   must not — and does not — use them (`platform::packaging`).
 - **Startup:** two `desktop:startupTask` extensions in
   `windows/msix/AppxManifest.xml.template`, both `Enabled="false"`
-  (opt-in only): `VYSTRIQ` → `Preelock.exe` (main window) and
+  (opt-in only): `Preelock` → `Preelock.exe` (main window) and
   `PreelockBackground` → `PreelockBackground.exe` (background).
   The background copy is the same binary staged under a different
   name by `scripts/package-msix.ps1`; `scripts/verify-msix.ps1`

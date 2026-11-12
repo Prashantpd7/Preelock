@@ -98,8 +98,10 @@ async function openAppsStep(entry: RegExp = /New session/) {
   await screen.findByLabelText('Safari');
 }
 
-const enableWebsiteBlocking = () =>
+const enableWebsiteBlocking = () => {
+  fireEvent.click(screen.getByLabelText('Website blocking'));
   fireEvent.click(screen.getByLabelText('Block distracting websites'));
+};
 const selectSafari = () => fireEvent.click(screen.getByLabelText('Safari'));
 
 describe('Safari is refused for session website blocking', () => {

@@ -3,6 +3,8 @@
 Var PreelockLegacyInstall
 Var PreelockLegacyRun
 !macro NSIS_HOOK_PREINSTALL
+  nsExec::Exec 'schtasks.exe /End /TN "PreelockBackground"'
+  Pop $0
   nsExec::Exec 'taskkill /F /IM preelock.exe /T'
   Pop $0
   Sleep 300
@@ -42,21 +44,35 @@ Var PreelockLegacyRun
     ; The new installer has already written the replacement uninstall record.
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\VYSTRIQ"
   ${EndIf}
+  ; Start or resume the independent background supervisor immediately so any
+  ; active session or recurring schedules continue across updates/installs.
+  ${If} ${FileExists} "$INSTDIR\preelock.exe"
+    Exec '"$INSTDIR\preelock.exe" --background'
+  ${EndIf}
 !macroend
 
-; M7: uninstall must not leave startup registrations behind. The
-; app writes both Run values itself at runtime (the "Preelock"
-; open-at-login value and the "Preelock Background" tracker value),
-; and Tauri's NSIS uninstaller only removes what the installer
-; wrote — so without this hook an uninstall left Windows trying to
-; launch a deleted exe at every sign-in. DeleteRegValue is a no-op
-; when a value is already absent. User data is untouched: the
-; database, pairing token and settings live under AppData and the
-; uninstaller never removes them (see scripts/smoke-windows.ps1).
+; M7: uninstall must refuse while a strict focus session is active, and when
+; permitted must not leave startup registrations or scheduled tasks behind.
+; The app writes Run values and the PreelockBackground Scheduled Task at
+; runtime; user data under AppData (database, lifecycle checkpoint, pairing
+; token, settings) is intentionally untouched (see scripts/smoke-windows.ps1).
 !macro NSIS_HOOK_PREUNINSTALL
+  ${If} ${FileExists} "$INSTDIR\preelock.exe"
+    nsExec::ExecToStack '"$INSTDIR\preelock.exe" --check-uninstall'
+    Pop $0
+    Pop $1
+    ${If} $0 == 2
+      MessageBox MB_ICONSTOP|MB_OK "Preelock cannot be uninstalled while a strict focus session is active. Complete the focus session before uninstalling." /SD IDOK
+      Abort
+    ${EndIf}
+  ${EndIf}
+  nsExec::Exec 'schtasks.exe /End /TN "PreelockBackground"'
+  Pop $0
   nsExec::Exec 'taskkill /F /IM preelock.exe /T'
   Pop $0
   Sleep 300
+  nsExec::Exec 'schtasks.exe /Delete /TN "PreelockBackground" /F'
+  Pop $0
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Preelock Background"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "VYSTRIQ"

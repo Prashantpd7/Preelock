@@ -12,6 +12,7 @@ import { useAppStore } from '../state/store';
 import { countdown } from '../services/analytics';
 import { api, desktop } from '../services/api';
 import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
+import { sessionTypeLabel, youtubePolicy } from '../services/activeSession';
 import { Modal } from './SettingsControls';
 import { BrowserSetup } from './BrowserSetup';
 import { SessionReview } from './SessionReview';
@@ -272,6 +273,23 @@ export function SessionCard({
     websiteRows.push(`Only these are open: ${domains.join(', ')}`);
   if (effectiveBlocking === 'blocklist' && domains.length)
     websiteRows.push(`Blocked: ${domains.join(', ')}`);
+  // YouTube restrictions, in the same plain words as the live
+  // session popup: blocked channels, or the study-mode allowlist.
+  // No row at all when nothing was configured for YouTube.
+  const yt = youtubePolicy(focusCfg);
+  const youtubeRows: string[] = [];
+  if (yt.mode === 'block' && yt.blocked.length)
+    youtubeRows.push(`Blocked: ${yt.blocked.join(', ')}`);
+  if (yt.mode === 'study') {
+    youtubeRows.push(
+      yt.allowed.length > 0
+        ? `Only these channels: ${yt.allowed.join(', ')}`
+        : 'Study mode — no channels listed, so no videos play.',
+    );
+    if (yt.blocked.length)
+      youtubeRows.push(`Also blocked: ${yt.blocked.join(', ')}`);
+  }
+  if (yt.entertainment) youtubeRows.push('Entertainment blocked');
   const outcomeText =
     session.status === 'completed'
       ? 'Completed the full session.'
@@ -717,6 +735,10 @@ export function SessionCard({
                 <dd>{session.duration_minutes} minutes</dd>
               </div>
               <div>
+                <dt>Session type</dt>
+                <dd>{sessionTypeLabel(session)}</dd>
+              </div>
+              <div>
                 <dt>Style</dt>
                 <dd>{styleText}</dd>
               </div>
@@ -734,6 +756,12 @@ export function SessionCard({
                 <div>
                   <dt>Websites</dt>
                   <dd>{websiteRows.join(' · ')}</dd>
+                </div>
+              )}
+              {youtubeRows.length > 0 && (
+                <div>
+                  <dt>YouTube</dt>
+                  <dd>{youtubeRows.join(' · ')}</dd>
                 </div>
               )}
               <div>

@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { Sessions } from '../pages/Sessions';
 import { useAppStore } from '../state/store';
 import { emptySnapshot } from '../services/api';
-import { defaultActivitySection } from '../services/activitySection';
+import {
+  defaultActivitySection,
+  isOneShotSession,
+} from '../services/activitySection';
 import {
   defaultFocus,
   type Allowance,
@@ -151,6 +154,15 @@ describe('Focus Sessions cards', () => {
       screen.getByRole('button', { name: 'New allowance' }),
     ).toBeInTheDocument();
   });
+  it('describes allowances without the word budget', () => {
+    render(<Sessions />);
+    expect(
+      screen.getByText(
+        'Daily or weekly time allowances. Blocks always lift on reset.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/time budgets/)).not.toBeInTheDocument();
+  });
 });
 
 describe('Activity dropdown', () => {
@@ -177,6 +189,20 @@ describe('Activity dropdown', () => {
       screen.getByRole('button', { name: 'Allowances' }),
     ).toBeInTheDocument();
     expect(screen.getByText('YouTube budget')).toBeInTheDocument();
+  });
+  it('says the allowance is used up, not the budget', () => {
+    setData({
+      allowances: [
+        makeAllowance({
+          usage: [{ minute_ms: Date.now(), ms: 30 * 60_000 }],
+        }),
+      ],
+    });
+    render(<Sessions />);
+    expect(
+      screen.getByText('Allowance used up; blocked until reset.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Budget used up/)).not.toBeInTheDocument();
   });
   it('shows only the selected section, and the options in order', async () => {
     setData({
@@ -247,14 +273,58 @@ describe('Activity dropdown', () => {
     expect(screen.getByText('Done work')).toBeInTheDocument();
     expect(screen.queryByText('Running work')).not.toBeInTheDocument();
   });
-  it('opens the New allowance form from the Allowances card', async () => {
+  it('opens the New allowance form above Activity instead of inside Activity', async () => {
     const user = userEvent.setup();
     render(<Sessions />);
     await user.click(screen.getByRole('button', { name: 'New allowance' }));
-    expect(
-      screen.getByRole('button', { name: 'Allowances' }),
-    ).toBeInTheDocument();
+    const formHeading = screen.getByRole('heading', { name: 'New allowance' });
+    const activityHeading = screen.getByRole('heading', { name: 'Activity' });
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.getByLabelText('Allowance name')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'New session' }),
+    ).not.toBeInTheDocument();
+    // Form renders above the Activity heading (not inside Activity).
+    expect(
+      Boolean(
+        formHeading.compareDocumentPosition(activityHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+
+    // Clicking Back returns to the planning cards cleanly.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(
+      screen.getByRole('button', { name: 'New session' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Allowance name')).not.toBeInTheDocument();
+  });
+  it('labels the allowance form with allow wording, not budget', async () => {
+    const user = userEvent.setup();
+    render(<Sessions />);
+    await user.click(screen.getByRole('button', { name: 'New allowance' }));
+    expect(screen.getByLabelText('Allow for')).toBeInTheDocument();
+    expect(screen.getByLabelText('Allow in minutes')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Budget for')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Budget (minutes)')).not.toBeInTheDocument();
+  });
+  it('opens Edit allowance above Activity while Activity only shows added allowances', async () => {
+    setData({ allowances: [makeAllowance()] });
+    const user = userEvent.setup();
+    render(<Sessions />);
+    expect(screen.getByText('YouTube budget')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const formHeading = screen.getByRole('heading', { name: 'Edit allowance' });
+    const activityHeading = screen.getByRole('heading', { name: 'Activity' });
+    expect(screen.getByLabelText('Allowance name')).toHaveValue(
+      'YouTube budget',
+    );
+    expect(
+      Boolean(
+        formHeading.compareDocumentPosition(activityHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
   });
   it('shows a compact empty state without a large box when a section is empty', async () => {
     setData({ schedules: [makeSchedule()] });
@@ -389,5 +459,93 @@ describe('Activity date filter', () => {
     ).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'All time' }));
     expect(screen.getByText('YouTube budget')).toBeInTheDocument();
+  });
+
+  it('shows completed one-shot sessions under Start once at instead of Focus Sessions', async () => {
+    const firedSession = makeSession({
+      id: 'one-session-1',
+      title: 'Fired one-shot',
+      status: 'completed',
+      started_at: tenDaysAgo(),
+      ended_at: tenDaysAgo() + 60_000,
+      report: {
+        events: [
+          {
+            at: tenDaysAgo(),
+            kind: 'one_shot_started',
+            detail: 'One-shot block started automatically.',
+          },
+        ],
+        approved_ms: 0,
+        distracting_ms: 0,
+        idle_ms: 0,
+        interruptions: 0,
+        active_app: '',
+        enforcement: 'Browser blocked until the extension is connected.',
+        camera_status: '',
+        browser_blocks: 0,
+      },
+    });
+    const manualSession = makeSession({
+      id: 'manual-1',
+      title: 'Manual work',
+      status: 'completed',
+      started_at: Date.now() - 60_000,
+    });
+    const liveOneShot = makeSession({
+      id: 'one-session-live',
+      title: 'Still running one-shot',
+      status: 'running',
+      started_at: Date.now() - 10_000,
+      report: {
+        events: [
+          {
+            at: Date.now() - 10_000,
+            kind: 'one_shot_started',
+            detail: 'One-shot block started automatically.',
+          },
+        ],
+        approved_ms: 0,
+        distracting_ms: 0,
+        idle_ms: 0,
+        interruptions: 0,
+        active_app: '',
+        enforcement: 'One-shot block active',
+        camera_status: '',
+        browser_blocks: 0,
+      },
+    });
+
+    expect(isOneShotSession(firedSession)).toBe(true);
+    expect(isOneShotSession(liveOneShot)).toBe(true);
+    expect(isOneShotSession(manualSession)).toBe(false);
+
+    setData({ sessions: [firedSession, manualSession, liveOneShot] });
+    const user = userEvent.setup();
+    render(<Sessions />);
+
+    // Default section is Focus Sessions because a live session exists:
+    // manual history appears, fired one-shot does not.
+    expect(screen.getByText('Manual work')).toBeInTheDocument();
+    expect(screen.queryByText('Fired one-shot')).not.toBeInTheDocument();
+
+    // Switch to Start once at: fired one-shot appears, live one-shot is not
+    // duplicated in history, and empty state is not shown.
+    await user.click(screen.getByRole('button', { name: 'Focus Sessions' }));
+    await user.click(screen.getByRole('option', { name: 'Start once at' }));
+    expect(screen.getByText('Fired one-shot')).toBeInTheDocument();
+    expect(
+      screen.queryByText('No one-shot timers yet.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Manual work')).not.toBeInTheDocument();
+
+    // Date range filter applies to historical one-shot sessions too.
+    await user.click(screen.getByRole('button', { name: 'Today' }));
+    expect(screen.queryByText('Fired one-shot')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('No one-shot timers in this period.'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'All time' }));
+    expect(screen.getByText('Fired one-shot')).toBeInTheDocument();
   });
 });

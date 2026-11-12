@@ -51,6 +51,37 @@ export function cleanDomain(raw: string): string | null {
   if (path && /[?#\s]/.test(path)) return null;
   return (wildcard ? '*.' : '') + host + path;
 }
+const YOUTUBE_WATCH_LATER_RULES = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  '*.youtube.com',
+]);
+/** True when a normalized website rule blocks general YouTube browsing
+ *  (including its Watch Later playlist route, as opposed to path-only rules
+ *  like `youtube.com/shorts` or keyword rules like `search:youtube`). */
+export function isWholeYouTubeRule(cleanedRule: string): boolean {
+  return YOUTUBE_WATCH_LATER_RULES.has(cleanedRule);
+}
+/** Live detector for whether the active website-blocking sub-mode and typed
+ *  entries will block YouTube's main site (making the Watch Later exception
+ *  relevant). In blocklist mode, YouTube must appear in the list; in
+ *  allowlist mode, YouTube is blocked whenever it is missing from the list. */
+export function isYouTubeBlockedByWebsiteRules(
+  mode: 'none' | 'blocklist' | 'allowlist',
+  domainsText: string,
+): boolean {
+  if (mode === 'none') return false;
+  const youtubeListed = domainsText
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .some((entry) => {
+      const cleaned = cleanDomain(entry);
+      return cleaned !== null && isWholeYouTubeRule(cleaned);
+    });
+  return mode === 'blocklist' ? youtubeListed : !youtubeListed;
+}
 // Normalize a multi-line textarea. Bad lines are left untouched so the user
 // can fix them; errors lists the offending lines.
 export function normalizeDomainInput(value: string): {

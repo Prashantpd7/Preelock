@@ -16,13 +16,16 @@
   const el = document.getElementById('reason');
 
   if (kind === 'youtube') {
-    const channel = params.get('m') === 'channel';
+    const mode = params.get('m');
     document.title = 'Video blocked \u00b7 Preelock';
     if (titleEl) titleEl.textContent = 'Video blocked';
     if (messageEl)
-      messageEl.textContent = channel
-        ? "This channel's content is blocked during your focus session."
-        : "This content isn't available during your focus session.";
+      messageEl.textContent =
+        mode === 'channel'
+          ? "This channel's content is blocked during your focus session."
+          : mode === 'entertainment'
+            ? 'Entertainment content is blocked during your focus session.'
+            : "This content isn't available during your focus session.";
     if (hintEl) hintEl.hidden = true;
     return;
   }

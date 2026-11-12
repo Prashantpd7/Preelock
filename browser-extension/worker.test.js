@@ -1026,3 +1026,50 @@ it('auto-generates missing client UUID and queues explicit sync after an in-flig
   expect(seenTokens).toContain(`Bearer ${'d'.repeat(64)}`);
   expect(session.error).toBe('');
 });
+
+it('evaluates videoMeta for youtube_block_entertainment and opens the entertainment block screen', async () => {
+  local.token = 'a'.repeat(64);
+  local.client = 'worker-client-ent';
+  session.policy = {
+    mode: 'blocklist',
+    domains: [],
+    youtube_block_entertainment: true,
+    expires_at: Date.now() + 30_000,
+  };
+  await import('./worker.js');
+
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=edu123',
+      videoId: 'edu123',
+      channels: [],
+      videoMeta: { title: 'Operating Systems Lecture', category: 'Education' },
+    }),
+  ).toEqual({ videoId: 'edu123', blocked: false, reason: null });
+
+  expect(
+    await send({
+      type: 'youtube_check',
+      url: 'https://www.youtube.com/watch?v=fun123',
+      videoId: 'fun123',
+      channels: [],
+      videoMeta: { title: 'Standup Comedy & Prank Vlog', category: 'Comedy' },
+    }),
+  ).toEqual({ videoId: 'fun123', blocked: true, reason: 'entertainment' });
+
+  chrome.tabs.update.mockClear();
+  await sendFromTab(
+    {
+      type: 'youtube_block',
+      url: 'https://www.youtube.com/watch?v=fun123',
+      videoId: 'fun123',
+      channels: [],
+      videoMeta: { title: 'Standup Comedy & Prank Vlog', category: 'Comedy' },
+    },
+    { id: 99, url: 'https://www.youtube.com/watch?v=fun123' },
+  );
+  expect(chrome.tabs.update).toHaveBeenCalledWith(99, {
+    url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=entertainment',
+  });
+});

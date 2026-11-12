@@ -8,7 +8,15 @@
 #import <Carbon/Carbon.h>
 
 static void onMain(dispatch_block_t work) {
-    if ([NSThread isMainThread]) work(); else dispatch_sync(dispatch_get_main_queue(), work);
+    if ([NSThread isMainThread]) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+        work();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+            work();
+        });
+    }
 }
 static char *json(id object) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
@@ -73,6 +81,7 @@ char *preelock_sample(void) {
     @autoreleasepool {
         __block char *result;
         onMain(^{
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
             NSString *exe = executablePathForApp(app);
             NSString *bundlePath = app.bundleURL.path ?: @"";
@@ -372,7 +381,23 @@ void preelock_notify(const char *title, const char *body) {
     [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"Preelock notification unavailable: %@", error.localizedDescription); }];
 }
 void preelock_sound(float volume) {
-    onMain(^{ NSSound *sound = [NSSound soundNamed:@"Glass"]; sound.volume = volume; [sound play]; });
+    if (volume <= 0.0f) return;
+    dispatch_block_t play = ^{
+        @autoreleasepool {
+            NSSound *sound = [NSSound soundNamed:@"Glass"];
+            if (!sound) return;
+            [sound stop];
+            sound.volume = volume;
+            [sound play];
+        }
+    };
+    if ([NSThread isMainThread]) {
+        play();
+    } else if (NSApp != nil && [NSApp isRunning]) {
+        dispatch_async(dispatch_get_main_queue(), play);
+    } else {
+        play();
+    }
 }
 char *preelock_file_panel(int save, const char *filename) {
     @autoreleasepool {

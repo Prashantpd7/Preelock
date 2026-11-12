@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import {
   cleanDomain,
   domainInputError,
+  isYouTubeBlockedByWebsiteRules,
   normalizeDomainInput,
 } from '../services/domains';
 test('cleanDomain normalizes pasted and typed input', () => {
@@ -41,4 +42,33 @@ test('domainInputError is quiet for good input', () => {
   expect(domainInputError('github.com\ndocs.rs')).toBe('');
   expect(domainInputError('whatsapp')).toBe('');
   expect(domainInputError('github.com\n***')).toContain('***');
+});
+test('isYouTubeBlockedByWebsiteRules detects live YouTube blocking in blocklist and allowlist modes', () => {
+  expect(isYouTubeBlockedByWebsiteRules('none', 'youtube.com')).toBe(false);
+  expect(isYouTubeBlockedByWebsiteRules('blocklist', '')).toBe(false);
+  expect(
+    isYouTubeBlockedByWebsiteRules('blocklist', 'instagram.com\nyoutube.com'),
+  ).toBe(true);
+  expect(isYouTubeBlockedByWebsiteRules('blocklist', 'youtube')).toBe(true);
+  expect(
+    isYouTubeBlockedByWebsiteRules('blocklist', 'https://m.youtube.com/'),
+  ).toBe(true);
+  expect(isYouTubeBlockedByWebsiteRules('blocklist', '*.youtube.com')).toBe(
+    true,
+  );
+  // Path-only rules like Shorts do not block the whole Watch Later playlist.
+  expect(
+    isYouTubeBlockedByWebsiteRules('blocklist', 'youtube.com/shorts'),
+  ).toBe(false);
+  // Allowlist blocks YouTube unless YouTube is explicitly kept open.
+  expect(isYouTubeBlockedByWebsiteRules('allowlist', '')).toBe(true);
+  expect(
+    isYouTubeBlockedByWebsiteRules('allowlist', 'github.com\ndocs.rs'),
+  ).toBe(true);
+  expect(
+    isYouTubeBlockedByWebsiteRules('allowlist', 'github.com\nyoutube.com'),
+  ).toBe(false);
+  expect(isYouTubeBlockedByWebsiteRules('allowlist', 'www.youtube.com')).toBe(
+    false,
+  );
 });

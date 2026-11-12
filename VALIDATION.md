@@ -12,7 +12,7 @@
 
 Current implementation adds Rust attention accounting, conservative recovery, app/domain/camera signal integration, explicit fallback, corrections, SQLite interval journaling and close-to-background lifecycle. Legacy elapsed records remain clearly labeled. Final checks: 28 Vitest tests; 26 Rust tests; strict TypeScript, ESLint, Prettier, Rustfmt and Clippy pass. Production frontend and ARM64 Tauri v0.3.0 bundle built. Read-only native app enumeration, foreground/idle and camera authorization probe passed. No camera permission was granted.
 
-The actual rebuilt app was launched from `src-tauri/target/release/bundle/macos/VYSTRIQ.app`; its running process path, bundle version 0.3.0 and native accessibility tree (`tauri://localhost`) were verified. A real one-minute manual-policy session stayed at 01:00 while UNKNOWN, accepted time only after explicit confirmation, continued after window close/reopen, and ended through typed emergency recovery. The labeled validation session remains in local history. This establishes packaged frontend-to-Rust/SQLite behavior for manual policy, not camera or installed browser enforcement.
+The actual rebuilt app was launched from `src-tauri/target/release/bundle/macos/Preelock.app`; its running process path, bundle version 0.3.0 and native accessibility tree (`tauri://localhost`) were verified. A real one-minute manual-policy session stayed at 01:00 while UNKNOWN, accepted time only after explicit confirmation, continued after window close/reopen, and ended through typed emergency recovery. The labeled validation session remains in local history. This establishes packaged frontend-to-Rust/SQLite behavior for manual policy, not camera or installed browser enforcement.
 
 Still manual: load/reload and pair the Chromium extension (including new tabs permission), run its popup matcher self-test, test allow/blocked sites, and grant opt-in camera permission to evaluate actual capture/presence accuracy. Foreground APIs were probed, but hiding the user's apps and camera accuracy were not exercised. Windows runtime, phone/head-direction detection, learning/playback/file-progress verification, system-wide network enforcement, managed Deep Focus and signing/notarization remain unverified or unavailable. No public application release was created.
 
@@ -43,7 +43,7 @@ Rust tests cover configuration/domain validation, unsupported capabilities, lega
 
 The native probe is read-only and does not establish that every application's window can be hidden or that a camera model performs reliably. The Windows harness checks Win32 API types, not linking the entire Tauri application or running it. Browser filtering still requires loading/pairing the extension; it is not active merely because the build passes. Run the explicit manual checks in docs/FOCUS_MODE.md before relying on restrictions.
 
-CI now includes the read-only Mac probe alongside the existing frontend, Rust and platform bundle jobs. No CI run is claimed. The final app is at `src-tauri/target/release/bundle/macos/VYSTRIQ.app`. Release signing/notarization and production distribution remain pending.
+CI now includes the read-only Mac probe alongside the existing frontend, Rust and platform bundle jobs. No CI run is claimed. The final app is at `src-tauri/target/release/bundle/macos/Preelock.app`. Release signing/notarization and production distribution remain pending.
 
 Phase 3 priorities: live platform/browser/camera testing, managed-policy design with administrator recovery, bridge hardening, retention/backup and signed releases. Deep Focus, system-wide network controls, Windows camera analysis, phone detection and learning/task verification are unavailable.
 
@@ -70,7 +70,7 @@ Validated in the existing project root on Apple Silicon macOS using Node 24.13.1
 
 Frontend tests cover six-route navigation, task creation through the IPC boundary, chosen session policy, persistence-error reporting, actual analytics and countdown formatting. Rust tests cover pause enforcement, completion capping, concurrent-session rejection, invalid input, wall-clock-independent elapsed time, deadline restoration, paused-state SQLite round-trip and rejected mutation behavior. Frontend tests use a mocked native boundary; they do not establish end-to-end IPC behavior in a running packaged app.
 
-Build output: `src-tauri/target/release/bundle/macos/VYSTRIQ.app`. Its executable was verified as Mach-O ARM64. The final bundle includes the corrected page breadcrumb. Signing/notarization, DMG creation, minimum-OS runtime testing and native interactive workflows remain unverified.
+Build output: `src-tauri/target/release/bundle/macos/Preelock.app`. Its executable was verified as Mach-O ARM64. The final bundle includes the corrected page breadcrumb. Signing/notarization, DMG creation, minimum-OS runtime testing and native interactive workflows remain unverified.
 
 The supplied folder was empty and had no Git metadata or remote. Initialized `main`; all work remains uncommitted, with no remote configured and no push performed. Existing GitHub history must be reconciled before connecting this local initialization to a populated remote.
 

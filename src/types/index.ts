@@ -36,6 +36,13 @@ export interface Session {
   grace_until_ms?: number | null;
   /** Schedule that auto-created this session, if any. */
   schedule_id?: string | null;
+  /** How this session was created: instant focus session,
+   *  scheduled block, or one-shot timer. Recorded by the backend
+   *  at creation and persisted, so a one-shot session keeps its
+   *  kind after its timer record is purged. Absent for sessions
+   *  saved before the backend recorded it — the label falls back
+   *  to `schedule_id` for those. */
+  kind?: 'focus' | 'scheduled' | 'one_shot';
   /** Live Pomodoro phase state (step 7); absent for pre-step saves. */
   pomodoro?: PomodoroState;
   /** Live reward-break state (step 9); absent for pre-step saves. */
@@ -79,8 +86,9 @@ export interface Preferences {
   break_minutes?: number;
   break_alert?: boolean;
   notifications_enabled?: boolean;
+  notifications_sound?: boolean;
   /** Step 14: comma-separated minutes before a scheduled or
-   *  one-shot block starts, e.g. '5, 15'. Empty means no warnings. */
+   *  one-shot block starts, e.g. '2' or '5, 15'. Empty means no warnings. */
   warning_minutes?: string;
   /** Step 14: grace seconds after a scheduled or one-shot block
    *  starts before blocking begins (0 = off, max 300). */
@@ -338,6 +346,10 @@ export interface FocusConfig {
   /** Study mode: only the allowed channels play; the extension also
    *  blocks the YouTube homepage, Shorts, feeds and search results. */
   youtube_study_mode?: boolean;
+  /** Entertainment blocking: blocks YouTube entertainment categories
+   *  and formats (comedy, pranks, vlogs, funny/animal clips, gaming,
+   *  music, Shorts) while keeping non-entertainment videos playable. */
+  youtube_block_entertainment?: boolean;
   /** The Watch Later playlist page (youtube.com/playlist?list=WL)
    *  stays open even when YouTube is blocked or not in the allowlist;
    *  every other YouTube route stays blocked. Extension-enforced only. */
@@ -503,11 +515,9 @@ export function pomodoroLabel(state: PomodoroState | undefined): string | null {
 export function tamperNote(session: Session): string | null {
   const tamper = [...(session.report?.events ?? [])]
     .reverse()
-    .find((ev) => ['clock_jump', 'extension_removed'].includes(ev.kind));
+    .find((ev) => ev.kind === 'clock_jump');
   if (!tamper) return null;
-  return tamper.kind === 'clock_jump'
-    ? 'Clock jump noted — jumped time was not credited.'
-    : 'Browser blocked until the extension is connected.';
+  return 'Clock jump noted — jumped time was not credited.';
 }
 export interface FocusReport {
   events: { at: number; kind: string; detail: string }[];
@@ -592,6 +602,7 @@ export const defaultFocus: FocusConfig = {
   youtube_blocked_channels: [],
   youtube_allowed_channels: [],
   youtube_study_mode: false,
+  youtube_block_entertainment: false,
   youtube_allow_watch_later: false,
   block_adult_content: false,
   website_blocking: 'auto',

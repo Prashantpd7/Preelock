@@ -150,6 +150,14 @@ describe('allowance form validation', () => {
       }),
     ).toBe('');
   });
+  it('uses plain allow wording in validation messages', () => {
+    expect(validateAllowanceForm({ ...base, target: '' })).toBe(
+      'Enter a site or app to allow.',
+    );
+    expect(validateAllowanceForm({ ...base, budgetMinutes: 1441 })).toContain(
+      'Allow from 1 to 1440 minutes',
+    );
+  });
   it('accepts wildcard domains and app targets', () => {
     expect(validateAllowanceForm({ ...base, target: '*.example.com' })).toBe(
       '',

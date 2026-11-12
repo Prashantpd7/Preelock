@@ -6,6 +6,7 @@ import {
   compileRules,
   extractChannelKey,
   isChannelLivePath,
+  isEntertainmentVideo,
   isWatchLaterUrl,
   leaseValid,
   normalizeYouTubeChannel,
@@ -1073,5 +1074,235 @@ describe('youtubeVideoDecision Watch Later and blocked-channel precedence', () =
     expect(watchLaterOnly({ ...allowWl, extra_blocked: ['youtube.com'] })).toBe(
       false,
     );
+  });
+
+  it('blocks entertainment categories, titles, and surfaces while allowing educational videos', () => {
+    const policy = {
+      mode: 'blocklist',
+      domains: [],
+      youtube_block_entertainment: true,
+    };
+    // Entertainment surface routes blocked in DNR and URL policy
+    expect(
+      channelBlockReason('https://www.youtube.com/shorts/abc123', policy),
+    ).toBe('entertainment_surface');
+    expect(urlBlockedByPolicy('https://www.youtube.com/gaming', policy)).toBe(
+      true,
+    );
+    expect(
+      blockDetail('https://www.youtube.com/feed/trending', policy),
+    ).toEqual({
+      blocked: true,
+      mechanism: 'entertainment',
+      rule: null,
+    });
+    const dnr = compileRules(policy);
+    expect(
+      dnr.some(
+        (r) =>
+          r.action.type === 'block' &&
+          String(r.condition.regexFilter).includes('/shorts'),
+      ),
+    ).toBe(true);
+
+    // Pure entertainment categories blocked on /watch
+    for (const category of [
+      'Comedy',
+      'Pets & Animals',
+      'Gaming',
+    ]) {
+      expect(
+        youtubeVideoDecision(
+          'https://www.youtube.com/watch?v=vid1',
+          [],
+          policy,
+          false,
+          null,
+          { title: 'Video', category },
+        ),
+      ).toEqual({ blocked: true, reason: 'entertainment' });
+    }
+
+    // Discipline, productivity, self-improvement & explanatory videos strictly allowed
+    // even under People & Blogs or Entertainment categories
+    for (const meta of [
+      {
+        title: "I'll Kill Your Procrastination in Under 1 Minute.",
+        category: 'People & Blogs',
+      },
+      {
+        title:
+          'HOW TO BECOME ADDICTED TO DOING HARD THINGS (with neuroscience)',
+        category: 'People & Blogs',
+      },
+      {
+        title: 'life without social media',
+        category: 'People & Blogs',
+      },
+      {
+        title: "Indians Need to Stop Playing Small Abroad: Here's Why!",
+        category: 'Entertainment',
+      },
+      {
+        title: 'Deep Work: How to focus without distraction',
+        category: 'People & Blogs',
+      },
+      {
+        title: 'Why You Procrastinate and How to Stop It (Dopamine Detox)',
+        category: 'People & Blogs',
+      },
+      {
+        title: 'The Neuroscience of Habit Formation',
+        category: 'Education',
+      },
+      {
+        title: 'Stoicism for Modern Life - Philosophy Lecture',
+        category: 'Education',
+      },
+    ]) {
+      expect(
+        youtubeVideoDecision(
+          'https://www.youtube.com/watch?v=prod1',
+          [],
+          policy,
+          false,
+          null,
+          meta,
+        ),
+      ).toEqual({ blocked: false, reason: null });
+    }
+
+    // Pranks, vlogs, funny/animal clips caught even without category
+    for (const title of [
+      'Hilarious Standup Comedy Special',
+      'College Campus Prank Gone Wrong',
+      'My Daily Vlog in Tokyo',
+      'Cute Puppy & Funny Animals Vlog',
+      'Try Not To Laugh Challenge #shorts',
+    ]) {
+      expect(isEntertainmentVideo({ title, category: '' })).toBe(true);
+      expect(
+        youtubeVideoDecision(
+          'https://www.youtube.com/watch?v=vid2',
+          [],
+          policy,
+          false,
+          null,
+          { title, category: '' },
+        ),
+      ).toEqual({ blocked: true, reason: 'entertainment' });
+    }
+
+    // Educational / coding videos (including "build a blog") remain allowed
+    for (const meta of [
+      { title: 'MIT 18.06 Linear Algebra Lecture 1', category: 'Education' },
+      {
+        title: 'How to Build a Blog with React and TypeScript',
+        category: 'Science & Technology',
+      },
+      { title: 'Quantum Mechanics Explained', category: 'Education' },
+    ]) {
+      expect(
+        youtubeVideoDecision(
+          'https://www.youtube.com/watch?v=edu1',
+          [],
+          policy,
+          false,
+          null,
+          meta,
+        ),
+      ).toEqual({ blocked: false, reason: null });
+    }
+
+    // Standup comedy and entertainment titles from user reports
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=gk1',
+        [],
+        policy,
+        false,
+        null,
+        { title: 'OUT OF CONTROL | Gaurav kapoor | Standup Comedy' },
+      ),
+    ).toEqual({ blocked: true, reason: 'entertainment' });
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=gk2',
+        [],
+        policy,
+        false,
+        null,
+        {
+          title: 'Special Live Clip',
+          author: 'GauravKapoorLive - Shorts & Clips',
+          keywords: ['standup comedy', 'funny'],
+        },
+      ),
+    ).toEqual({ blocked: true, reason: 'entertainment' });
+
+    // Non-entertainment videos are strictly allowed
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=edu_uni',
+        [],
+        policy,
+        false,
+        null,
+        { title: 'Calculus 1 - Full University Course', category: 'Education' },
+      ),
+    ).toEqual({ blocked: false, reason: null });
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=edu_py',
+        [],
+        policy,
+        false,
+        null,
+        {
+          title: 'Python Tutorial for Beginners - Full Course in 11 Hours',
+          category: 'Science & Technology',
+        },
+      ),
+    ).toEqual({ blocked: false, reason: null });
+
+    // Waits while metadata hasn't arrived yet
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=edu2',
+        [],
+        policy,
+        false,
+        null,
+        null,
+      ),
+    ).toEqual({ blocked: false, reason: null, pending: true });
+
+    // Combines cleanly with Watch Later when YouTube is domain-blocked
+    const wlEntPolicy = {
+      mode: 'allowlist',
+      domains: ['docs.rs'],
+      youtube_allow_watch_later: true,
+      youtube_block_entertainment: true,
+    };
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=edu3&list=WL',
+        [],
+        wlEntPolicy,
+        false,
+        true,
+        { title: 'Systems Programming Lecture', category: 'Education' },
+      ),
+    ).toEqual({ blocked: false, reason: 'watch_later' });
+    expect(
+      youtubeVideoDecision(
+        'https://www.youtube.com/watch?v=com1&list=WL',
+        [],
+        wlEntPolicy,
+        false,
+        true,
+        { title: 'Standup Comedy Night', category: 'Comedy' },
+      ),
+    ).toEqual({ blocked: true, reason: 'entertainment' });
   });
 });

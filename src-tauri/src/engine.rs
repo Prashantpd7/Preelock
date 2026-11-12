@@ -12,6 +12,7 @@ use std::path::Path;
 pub struct Engine {
     db: Database,
     data_dir: std::path::PathBuf,
+    lifecycle_path: std::path::PathBuf,
     data: Snapshot,
     anchor: u64,
     sample_anchor: u64,
@@ -360,6 +361,13 @@ impl Engine {
                     s.ended_at = None;
                     s.deadline_ms = None;
                     s.report.camera_status = "off".into();
+                    s.durability.recovery_status = Some("recovered_after_os_shutdown".into());
+                    s.durability.last_checkpoint_at_ms = Some(clock::now());
+                    if s.durability.intended_end_at_ms.is_none() {
+                        s.durability.intended_end_at_ms = Some(
+                            clock::now().saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64),
+                        );
+                    }
                     s.report.event(clock::now(), "system_restart", "Session restored after system shutdown/restart; offline time does not count.");
                     continue;
                 }
@@ -379,6 +387,13 @@ impl Engine {
                     s.ended_at = None;
                     s.deadline_ms = None;
                     s.report.camera_status = "off".into();
+                    s.durability.recovery_status = Some("lock_restored".into());
+                    s.durability.last_checkpoint_at_ms = Some(clock::now());
+                    if s.durability.intended_end_at_ms.is_none() {
+                        s.durability.intended_end_at_ms = Some(
+                            clock::now().saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64),
+                        );
+                    }
                     s.report.event(
                         clock::now(),
                         "lock_restored",
@@ -406,6 +421,13 @@ impl Engine {
                 s.ended_at = None;
                 s.deadline_ms = None;
                 s.report.camera_status = "off".into();
+                s.durability.recovery_status = Some("recovered_after_restart".into());
+                s.durability.last_checkpoint_at_ms = Some(clock::now());
+                if s.durability.intended_end_at_ms.is_none() {
+                    s.durability.intended_end_at_ms = Some(
+                        clock::now().saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64),
+                    );
+                }
                 s.report.event(
                     clock::now(),
                     "session_resumed",
@@ -417,7 +439,23 @@ impl Engine {
         }
         // M1: persist recovery only as the lock holder (see above).
         if owns_lock {
+            let now = clock::now();
+            for s in &mut data.sessions {
+                if matches!(
+                    s.status,
+                    Status::Running | Status::Preparing | Status::Paused
+                ) {
+                    s.durability.last_checkpoint_at_ms = Some(now);
+                }
+            }
             db.save(&data)?;
+            let summary = Self::active_session_checkpoint(&data, now);
+            let _ = crate::lifecycle::write_session_checkpoint(
+                &path.with_extension("lifecycle.json"),
+                crate::lifecycle::current_boot_id(),
+                crate::lifecycle::ending(),
+                summary,
+            );
         }
         // M1: only the lock holder starts a bridge. An observer that
         // grabbed the bridge would publish a possibly stale policy
@@ -447,12 +485,14 @@ impl Engine {
         } else {
             0
         };
+        let lifecycle_path = path.with_extension("lifecycle.json");
         let engine = Self {
             db,
             data_dir: path
                 .parent()
                 .ok_or("Invalid database location.")?
                 .to_path_buf(),
+            lifecycle_path: lifecycle_path.clone(),
             data,
             anchor: now,
             sample_anchor: now,
@@ -513,11 +553,104 @@ impl Engine {
     /// shutdown paths ignore the error and log it — the periodic
     /// ~5 s commit checkpoint already bounds the loss, and a
     /// failing save must never block the OS from shutting down.
+    fn active_session_checkpoint(
+        snapshot: &Snapshot,
+        now: i64,
+    ) -> Option<crate::lifecycle::SessionCheckpoint> {
+        let s = snapshot.sessions.iter().find(|s| {
+            matches!(
+                s.status,
+                Status::Running | Status::Paused | Status::Preparing
+            )
+        })?;
+        let schedule = s
+            .schedule_id
+            .as_deref()
+            .and_then(|id| snapshot.schedules.iter().find(|sc| sc.id == id));
+        let kind = match s.kind {
+            crate::models::SessionKind::Focus => "focus",
+            crate::models::SessionKind::Scheduled => "scheduled",
+            crate::models::SessionKind::OneShot => "one_shot",
+        };
+        let status = match s.status {
+            Status::Ready => "ready",
+            Status::Preparing => "preparing",
+            Status::Running => "running",
+            Status::Paused => "paused",
+            Status::Completed => "completed",
+            Status::Ended => "ended",
+            Status::Interrupted => "interrupted",
+        };
+        let mode = match s.focus.mode {
+            Mode::Standard => "standard",
+            Mode::Strict => "strict",
+            Mode::Deep => "deep",
+        };
+        let is_allowlist_apps = !matches!(s.focus.mode, Mode::Standard);
+        let (blocked_apps, allowed_apps) = if is_allowlist_apps {
+            (Vec::new(), s.focus.apps.clone())
+        } else {
+            (s.focus.apps.clone(), Vec::new())
+        };
+        let is_allowlist_sites = matches!(s.focus.website_blocking, WebsiteBlocking::Allowlist)
+            || (matches!(s.focus.website_blocking, WebsiteBlocking::Auto)
+                && !matches!(s.focus.mode, Mode::Standard));
+        let (blocked_sites, allowed_sites) =
+            if matches!(s.focus.website_blocking, WebsiteBlocking::None) {
+                (Vec::new(), Vec::new())
+            } else if is_allowlist_sites {
+                (Vec::new(), s.focus.domains.clone())
+            } else {
+                (s.focus.domains.clone(), s.focus.exceptions.clone())
+            };
+        Some(crate::lifecycle::SessionCheckpoint {
+            session_id: s.id.clone(),
+            kind: kind.into(),
+            status: status.into(),
+            mode: mode.into(),
+            schedule_id: s.schedule_id.clone(),
+            schedule_title: schedule.map(|sc| sc.title.clone()),
+            weekdays: schedule.map(|sc| sc.days.clone()).unwrap_or_default(),
+            start_time: schedule.map(|sc| sc.start_time.clone()),
+            end_time: schedule.map(|sc| sc.end_time.clone()),
+            started_at_ms: s.started_at,
+            intended_end_at_ms: s.durability.intended_end_at_ms,
+            remaining_ms: s.remaining_ms,
+            blocked_apps,
+            allowed_apps,
+            blocked_sites,
+            allowed_sites,
+            recovery_status: s
+                .durability
+                .recovery_status
+                .clone()
+                .unwrap_or_else(|| "clean".into()),
+            last_checkpoint_ms: s.durability.last_checkpoint_at_ms.unwrap_or(now),
+            last_enforcement_at_ms: s.durability.last_enforcement_at_ms,
+        })
+    }
+
     pub fn save_checkpoint(&mut self) -> Result<(), String> {
         if !self.owns_engine_lock() {
             return Err(Self::ENGINE_LOCK_HELD.into());
         }
-        self.db.save(&self.data)
+        let now = clock::now();
+        for s in &mut self.data.sessions {
+            if matches!(
+                s.status,
+                Status::Running | Status::Preparing | Status::Paused
+            ) {
+                s.durability.last_checkpoint_at_ms = Some(now);
+            }
+        }
+        self.db.save(&self.data)?;
+        let summary = Self::active_session_checkpoint(&self.data, now);
+        crate::lifecycle::write_session_checkpoint(
+            &self.lifecycle_path,
+            crate::lifecycle::current_boot_id(),
+            crate::lifecycle::ending(),
+            summary,
+        )
     }
 
     /// M1: try to become the authoritative engine. A no-op when this
@@ -708,6 +841,19 @@ impl Engine {
     ///   an idle observer no longer reports "not idle" (and no
     ///   longer shows the "Finish your focus session" notice for a
     ///   session that is not running).
+    pub fn notification_prefs(&self) -> (bool, bool, u32) {
+        (
+            self.data.preferences.notifications_enabled,
+            self.data.preferences.notifications_sound,
+            self.data.preferences.volume,
+        )
+    }
+    fn notify_general(&self, title: &str, body: &str) {
+        crate::desktop_settings::notify(title, body);
+        if self.data.preferences.notifications_sound {
+            crate::desktop_settings::sound(self.data.preferences.volume);
+        }
+    }
     pub fn quit_decision(&mut self) -> crate::quit::QuitDecision {
         let owns_lock = self.try_acquire_engine_lock();
         let has_active = if owns_lock {
@@ -772,6 +918,19 @@ impl Engine {
         self.failed = Some("Application is shutting down".into());
     }
     pub fn browser_status(&self) -> browser::BrowserStatus {
+        if let Some(session) = self.data.sessions.iter().find(|s| {
+            matches!(
+                s.status,
+                Status::Running | Status::Preparing | Status::Paused
+            )
+        }) {
+            if !session.focus.browser_app.is_empty() {
+                let status = self.browser_status_for(&session.focus.browser_app);
+                if status.connected {
+                    return status;
+                }
+            }
+        }
         self.bridge
             .as_ref()
             .map(Bridge::status)
@@ -822,7 +981,9 @@ impl Engine {
     /// so nothing about the owner's extension connections leaks.
     fn bridge_unavailable(&self) -> browser::BrowserStatus {
         if self.native && Bridge::probe(&self.data_dir, browser::PORT).port_listening {
-            return browser::unavailable("Browser bridge is running in the background engine.");
+            return browser::unavailable(
+                "Another Preelock process currently owns the browser bridge.",
+            );
         }
         browser::unavailable(&self.bridge_error)
     }
@@ -1232,7 +1393,7 @@ impl Engine {
                         // locks), so the extension's blocked page can
                         // explain itself.
                         let rule_causes = self.extra_blocked_causes(now);
-                        Policy::new(
+                        let mut p = Policy::new(
                             &s.id,
                             &s.focus,
                             if s.status == Status::Preparing || s.focus.attention.enabled {
@@ -1240,14 +1401,24 @@ impl Engine {
                             } else {
                                 s.remaining_ms
                             },
-                        )
-                        .with_exhausted_rules(&exhausted)
-                        .with_session_cause(crate::blockreasons::session_cause(
-                            s,
-                            &self.data.schedules,
-                        ))
-                        .with_rule_causes(&rule_causes)
-                        .with_activity_tracking(true)
+                        );
+                        // If specific target browsers were picked but none are connected while
+                        // another paired browser IS connected, clear p.browsers so that the
+                        // connected browser can enforce website blocking instead of leaving it unenforced.
+                        if !p.browsers().is_empty() {
+                            let target_connected =
+                                p.browsers().iter().any(|id| b.status_for(id).connected);
+                            if !target_connected {
+                                p.clear_browsers();
+                            }
+                        }
+                        p.with_exhausted_rules(&exhausted)
+                            .with_session_cause(crate::blockreasons::session_cause(
+                                s,
+                                &self.data.schedules,
+                            ))
+                            .with_rule_causes(&rule_causes)
+                            .with_activity_tracking(true)
                     })
             };
             b.publish(policy);
@@ -1260,6 +1431,13 @@ impl Engine {
             // publish that ends the session — no restart needed.
             b.set_connection_locked(self.has_active_strict());
         }
+    }
+    /// Manual refresh of the browser bridge and enforcement state.
+    pub fn refresh_browser(&mut self) {
+        if let Some(b) = &self.bridge {
+            b.refresh();
+        }
+        self.publish();
     }
     /// Per-rule block causes for the currently enforced
     /// `extra_blocked` site rules (allowance exhaustion and app
@@ -1336,10 +1514,45 @@ impl Engine {
         } else {
             sample.name.as_str()
         };
-        crate::desktop_settings::notify(
+        self.notify_general(
             "Preelock",
             &crate::blockreasons::cause_text(cause, name, now),
         );
+    }
+    /// Grace-start notification (step 14 parity): tell the user
+    /// once, when an auto-started session enters its grace period,
+    /// that blocking begins when the countdown ends. The grace
+    /// itself never depended on camera — schedule and one-shot
+    /// sessions get it unconditionally — but until now it was
+    /// silent: only the in-app banner and tray countdown showed
+    /// it, so a session that auto-started while the user was not
+    /// looking seemed to start instantly, while a camera session
+    /// (camera light, readiness popup) drew the eye to the
+    /// countdown. This notification makes the 1-minute pre-start
+    /// visible for both, with the true remaining seconds.
+    /// Returns whether the marker flipped (the caller persists it:
+    /// this runs on the tick's early-return path, past the normal
+    /// save). Gated on the master notifications toggle and on a
+    /// deliverable channel — an undeliverable tick (Windows
+    /// background engine, W-1) leaves the marker clear so a later
+    /// tick retries while grace is still active. The persisted
+    /// flag means a later engine (GUI takeover, restart) never
+    /// re-fires. Ending during grace stays free (sessions::apply);
+    /// the notification never touches enforcement or the timer.
+    fn notify_grace_start(&mut self, s: &mut crate::models::Session, now: i64) -> bool {
+        if s.grace_notified || !self.data.preferences.notifications_enabled {
+            return false;
+        }
+        if !crate::desktop_settings::can_notify() {
+            return false;
+        }
+        let secs = crate::notifications::grace_remaining_secs(s.grace_until_ms, now);
+        self.notify_general(
+            "Session starting",
+            &crate::notifications::grace_body(&s.title, secs),
+        );
+        s.grace_notified = true;
+        true
     }
     /// Dismiss the "why am I blocked" app page. Clears the notice so
     /// the tick sync destroys the window; the block itself is
@@ -1489,6 +1702,13 @@ impl Engine {
             if s.focus.attention.enabled {
                 s.deadline_ms = None;
             }
+            if s.durability.intended_end_at_ms.is_none() {
+                s.durability.intended_end_at_ms =
+                    Some(now.saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64));
+            }
+            if s.durability.recovery_status.is_none() {
+                s.durability.recovery_status = Some("clean".into());
+            }
             if s.focus.network_required() {
                 s.started_at = self
                     .data
@@ -1540,10 +1760,24 @@ impl Engine {
             }
         }
         if changed || transitioned || tick.saturating_sub(self.checkpoint) >= 5000 {
+            for s in &mut next.sessions {
+                if matches!(
+                    s.status,
+                    Status::Running | Status::Preparing | Status::Paused
+                ) {
+                    s.durability.last_checkpoint_at_ms = Some(now);
+                }
+            }
             if let Err(e) = self.db.save(&next) {
                 self.fail_open(&e);
                 return Err(e);
             }
+            let _ = crate::lifecycle::write_session_checkpoint(
+                &self.lifecycle_path,
+                crate::lifecycle::current_boot_id(),
+                crate::lifecycle::ending(),
+                Self::active_session_checkpoint(&next, now),
+            );
             self.checkpoint = tick;
         }
         self.data = next;
@@ -1652,7 +1886,7 @@ impl Engine {
                     platform::camera_permission() == "granted",
                     cfg!(target_os = "macos"),
                 );
-                crate::desktop_settings::notify(
+                self.notify_general(
                     "Block starting soon",
                     &crate::notifications::warning_body_with_readiness(
                         &schedule.title,
@@ -1695,7 +1929,7 @@ impl Engine {
                     platform::camera_permission() == "granted",
                     cfg!(target_os = "macos"),
                 );
-                crate::desktop_settings::notify(
+                self.notify_general(
                     "Block starting soon",
                     &crate::notifications::warning_body_with_readiness(
                         &shot.title,
@@ -1818,6 +2052,14 @@ impl Engine {
                 {
                     continue;
                 }
+                let occurrence_key = crate::schedules::window_occurrence_key(schedule, now);
+                if occurrence_key.as_deref().is_some_and(|key| {
+                    next.sessions
+                        .iter()
+                        .any(|s| s.durability.schedule_window_key.as_deref() == Some(key))
+                }) {
+                    continue;
+                }
                 let mut focus = match crate::focus::validate(schedule.focus.clone()) {
                     Ok(focus) => focus,
                     Err(e) => {
@@ -1855,6 +2097,7 @@ impl Engine {
                     attention: Default::default(),
                     force_quit: false,
                     schedule_id: Some(schedule.id.clone()),
+                    kind: crate::models::SessionKind::Scheduled,
                     pomodoro,
                     reward: Default::default(),
                     // Step 10: a schedule session inherits the
@@ -1874,6 +2117,19 @@ impl Engine {
                         self.data.preferences.grace_seconds,
                         now,
                     ),
+                    // Step 14 grace-start notification: not sent
+                    // yet — the tick notifies once when grace is
+                    // entered (see notify_grace_start).
+                    grace_notified: false,
+                    durability: crate::models::SessionDurability {
+                        intended_end_at_ms: Some(
+                            now.saturating_add(remaining_ms.min(i64::MAX as u64) as i64),
+                        ),
+                        schedule_window_key: occurrence_key,
+                        last_checkpoint_at_ms: Some(now),
+                        last_enforcement_at_ms: Some(now),
+                        recovery_status: Some("clean".into()),
+                    },
                 };
                 session.report.event(
                     now,
@@ -2005,6 +2261,11 @@ impl Engine {
                 attention: Default::default(),
                 force_quit: false,
                 schedule_id: None,
+                // The one-shot record is purged when it fires, so
+                // the kind is recorded here: without it the session
+                // would be indistinguishable from an instant focus
+                // session from here on.
+                kind: crate::models::SessionKind::OneShot,
                 pomodoro,
                 reward: Default::default(),
                 // One-shot timers carry no step 10 lock: they are
@@ -2018,6 +2279,19 @@ impl Engine {
                     self.data.preferences.grace_seconds,
                     now,
                 ),
+                // Step 14 grace-start notification: not sent yet —
+                // the tick notifies once when grace is entered
+                // (see notify_grace_start).
+                grace_notified: false,
+                durability: crate::models::SessionDurability {
+                    intended_end_at_ms: Some(
+                        now.saturating_add(remaining_ms.min(i64::MAX as u64) as i64),
+                    ),
+                    schedule_window_key: None,
+                    last_checkpoint_at_ms: Some(now),
+                    last_enforcement_at_ms: Some(now),
+                    recovery_status: Some("clean".into()),
+                },
             };
             session.report.event(
                 now,
@@ -2249,7 +2523,55 @@ impl Engine {
         }
         Ok(())
     }
+    /// Advance engine state by one tick and emit headless session start/complete
+    /// notifications when no desktop GUI window process is connected.
     pub fn tick(&mut self) -> Result<(), String> {
+        let should_notify = self.native
+            && !crate::background::desktop_alive(&self.data_dir)
+            && crate::desktop_settings::can_notify();
+        let before: Option<std::collections::HashMap<String, (Status, bool)>> =
+            should_notify.then(|| {
+                self.data
+                    .sessions
+                    .iter()
+                    .map(|s| (s.id.clone(), (s.status.clone(), s.grace_until_ms.is_some())))
+                    .collect()
+            });
+        let result = self.tick_inner();
+        if result.is_ok() {
+            if let Some(prev) = before {
+                let p = &self.data.preferences;
+                for s in &self.data.sessions {
+                    let tr = crate::settings::session_transition(
+                        &prev,
+                        &s.id,
+                        &s.status,
+                        s.grace_until_ms.is_some(),
+                    );
+                    if tr.completed && p.notifications_enabled && p.session_alert {
+                        crate::desktop_settings::notify(
+                            "Focus complete",
+                            "You reached your target.",
+                        );
+                        if p.sound {
+                            crate::desktop_settings::sound(p.volume);
+                        }
+                    }
+                    if tr.started && p.notifications_enabled && p.session_start_alert {
+                        crate::desktop_settings::notify(
+                            "Focus started",
+                            "Your session timer is running.",
+                        );
+                        if p.session_start_sound {
+                            crate::desktop_settings::sound(p.volume);
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+    fn tick_inner(&mut self) -> Result<(), String> {
         // M1: only the engine holding the cross-process lock may tick.
         // An observer reloads the snapshot so the UI keeps showing the
         // owner's state, then returns without ticking, sampling,
@@ -2440,10 +2762,27 @@ impl Engine {
             }
         }
         if crate::notifications::grace_active(s.grace_until_ms, now) {
-            // Nothing changed that needs saving (the session was
-            // already saved with its grace deadline at creation),
-            // and publish() skips grace sessions, so the extension
-            // keeps no rules during grace.
+            // Grace-start notification (step 14 parity): the
+            // 1-minute pre-start is the same for camera and
+            // non-camera sessions, but until now it was silent —
+            // only the in-app banner and tray countdown showed it.
+            // Notify once, with the true remaining seconds; the
+            // marker persists in the session JSON, so a later
+            // engine never re-fires and an undeliverable tick
+            // retries while grace is still active. publish()
+            // skips grace sessions, so the extension keeps no
+            // rules during grace.
+            if self.notify_grace_start(s, now) {
+                // This branch returns early without reaching the
+                // tick's normal save: persist the marker now, or
+                // the next tick (or the next engine) would fire
+                // again. A failed save retries on the next tick.
+                if let Err(e) = self.db.save(&next) {
+                    log::error!("Could not save grace notification marker: {e}");
+                } else {
+                    self.data = next;
+                }
+            }
             return Ok(());
         }
         // Breaks (step 7 Pomodoro, step 9 reward): during a break
@@ -2828,7 +3167,7 @@ impl Engine {
                                             } else {
                                                 sample.name.as_str()
                                             };
-                                            crate::desktop_settings::notify(
+                                            self.notify_general(
                                                 "Preelock",
                                                 &crate::blockreasons::cause_text(cause, name, now),
                                             );
@@ -2981,6 +3320,10 @@ impl Engine {
                 }
             }
         }
+        if s.status == Status::Running && !crate::notifications::grace_active(s.grace_until_ms, now)
+        {
+            s.durability.last_enforcement_at_ms = Some(now);
+        }
         let terminal = !matches!(s.status, Status::Running | Status::Preparing);
         if terminal {
             // Step 14: a finished session keeps no grace.
@@ -3029,10 +3372,24 @@ impl Engine {
         let allowance_due =
             screen_allowance_changed && tick.saturating_sub(self.allowance_checkpoint) >= 5000;
         if changed || allowance_due {
+            for session in &mut next.sessions {
+                if matches!(
+                    session.status,
+                    Status::Running | Status::Preparing | Status::Paused
+                ) {
+                    session.durability.last_checkpoint_at_ms = Some(now);
+                }
+            }
             if let Err(e) = self.db.save(&next) {
                 self.fail_open(&e);
                 return Err(e);
             }
+            let _ = crate::lifecycle::write_session_checkpoint(
+                &self.lifecycle_path,
+                crate::lifecycle::current_boot_id(),
+                crate::lifecycle::ending(),
+                Self::active_session_checkpoint(&next, now),
+            );
             if allowance_due {
                 self.allowance_checkpoint = tick;
             }
@@ -3251,6 +3608,13 @@ mod tests {
     fn holder_starts_bridge_on_retry() {
         let _guard = fixed_port_guard();
         let dir = tempfile::tempdir().unwrap();
+        if Bridge::probe(dir.path(), browser::PORT).port_listening {
+            eprintln!(
+                "External process is using port {}; skipping test",
+                browser::PORT
+            );
+            return;
+        }
         let path = dir.path().join("retry.sqlite");
         let mut engine = Engine::open(&path).unwrap();
         assert!(engine.owns_engine_lock());
@@ -3270,6 +3634,13 @@ mod tests {
     fn holder_retries_bridge_after_lock_contention() {
         let _guard = fixed_port_guard();
         let dir = tempfile::tempdir().unwrap();
+        if Bridge::probe(dir.path(), browser::PORT).port_listening {
+            eprintln!(
+                "External process is using port {}; skipping test",
+                browser::PORT
+            );
+            return;
+        }
         let path = dir.path().join("contention.sqlite");
         let holder_bridge = Bridge::test_bridge(dir.path());
         let mut engine = Engine::open(&path).unwrap();
@@ -3301,6 +3672,13 @@ mod tests {
         use std::io::{Read, Write};
         let _guard = fixed_port_guard();
         let dir = tempfile::tempdir().unwrap();
+        if Bridge::probe(dir.path(), browser::PORT).port_listening {
+            eprintln!(
+                "External process is using port {}; skipping test",
+                browser::PORT
+            );
+            return;
+        }
         let (mut e, id) = network_engine(dir.path());
         // Use a browser id whose resolution is independent of which
         // chromium browsers happen to be installed on the host.
@@ -4758,6 +5136,7 @@ mod tests {
             attention: Default::default(),
             force_quit: false,
             schedule_id: None,
+            kind: crate::models::SessionKind::Focus,
             pomodoro: Default::default(),
             reward: Default::default(),
             lock: Default::default(),
@@ -4765,6 +5144,8 @@ mod tests {
             policy_applied: false,
             browser_fail_closed: false,
             grace_until_ms: None,
+            grace_notified: false,
+            durability: Default::default(),
         }
     }
 
@@ -4810,6 +5191,10 @@ mod tests {
         assert_eq!(session.remaining_ms, 25 * 60_000);
         assert!(session.allow_pause);
         assert_eq!(session.schedule_id, None);
+        // The one-shot record is already purged at this point, yet
+        // the session still knows it was a one-shot: the kind was
+        // recorded on the session when it fired.
+        assert_eq!(session.kind, crate::models::SessionKind::OneShot);
         // A second evaluation does not fire again: the timer is gone.
         assert!(!engine.evaluate_one_shots(5000, false).unwrap());
         assert_eq!(engine.data.sessions.len(), 1);
@@ -5013,17 +5398,17 @@ mod tests {
         assert!(engine.data.schedules[0].warning_fired.is_empty());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_headless_warnings_defer_without_app_handle() {
+    fn undeliverable_warnings_defer_without_consuming_point() {
         let dir = tempfile::tempdir().unwrap();
-        let mut engine = Engine::open(&dir.path().join("warn-win-headless.sqlite")).unwrap();
+        let mut engine = Engine::open(&dir.path().join("warn-defer.sqlite")).unwrap();
         engine.data.preferences.warning_minutes = "5".into();
         engine.data.schedules.push(upcoming_schedule(10));
         let now = clock::now();
         let at_warning = now - now.rem_euclid(60_000) + 5 * 60_000;
-        assert!(!crate::desktop_settings::can_notify());
-        assert!(!engine.evaluate_warnings(at_warning).unwrap());
+        assert!(!engine
+            .evaluate_warnings_deliverable(at_warning, false)
+            .unwrap());
         assert!(engine.data.schedules[0].warning_fired.is_empty());
     }
 
@@ -5047,6 +5432,7 @@ mod tests {
         assert_eq!(engine.data.sessions.len(), 1);
         let session = &engine.data.sessions[0];
         assert_eq!(session.status, Status::Running);
+        assert_eq!(session.kind, crate::models::SessionKind::Scheduled);
         assert_eq!(
             session.grace_until_ms,
             Some(inside + 60_000),
@@ -5063,6 +5449,11 @@ mod tests {
         assert!(engine.evaluate_schedules(after_window).unwrap());
         assert_eq!(engine.data.sessions[0].status, Status::Completed);
         assert_eq!(engine.data.sessions[0].grace_until_ms, None);
+        // The finished session keeps its kind for the history card.
+        assert_eq!(
+            engine.data.sessions[0].kind,
+            crate::models::SessionKind::Scheduled
+        );
     }
 
     #[test]
@@ -5096,6 +5487,179 @@ mod tests {
             .events
             .iter()
             .any(|ev| ev.kind == "grace_ended"));
+    }
+
+    /// A schedule whose window started 1 minute ago (local time) and
+    /// runs 60 minutes, so it is active at real-now tick time even
+    /// if the minute rolls during the test. `tick()` re-evaluates
+    /// schedules at real now and ends a live session whose window
+    /// is not active, so a future window (like `upcoming_schedule`)
+    /// cannot be used with `tick()`.
+    fn active_schedule_now(camera: bool) -> crate::schedules::Schedule {
+        let now = clock::now();
+        let (weekday, minutes) = crate::schedules::local_weekday_and_minutes(now);
+        let start = (minutes + 1440 - 1) % 1440;
+        let day = if minutes == 0 {
+            (weekday + 6) % 7
+        } else {
+            weekday
+        };
+        let end = (start + 60) % 1440;
+        let mut sched = crate::schedules::Schedule {
+            id: "sched".into(),
+            title: "Morning block".into(),
+            days: vec![day],
+            start_time: format!("{:02}:{:02}", start / 60, start % 60),
+            end_time: format!("{:02}:{:02}", end / 60, end % 60),
+            focus: FocusConfig::default(),
+            enabled: true,
+            lock_changes: false,
+            lock: Default::default(),
+            lock_state: Default::default(),
+            warning_fired: vec![],
+            created_at: now,
+        };
+        if camera {
+            // What the wizard submits for "Apps + camera":
+            // camera verification needs sampling consent and a
+            // productive app, or focus::validate rejects the
+            // snapshot and the schedule never starts.
+            sched.focus.camera = true;
+            sched.focus.activity_consent = true;
+            sched.focus.attention.verification = "camera_and_activity".into();
+            sched.focus.attention.work_apps = vec!["com.example.work".into()];
+        }
+        sched
+    }
+
+    #[test]
+    fn schedule_grace_notification_fires_identically_with_and_without_camera() {
+        // Step 14 parity: the 1-minute pre-start grace is the same for
+        // camera and non-camera auto-starts, and the grace-start
+        // notification must fire for both. Until now the grace was
+        // silent (only the in-app banner and tray countdown showed
+        // it), so a non-camera auto-start looked instant while a
+        // camera one drew the user to the app.
+        for camera in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut engine = Engine::open(&dir.path().join("grace-notify.sqlite")).unwrap();
+            engine.data.preferences.grace_seconds = 60;
+            engine.data.schedules.push(active_schedule_now(camera));
+            let now = clock::now();
+            assert!(engine.evaluate_schedules(now).unwrap());
+            assert_eq!(engine.data.sessions.len(), 1);
+            let session = &engine.data.sessions[0];
+            assert_eq!(session.focus.camera, camera);
+            assert_eq!(session.grace_until_ms, Some(now + 60_000));
+            assert!(
+                !session.grace_notified,
+                "camera={camera}: no notification before the first tick"
+            );
+            assert!(session
+                .report
+                .events
+                .iter()
+                .any(|ev| ev.kind == "grace_started"));
+            // The first tick during grace fires the notification once,
+            // and grace still accrues nothing.
+            let remaining_before = session.remaining_ms;
+            engine.tick().unwrap();
+            let session = &engine.data.sessions[0];
+            assert_eq!(session.status, Status::Running);
+            assert!(
+                session.grace_notified,
+                "camera={camera}: grace notification must fire"
+            );
+            assert_eq!(
+                session.remaining_ms, remaining_before,
+                "grace still accrues nothing"
+            );
+            // A second tick does not re-fire: the marker is exactly-once.
+            engine.tick().unwrap();
+            assert!(engine.data.sessions[0].grace_notified);
+            // The grace notification must not consume the advance
+            // warning: the window already started, so nothing fired.
+            assert!(engine.data.schedules[0].warning_fired.is_empty());
+        }
+    }
+
+    #[test]
+    fn one_shot_grace_notification_fires_identically_with_and_without_camera() {
+        for camera in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut engine = Engine::open(&dir.path().join("grace-one-notify.sqlite")).unwrap();
+            engine.data.preferences.grace_seconds = 60;
+            let now = clock::now();
+            let mut one = one_shot_timer(now);
+            one.focus.camera = camera;
+            if camera {
+                // What the wizard submits for "Apps + camera":
+                // camera verification needs sampling consent and a
+                // productive app, or focus::validate rejects the
+                // snapshot and the timer never starts.
+                one.focus.activity_consent = true;
+                one.focus.attention.verification = "camera_and_activity".into();
+                one.focus.attention.work_apps = vec!["com.example.work".into()];
+            }
+            engine.data.one_shots.push(one);
+            assert!(engine.evaluate_one_shots(now, false).unwrap());
+            assert_eq!(engine.data.sessions.len(), 1);
+            let session = &engine.data.sessions[0];
+            assert_eq!(session.focus.camera, camera);
+            assert_eq!(session.grace_until_ms, Some(now + 60_000));
+            assert!(!session.grace_notified);
+            engine.tick().unwrap();
+            let session = &engine.data.sessions[0];
+            assert!(
+                session.grace_notified,
+                "camera={camera}: grace notification must fire"
+            );
+            assert_eq!(session.status, Status::Running);
+            engine.tick().unwrap();
+            assert!(engine.data.sessions[0].grace_notified);
+        }
+    }
+
+    #[test]
+    fn ending_during_grace_is_free_with_and_without_camera() {
+        // Ending during grace needs no lock proof (sessions::apply):
+        // the grace notification must not change that, for either
+        // camera setting.
+        for camera in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut engine = Engine::open(&dir.path().join("grace-end.sqlite")).unwrap();
+            engine.data.preferences.grace_seconds = 60;
+            let mut sched = upcoming_schedule(60);
+            sched.focus.camera = camera;
+            engine.data.schedules.push(sched);
+            let now = clock::now();
+            let inside = now - now.rem_euclid(60_000) + 61 * 60_000;
+            assert!(engine.evaluate_schedules(inside).unwrap());
+            let id = engine.data.sessions[0].id.clone();
+            assert!(engine.data.sessions[0].grace_until_ms.is_some());
+            engine
+                .execute(Action::EndSession {
+                    id,
+                    password: None,
+                    challenge_answer: None,
+                })
+                .unwrap();
+            assert_eq!(engine.data.sessions[0].status, Status::Ended);
+        }
+    }
+
+    #[test]
+    fn manual_session_gets_no_grace_and_no_grace_notification() {
+        // Instant (manually started) sessions never get grace, so no
+        // grace notification may fire for them either.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("grace-manual.sqlite")).unwrap();
+        engine.data.preferences.grace_seconds = 60;
+        engine.data.sessions.push(running_session("manual"));
+        engine.tick().unwrap();
+        let session = &engine.data.sessions[0];
+        assert_eq!(session.grace_until_ms, None);
+        assert!(!session.grace_notified);
     }
 
     #[test]
@@ -5754,5 +6318,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(&dir.path().join("m6-ordinary.sqlite")).unwrap();
         assert!(!engine.recovered_after_os_shutdown());
+    }
+
+    #[test]
+    fn durable_checkpoint_and_reboot_recovery_preserve_strict_session_and_remaining_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("durable.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let snap = engine
+            .execute(Action::CreateSession {
+                title: "Strict Focus".into(),
+                minutes: 120,
+                allow_pause: false,
+                focus: FocusConfig {
+                    mode: Mode::Strict,
+                    apps: vec!["com.apple.TextEdit".into()],
+                    domains: vec!["docs.rs".into()],
+                    browser_app: TEST_BROWSER.into(),
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = snap.sessions[0].id.clone();
+        let bridge = Bridge::test_bridge(dir.path());
+        bridge.acknowledge(TEST_CLIENT, TEST_BROWSER, "");
+        engine.bridge = Some(bridge);
+        engine
+            .execute(Action::StartSession { id: id.clone() })
+            .unwrap();
+        // Simulate 40 minutes already elapsed before shutdown -> 80m remaining.
+        engine.data.sessions[0].remaining_ms = 80 * 60_000;
+        engine.save_checkpoint().unwrap();
+
+        let cp = crate::lifecycle::read_checkpoint(&path.with_extension("lifecycle.json"))
+            .expect("atomic lifecycle checkpoint written");
+        let active = cp.active_session.expect("active session summary written");
+        assert_eq!(active.session_id, id);
+        assert_eq!(active.mode, "strict");
+        assert_eq!(active.remaining_ms, 80 * 60_000);
+        assert_eq!(active.allowed_apps, vec!["com.apple.TextEdit".to_string()]);
+        assert_eq!(active.allowed_sites, vec!["docs.rs".to_string()]);
+        drop(engine);
+
+        // Reboot recovery restores the exact same session ID and remaining time.
+        let recovered = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(recovered.has_active_strict());
+        let restored = recovered
+            .current()
+            .sessions
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        assert!(matches!(
+            restored.status,
+            Status::Preparing | Status::Running
+        ));
+        assert_eq!(restored.remaining_ms, 80 * 60_000);
+        assert_eq!(
+            restored.durability.recovery_status.as_deref(),
+            Some("recovered_after_os_shutdown")
+        );
     }
 }

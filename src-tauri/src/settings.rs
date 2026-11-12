@@ -1,6 +1,6 @@
 use crate::{
     clock, desktop_settings as native,
-    engine::Engine,
+    ipc::IpcClient,
     models::{Action, Preferences, Snapshot, Status},
     platform,
 };
@@ -207,9 +207,38 @@ fn csv(data: &Snapshot) -> String {
     }
     out
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SessionTransition {
+    pub completed: bool,
+    pub started: bool,
+}
+
+pub(crate) fn session_transition(
+    previous: &HashMap<String, (Status, bool)>,
+    id: &str,
+    status: &Status,
+    in_grace: bool,
+) -> SessionTransition {
+    let prev = previous.get(id);
+    let completed = *status == Status::Completed
+        && prev.is_some_and(|(old, _)| matches!(old, Status::Running | Status::Preparing));
+    let started = *status == Status::Running
+        && !in_grace
+        && match prev {
+            // Scheduled and one-shot sessions enter Running directly
+            // without passing through Ready or Preparing.
+            None => true,
+            Some((old, old_in_grace)) => {
+                matches!(old, Status::Ready | Status::Preparing)
+                    || (*old == Status::Running && *old_in_grace)
+            }
+        };
+    SessionTransition { completed, started }
+}
+
 #[derive(Default)]
 pub struct Runtime {
-    previous: Option<HashMap<String, Status>>,
+    previous: Option<HashMap<String, (Status, bool)>>,
     pub break_end: u64,
     pub offered: String,
     reminder_key: String,
@@ -233,29 +262,21 @@ impl Runtime {
         let p = &data.preferences;
         if let Some(previous) = &self.previous {
             for s in &data.sessions {
-                if s.status == Status::Completed
-                    && previous
-                        .get(&s.id)
-                        .is_some_and(|old| matches!(old, Status::Running | Status::Preparing))
-                {
+                let transition =
+                    session_transition(previous, &s.id, &s.status, s.grace_until_ms.is_some());
+                if transition.completed {
                     if p.notifications_enabled && p.session_alert {
                         native::notify("Focus complete", "You reached your target.");
-                    }
-                    if p.sound {
-                        native::sound(p.volume);
+                        if p.sound {
+                            native::sound(p.volume);
+                        }
                     }
                     if p.offer_break {
                         self.offered = s.id.clone();
                     }
                 }
-                if s.status == Status::Running
-                    && previous
-                        .get(&s.id)
-                        .is_some_and(|old| matches!(old, Status::Ready | Status::Preparing))
-                {
-                    if p.notifications_enabled && p.session_start_alert {
-                        native::notify("Focus started", "Your session timer is running.");
-                    }
+                if transition.started && p.notifications_enabled && p.session_start_alert {
+                    native::notify("Focus started", "Your session timer is running.");
                     if p.session_start_sound {
                         native::sound(p.volume);
                     }
@@ -265,7 +286,7 @@ impl Runtime {
         self.previous = Some(
             data.sessions
                 .iter()
-                .map(|s| (s.id.clone(), s.status.clone()))
+                .map(|s| (s.id.clone(), (s.status.clone(), s.grace_until_ms.is_some())))
                 .collect(),
         );
         let active = data.sessions.iter().find(|s| {
@@ -275,11 +296,9 @@ impl Runtime {
             )
         });
         let now = clock::continuous_ms();
-        if self.advance_break(now, active.is_some()) {
-            if p.notifications_enabled && p.break_alert {
-                native::notify("Break finished", "Ready for your next session?");
-            }
-            if p.sound {
+        if self.advance_break(now, active.is_some()) && p.notifications_enabled && p.break_alert {
+            native::notify("Break finished", "Ready for your next session?");
+            if p.notifications_sound {
                 native::sound(p.volume);
             }
         }
@@ -302,10 +321,10 @@ impl Runtime {
         if title != self.tray_title {
             if let Some(tray) = app.tray_by_id("focus-controller") {
                 #[cfg(target_os = "windows")]
-                let _ = tray.set_tooltip(Some(if title.is_empty() {
-                    "Preelock".to_string()
+                let _ = tray.set_tooltip(Some(if p.menu_timer {
+                    crate::tray::tooltip_text(live_session(data), now)
                 } else {
-                    format!("Preelock · {title} left")
+                    "Preelock".to_string()
                 }));
                 #[cfg(not(target_os = "windows"))]
                 let _ = tray.set_title(if title.is_empty() {
@@ -329,6 +348,9 @@ impl Runtime {
                     self.reminder_key = key;
                     if active.is_none() && self.break_end == 0 && p.notifications_enabled {
                         native::notify("Time to focus", "Choose a task when you’re ready.");
+                        if p.notifications_sound {
+                            native::sound(p.volume);
+                        }
                     }
                 }
             }
@@ -344,6 +366,7 @@ pub enum SettingsAction {
     AllowNotifications,
     PreviewSound { volume: u32 },
     TestBrowser,
+    ReconnectBrowser,
     TestCamera,
     StopCameraTest,
     StartBreak,
@@ -356,7 +379,7 @@ pub enum SettingsAction {
     ResetPreferences,
 }
 pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, String> {
-    let engine = app.state::<Mutex<Engine>>();
+    let client = app.state::<IpcClient>();
     let runtime = app.state::<Mutex<Runtime>>();
     match action {
         SettingsAction::Info | SettingsAction::Status => {
@@ -365,10 +388,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             } else {
                 json!({})
             };
-            info["browser_test"] = json!(engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .browser_test_result());
+            info["browser_test"] = json!(client.browser_test_result()?);
             let runtime = runtime.lock().map_err(|_| "Settings unavailable.")?;
             info["break_remaining"] =
                 json!(runtime.break_end.saturating_sub(clock::continuous_ms()));
@@ -424,7 +444,17 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
                         .into(),
                 );
             }
+            let (sound, volume) = client
+                .ping()
+                .map(|p| {
+                    let (_, s, v) = p.notification_prefs;
+                    (s, v)
+                })
+                .unwrap_or((true, 50));
             native::notify("Notifications ready", "Preelock can now send focus alerts.");
+            if sound {
+                native::sound(volume);
+            }
             Ok(json!(null))
         }
         SettingsAction::PreviewSound { volume } => {
@@ -432,34 +462,35 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             Ok(json!(null))
         }
         SettingsAction::TestBrowser => {
-            engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .test_browser()?;
+            client.test_browser_connection()?;
             Ok(json!(null))
         }
+        SettingsAction::ReconnectBrowser => {
+            client.refresh_browser_connection()?;
+            Ok(json!({ "reconnected": true }))
+        }
         SettingsAction::TestCamera => {
-            engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .test_camera()?;
+            client.test_camera()?;
             Ok(json!(null))
         }
         SettingsAction::StopCameraTest => {
-            engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .stop_test();
+            client.stop_test()?;
             Ok(json!(null))
         }
         SettingsAction::StartBreak => {
-            let e = engine.lock().map_err(|_| "Session engine unavailable.")?;
-            if e.has_active() {
+            let snap = client.snapshot()?;
+            let has_active = snap.sessions.iter().any(|s| {
+                matches!(
+                    s.status,
+                    Status::Running | Status::Paused | Status::Preparing
+                )
+            });
+            if has_active {
                 return Err("Finish your focus session first.".into());
             }
             let mut r = runtime.lock().map_err(|_| "Settings unavailable.")?;
             r.break_end =
-                clock::continuous_ms() + u64::from(e.current().preferences.break_minutes) * 60_000;
+                clock::continuous_ms() + u64::from(snap.preferences.break_minutes) * 60_000;
             r.offered.clear();
             Ok(json!(null))
         }
@@ -470,22 +501,21 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             Ok(json!(null))
         }
         SettingsAction::ResetPreferences => {
-            let mut e = engine.lock().map_err(|_| "Session engine unavailable.")?;
+            let snap = client.snapshot()?;
             let preferences = Preferences {
-                saved_setups: e.current().preferences.saved_setups,
+                saved_setups: snap.preferences.saved_setups,
                 ..Preferences::default()
             };
-            e.execute(Action::UpdatePreferences { preferences })?;
+            client.execute(Action::UpdatePreferences { preferences })?;
             Ok(json!(null))
         }
         SettingsAction::DeleteHistory { confirmation } => {
             if confirmation != "DELETE HISTORY" {
                 return Err("Type DELETE HISTORY to confirm.".into());
             }
-            let mut e = engine.lock().map_err(|_| "Session engine unavailable.")?;
-            let mut data = e.current();
+            let mut data = client.snapshot()?;
             data.sessions.clear();
-            e.replace_data(data)?;
+            client.replace_data(data)?;
             Ok(json!(null))
         }
         SettingsAction::ExportHistory | SettingsAction::Backup => {
@@ -501,10 +531,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             if path.is_empty() {
                 return Ok(json!({"cancelled":true}));
             }
-            let data = engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .backup()?;
+            let data = client.backup()?;
             let content = if export {
                 csv(&data)
             } else {
@@ -517,11 +544,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
             if confirmation != "RESTORE" {
                 return Err("Type RESTORE to replace your workspace.".into());
             }
-            if engine
-                .lock()
-                .map_err(|_| "Session engine unavailable.")?
-                .has_active()
-            {
+            if client.ping().is_ok_and(|p| p.has_active) {
                 return Err("Finish your session before restoring a backup.".into());
             }
             let path = native::file(false, "")?;
@@ -532,8 +555,7 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
                 return Err("Choose a backup smaller than 20 MB.".into());
             }
             let data = restore_backup(&std::fs::read_to_string(path).map_err(|e| e.to_string())?)?;
-            let mut e = engine.lock().map_err(|_| "Session engine unavailable.")?;
-            if e.has_active() {
+            if client.ping().is_ok_and(|p| p.has_active) {
                 return Err("Finish your session before restoring a backup.".into());
             }
             let recovery = app
@@ -541,8 +563,8 @@ pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, Stri
                 .app_data_dir()
                 .map_err(|e| e.to_string())?
                 .join(format!("before-restore-{}.json", clock::now()));
-            std::fs::write(recovery, backup_json(e.backup()?)?).map_err(|e| e.to_string())?;
-            e.replace_data(data)?;
+            std::fs::write(recovery, backup_json(client.backup()?)?).map_err(|e| e.to_string())?;
+            client.replace_data(data)?;
             let mut r = runtime.lock().map_err(|_| "Settings unavailable.")?;
             *r = Runtime::default();
             Ok(json!({"restored":true}))
@@ -560,6 +582,45 @@ mod tests {
         assert_eq!(p.break_minutes, 5);
         assert!(!p.reminder);
         assert!(p.session_alert);
+        // Item 3: the menu-bar timer and both session sounds default
+        // on for saves made before those fields existed.
+        assert!(p.menu_timer);
+        assert!(p.sound);
+        assert!(p.session_start_sound);
+        assert!(p.notifications_sound);
+        assert!(p.session_start_alert);
+        assert_eq!(p.warning_minutes, "2");
+    }
+    #[test]
+    fn saved_off_preferences_stay_off() {
+        // Item 3: a stored false is never overridden by the new
+        // defaults — defaults only fill in missing fields.
+        let p: Preferences = serde_json::from_str(
+            r#"{"theme":"light","default_minutes":50,"menu_timer":false,"sound":false,"session_start_sound":false,"notifications_sound":false,"session_start_alert":false,"warning_minutes":"5"}"#,
+        )
+        .unwrap();
+        assert!(!p.menu_timer);
+        assert!(!p.sound);
+        assert!(!p.session_start_sound);
+        assert!(!p.notifications_sound);
+        assert!(!p.session_start_alert);
+        assert_eq!(p.warning_minutes, "5");
+    }
+    #[test]
+    fn session_transition_detects_scheduled_and_grace_starts() {
+        let previous = HashMap::new();
+        assert!(session_transition(&previous, "sched-1", &Status::Running, false).started);
+
+        // Inside grace: wait for grace end before firing "Focus started".
+        assert!(!session_transition(&previous, "sched-1", &Status::Running, true).started);
+
+        // Exiting grace triggers start notification; steady running does not.
+        let mut after_grace_prev = HashMap::new();
+        after_grace_prev.insert("sched-1".into(), (Status::Running, true));
+        assert!(session_transition(&after_grace_prev, "sched-1", &Status::Running, false).started);
+
+        after_grace_prev.insert("sched-1".into(), (Status::Running, false));
+        assert!(!session_transition(&after_grace_prev, "sched-1", &Status::Running, false).started);
     }
     #[test]
     fn category_overrides_load_empty_for_old_saves() {

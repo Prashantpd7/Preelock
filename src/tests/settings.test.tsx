@@ -115,10 +115,11 @@ it('saves real preferences with button choices and no dropdowns', async () => {
   const user = userEvent.setup();
   render(<Settings />);
   expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Light' }));
-  await user.click(
+  // Item 3: the menu-bar timer is ON by default for a fresh profile.
+  expect(
     screen.getByRole('switch', { name: 'Show timer in menu bar' }),
-  );
+  ).toBeChecked();
+  await user.click(screen.getByRole('button', { name: 'Light' }));
   await user.click(screen.getByRole('button', { name: 'Save changes' }));
   expect(api.execute).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -131,15 +132,181 @@ it('saves real preferences with button choices and no dropdowns', async () => {
   );
   expect(await screen.findByText('Saved')).toBeInTheDocument();
 });
-it('uses one connection status and opens a real blocking test', async () => {
+it('defaults the menu-bar timer and session sounds on', async () => {
+  const user = userEvent.setup();
+  // Item 3: fresh defaults are all on.
+  expect(preferenceDefaults.menu_timer).toBe(true);
+  expect(preferenceDefaults.notifications_sound).toBe(true);
+  expect(preferenceDefaults.sound).toBe(true);
+  expect(preferenceDefaults.session_start_alert).toBe(true);
+  expect(preferenceDefaults.session_start_sound).toBe(true);
+  expect(preferenceDefaults.warning_minutes).toBe('2');
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  expect(screen.queryByRole('switch', { name: 'Play a sound' })).toBeNull();
+  const notifSound = screen.getByRole('button', {
+    name: 'Notifications sound',
+  });
+  const finishSound = screen.getByRole('button', {
+    name: 'Session finished sound',
+  });
+  const startSound = screen.getByRole('button', {
+    name: 'Session started sound',
+  });
+  expect(notifSound).toHaveAttribute('aria-pressed', 'true');
+  expect(finishSound).toHaveAttribute('aria-pressed', 'true');
+  expect(startSound).toHaveAttribute('aria-pressed', 'true');
+
+  // Clicking a bell icon toggles its sound state and saves it.
+  await user.click(notifSound);
+  expect(notifSound).toHaveAttribute('aria-pressed', 'false');
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({
+        notifications_sound: false,
+      }),
+    }),
+  );
+});
+it('shows block warnings as one minutes box with a short hint', async () => {
+  const user = userEvent.setup();
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  expect(
+    screen.getByText('Warn before a scheduled or one-shot block starts.'),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText(/Minutes, separated by commas/),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/Leave blank for no warnings/),
+  ).not.toBeInTheDocument();
+  const input = screen.getByRole('spinbutton', {
+    name: 'Block warning minutes',
+  });
+  expect(input).toHaveValue(2);
+  expect(input.closest('label')).toHaveTextContent('min');
+});
+it('saves a single block warning minute', async () => {
+  const user = userEvent.setup();
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  const input = screen.getByRole('spinbutton', {
+    name: 'Block warning minutes',
+  });
+  await user.clear(input);
+  await user.type(input, '1');
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({ warning_minutes: '1' }),
+    }),
+  );
+});
+it('treats an empty or zero block warning as no warning', async () => {
+  const user = userEvent.setup();
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  const input = screen.getByRole('spinbutton', {
+    name: 'Block warning minutes',
+  });
+  await user.clear(input);
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({ warning_minutes: '' }),
+    }),
+  );
+  // 0 means the same: no warning, so the box clears.
+  await user.type(input, '0');
+  expect((input as HTMLInputElement).value).toBe('');
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({ warning_minutes: '' }),
+    }),
+  );
+});
+it('shows a stored warning list as one minute and saves one number', async () => {
+  const user = userEvent.setup();
+  useAppStore.setState({
+    data: {
+      ...structuredClone(emptySnapshot),
+      preferences: {
+        theme: 'dark',
+        default_minutes: 25,
+        warning_minutes: '5, 15',
+      },
+    },
+    loading: false,
+    busy: false,
+    error: null,
+  });
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  const input = screen.getByRole('spinbutton', {
+    name: 'Block warning minutes',
+  });
+  expect(input).toHaveValue(5);
+  await user.clear(input);
+  await user.type(input, '5');
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({ warning_minutes: '5' }),
+    }),
+  );
+});
+it('keeps a saved off for the timer and sounds instead of the new defaults', async () => {
+  const user = userEvent.setup();
+  // A saved off stays off: defaults never override stored values.
+  useAppStore.setState({
+    data: {
+      ...structuredClone(emptySnapshot),
+      preferences: {
+        theme: 'dark',
+        default_minutes: 25,
+        menu_timer: false,
+        notifications_sound: false,
+        sound: false,
+        session_start_sound: false,
+      },
+    },
+    loading: false,
+    busy: false,
+    error: null,
+  });
+  render(<Settings />);
+  expect(
+    screen.getByRole('switch', { name: 'Show timer in menu bar' }),
+  ).not.toBeChecked();
+  await user.click(screen.getByRole('button', { name: 'Alerts' }));
+  expect(
+    screen.getByRole('button', { name: 'Notifications sound' }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  expect(
+    screen.getByRole('button', { name: 'Session finished sound' }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  expect(
+    screen.getByRole('button', { name: 'Session started sound' }),
+  ).toHaveAttribute('aria-pressed', 'false');
+});
+it('shows connected browser status and refreshes browser connection', async () => {
   const user = userEvent.setup();
   render(<Settings />);
   await user.click(screen.getByRole('button', { name: 'Connections' }));
   expect(await screen.findAllByText('Connected')).toHaveLength(1);
   expect(screen.getAllByText('Allowed')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'Connected' }));
-  await user.click(screen.getByRole('button', { name: 'Test blocking' }));
-  expect(settingsAction).toHaveBeenCalledWith({ type: 'test_browser' });
+  const refreshBtn = screen.getByRole('button', { name: 'Refresh connection' });
+  await user.click(refreshBtn);
+  expect(settingsAction).toHaveBeenCalledWith({ type: 'reconnect_browser' });
 });
 it('requires typed confirmation before deleting history', async () => {
   const user = userEvent.setup();
@@ -194,4 +361,27 @@ it('toggles Open at login from Settings and saves the preference', async () => {
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
   expect(settingsAction).toHaveBeenCalledWith({ type: 'login', enabled: true });
+});
+
+it('renders platform-aware wording on Windows', async () => {
+  vi.mocked(settingsAction).mockImplementation(async (action) => {
+    if (action.type === 'info') {
+      return { platform: 'windows', version: '0.5.4', login: 0 };
+    }
+    return {};
+  });
+  render(<Settings />);
+  expect(
+    await screen.findByRole('switch', { name: 'Show timer in system tray' }),
+  ).toBeInTheDocument();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Data & help' }));
+  expect(
+    screen.getByText(/the session keeps running in the system tray/),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /quit Preelock from the system tray when no session is active/,
+    ),
+  ).toBeInTheDocument();
 });

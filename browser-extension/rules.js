@@ -128,6 +128,11 @@ const YOUTUBE_SURFACE_PATTERNS = [
   `^https?://${YOUTUBE_HOST_PATTERN}/feed(?:[/?#].*)?$`,
   `^https?://${YOUTUBE_HOST_PATTERN}/results(?:[?#].*)?$`,
 ];
+const YOUTUBE_ENTERTAINMENT_SURFACE_PATTERNS = [
+  `^https?://${YOUTUBE_HOST_PATTERN}/shorts(?:[/?#].*)?$`,
+  `^https?://${YOUTUBE_HOST_PATTERN}/gaming(?:[/?#].*)?$`,
+  `^https?://${YOUTUBE_HOST_PATTERN}/feed/(?:trending|explore)(?:[/?#].*)?$`,
+];
 // The Watch Later playlist route, and nothing else: the exact
 // `/playlist` path on the main YouTube hosts with `list=WL` as a whole
 // query parameter (not list=WLxyz, not a `?xlist=WL` lookalike). Watch
@@ -449,6 +454,119 @@ export function youtubeSurfaceBlocked(pathname) {
     path === '/results'
   );
 }
+export function isEntertainmentYouTubeUrl(pathname) {
+  const path = String(pathname || '/').toLowerCase();
+  return (
+    path === '/shorts' ||
+    path.startsWith('/shorts/') ||
+    path === '/gaming' ||
+    path.startsWith('/gaming/') ||
+    path === '/feed/trending' ||
+    path.startsWith('/feed/trending/') ||
+    path === '/feed/explore' ||
+    path.startsWith('/feed/explore/')
+  );
+}
+const PURE_ENTERTAINMENT_CATEGORIES = new Set([
+  'comedy',
+  'pets & animals',
+  'gaming',
+]);
+
+export const PRODUCTIVE_EDUCATIONAL_PATTERN =
+  /(?:\b(?:procrastinat(?:ion|e|ing)?|discipline|self[\s-]?discipline|deep[\s-]?work|focus(?:ed|ing)?|habit(?:s)?|atomic\s+habits|routine(?:s)?|dopamine(?:\s+detox)?|hard\s+(?:things|work)|willpower|mental\s+toughness|monk\s+mode|mindset|stoic(?:ism)?|self[\s-]?improvement|personal\s+development|productivity|productive|time[\s-]?management|pomodoro|digital\s+detox|life\s+without\s+social\s+media|quit(?:ting)?\s+(?:social\s+media|phone|sugar|bad\s+habits|porn|gaming)|social\s+media\s+addiction|phone\s+addiction|stop\s+playing\s+small|burnout|motivation(?:al)?|explain(?:ed|ing|s)?|explanation(?:s)?|how\s+to(?!\s+(?:prank|roast|troll|meme|cheat))\b|why\s+(?:we|you|i|it|is|do|people|they)\b|here['’]?s\s+why|tutorial(?:s)?|guide(?:\s+to)?|beginner['’]?s\s+guide|ultimate\s+guide|course(?:s)?|crash\s+course|masterclass|lecture(?:s)?|lesson(?:s)?|learn(?:ing)?|study(?:ing)?|study\s+skills|study\s+with\s+me|breakdown|analysis|analyzing|deep\s+dive|overview|summary|book\s+summary|case\s+study|documentary|documentaries|video\s+essay(?:s)?|neuroscience|psychology|philosophy|science(?:s)?|scientific|physics|chemistry|biology|astronomy|mathematics|math|algebra|calculus|geometry|statistics|history(?: of)?|historical|geopolitics|geopolitical|economics|finance|investing|stock\s+market|business|career|interview\s+prep|coding|programming|developer(?:s)?|software\s+engine(?:er|ering)|computer\s+science|algorithm(?:s)?|data\s+structures?|system\s+design|web\s+dev(?:elopment)?|machine\s+learning|deep\s+learning|artificial\s+intelligence|\bAI\b|neural\s+network(?:s)?|python|javascript|typescript|rust|golang|c\+\+|java\b|react(?:js|\.js)?|node(?:\.js)?|sql|linux|docker|kubernetes|ted\s+talk(?:s)?|\btedx\b|keynote|discussion|podcast|interview(?:s)?)\b)/i;
+
+export const STRONG_ENTERTAINMENT_PATTERN =
+  /(?:\b(?:stand[\s-]?up\s+comed(?:y|ian)|stand[\s-]?up\s+special|stand[\s-]?up\b|comedian(?:s)?|comedy\s+(?:show|scenes?|special|club|night|circus|sketch|skit|clash|king|video)|comedy\b|comedic\b|sitcom(?:s)?|roast(?:s|ed|ing)?\s+show|comedy\s+roast|roasting\s+(?:the\s+)?.*(?:tiktokers|youtubers|streamers|celebrities)|roast\s+of\b|sketch\s+comedy|comedy\s+skit(?:s)?|parod(?:y|ies)|spoof(?:s)?|prank(?:s|ed|ing|ster)?|social\s+experiment|try\s+not\s+to\s+laugh|fail\s+compilation(?:s)?|bloopers?|cringe\s+compilation(?:s)?|memes?|shitpost(?:s|ing)?|dank\s+memes?|funny\s+(?:videos?|clips?|moments?|fails?|animals?|pets?|cats?|dogs?|cats\s+and\s+dogs)|(?:cute|cutest)\s+(?:animals?|pets?|cats?|dogs?|puppies|kittens)|funniest\s+(?:videos?|clips?|moments?|fails?|animals?)|hilarious\s+(?:clips?|moments?|fails?|comedy)|cat\s+videos?|dog\s+videos?|gameplay(?:\s+walkthrough)?|playthrough|let['’]?s\s+play|gaming\s+montage|funny\s+gaming\s+moments|speedrun|mukbang|eating\s+show|food\s+challenge|last\s+to\s+leave|24\s+hours\s+(?:in|at|with)\s+challenge|official\s+(?:movie\s+)?trailer|teaser\s+trailer|movie\s+trailer|film\s+trailer|official\s+teaser|teaser\b|trailer\b|movie\s+clips?|official\s+music\s+video|official\s+lyric\s+video|music\s+video|celebrity\s+gossip|paparazzi|drama\s+alert|tea\s+spill|countdown\s+to\s+.*\b(?:avengers|marvel|disney\+|star\s+wars|dc|batman|superman)\b|daily\s+vlog(?:s)?|family\s+vlog(?:s)?|travel\s+vlog(?:s)?|lifestyle\s+vlog(?:s)?|vacation\s+vlog(?:s)?|\bgrwm\b|get\s+ready\s+with\s+me|day\s+in\s+my\s+life\s+vlog)\b|#(?:comedy|standup|prank|pranks|dailyvlog|minivlog|meme|memes|pets|animals|trynottolaugh|mukbang|gaming)\b)/i;
+
+export function isProductiveText(text) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  return PRODUCTIVE_EDUCATIONAL_PATTERN.test(text);
+}
+
+export function isEntertainmentText(text) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  return STRONG_ENTERTAINMENT_PATTERN.test(text);
+}
+export function hasEntertainmentMeta(videoMeta) {
+  return Boolean(
+    videoMeta &&
+    (String(videoMeta.category || '').trim() ||
+      String(videoMeta.title || '').trim()),
+  );
+}
+export function isEntertainmentVideo(videoMeta, urlString = '') {
+  if (urlString) {
+    try {
+      const url = new URL(urlString);
+      if (
+        isYouTubeHost(url.hostname) &&
+        isEntertainmentYouTubeUrl(url.pathname)
+      )
+        return true;
+    } catch {}
+  }
+  if (!videoMeta || typeof videoMeta !== 'object') return false;
+
+  const title = String(videoMeta.title || '').trim();
+  const category = String(videoMeta.category || '')
+    .trim()
+    .toLowerCase();
+  const author = String(videoMeta.author || videoMeta.channelTitle || '').trim();
+  const hashtags = (Array.isArray(videoMeta.hashtags) ? videoMeta.hashtags : []).join(' ');
+  const keywords = (Array.isArray(videoMeta.keywords) ? videoMeta.keywords : []).join(' ');
+
+  const titleHasProductive = title ? isProductiveText(title) : false;
+  const titleHasEntertainment = title ? isEntertainmentText(title) : false;
+
+  // 1. If title matches strong entertainment (comedy, standup, pranks, memes, trailers):
+  if (titleHasEntertainment) {
+    if (!titleHasProductive) return true;
+    // Both matched: check if strong comedy/prank signals are primary
+    if (
+      /\b(?:stand[\s-]?up|comed(?:y|ian)|prank|roast|meme|mukbang|let['’]?s\s+play|gameplay|try\s+not\s+to\s+laugh|parod(?:y|ies)|vlog)\b/i.test(
+        title,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  // 2. If title matches positive discipline, productivity, or educational topics:
+  if (titleHasProductive) {
+    return false;
+  }
+
+  // 3. Category evaluation for unambiguous entertainment categories:
+  if (category && PURE_ENTERTAINMENT_CATEGORIES.has(category)) {
+    return true;
+  }
+
+  // 4. Hashtags evaluation:
+  if (hashtags && isEntertainmentText(hashtags)) {
+    return true;
+  }
+
+  // 5. Author/Channel name with explicit comedy/prank keywords:
+  if (
+    author &&
+    /\b(?:stand[\s-]?up\s+comed(?:y|ian)|pranks?|roast|memes?)\b/i.test(author)
+  ) {
+    return true;
+  }
+
+  // 6. Keywords with explicit comedy/prank/gaming keywords (when title is not productive):
+  if (
+    keywords &&
+    /\b(?:stand[\s-]?up\s+comed(?:y|ian)|comedy\s+(?:special|show)|prank(?:s|ed|ing)?|roast\s+show|try\s+not\s+to\s+laugh|mukbang)\b/i.test(
+      keywords,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
 // Channel-page decision (channel pages only; returns false for any
 // other path). In study mode a channel plays only when listed;
 // otherwise a channel is blocked only when listed as blocked.
@@ -492,11 +610,17 @@ export function channelBlockReason(urlString, policy) {
   if (!isYouTubeHost(url.hostname)) return null;
   if (
     !policy.youtube_study_mode &&
+    !policy.youtube_block_entertainment &&
     !(policy.youtube_blocked_channels || []).length
   )
     return null;
   if (policy.youtube_study_mode && youtubeSurfaceBlocked(url.pathname))
     return 'study_surface';
+  if (
+    policy.youtube_block_entertainment &&
+    isEntertainmentYouTubeUrl(url.pathname)
+  )
+    return 'entertainment_surface';
   const key = channelKeyFromPath(url.pathname);
   if (!key) return null;
   if (policy.youtube_study_mode)
@@ -633,11 +757,16 @@ export function blockDetail(urlString, policy) {
     return { blocked: true, mechanism: 'allowlist', rule: null };
   if (policy.mode !== 'blocklist' && policy.mode !== 'allowlist')
     return { blocked: false };
-  if (
+  const channelReason =
     !(policy.youtube_allow_watch_later && isWatchLaterUrl(urlString)) &&
-    channelBlockReason(urlString, policy)
-  )
-    return { blocked: true, mechanism: 'channel', rule: null };
+    channelBlockReason(urlString, policy);
+  if (channelReason)
+    return {
+      blocked: true,
+      mechanism:
+        channelReason === 'entertainment_surface' ? 'entertainment' : 'channel',
+      rule: null,
+    };
   return { blocked: false };
 }
 // Watch-page decision for the worker's youtube_check message, given
@@ -699,6 +828,7 @@ export function youtubeVideoDecision(
   policy,
   unidentified = false,
   watchLaterMember = null,
+  videoMeta = null,
 ) {
   if (!policy) return { blocked: false, reason: null };
   let url;
@@ -776,11 +906,25 @@ export function youtubeVideoDecision(
   if (urlBlockedByPolicy(urlString, policy))
     return { blocked: true, reason: 'domain' };
   if (watchLaterRoute && watchLaterOnly(policy)) {
-    if (watchLaterMember === true)
-      return { blocked: false, reason: 'watch_later' };
+    if (watchLaterMember === false)
+      return { blocked: true, reason: 'watch_later_unverified' };
     if (watchLaterMember === null && !unidentified)
       return { blocked: false, reason: null, pending: true };
-    return { blocked: true, reason: 'watch_later_unverified' };
+    if (watchLaterMember !== true)
+      return { blocked: true, reason: 'watch_later_unverified' };
+    if (policy.youtube_block_entertainment && isVideoRoute) {
+      if (isEntertainmentVideo(videoMeta, urlString))
+        return { blocked: true, reason: 'entertainment' };
+      if (!hasEntertainmentMeta(videoMeta) && !unidentified)
+        return { blocked: false, reason: null, pending: true };
+    }
+    return { blocked: false, reason: 'watch_later' };
+  }
+  if (policy.youtube_block_entertainment && isVideoRoute) {
+    if (isEntertainmentVideo(videoMeta, urlString))
+      return { blocked: true, reason: 'entertainment' };
+    if (!hasEntertainmentMeta(videoMeta) && !unidentified)
+      return { blocked: false, reason: null, pending: true };
   }
   return { blocked: false, reason: null };
 }
@@ -919,6 +1063,7 @@ export function compileRules(policy) {
   if (allowedChannels.some((k) => k === null))
     throw new Error('Invalid policy youtube_allowed_channels');
   const studyMode = Boolean(policy.youtube_study_mode);
+  const blockEntertainment = Boolean(policy.youtube_block_entertainment);
   const watchLater = Boolean(policy.youtube_allow_watch_later);
   const rules = [];
   let nextId = 0;
@@ -1045,6 +1190,12 @@ export function compileRules(policy) {
         );
       }
     }
+    if (blockEntertainment) {
+      for (const pattern of YOUTUBE_ENTERTAINMENT_SURFACE_PATTERNS) {
+        if (studyMode && !pattern.includes('/gaming')) continue;
+        add('block', { regexFilter: pattern, resourceTypes: types }, 1);
+      }
+    }
     return rules;
   }
   if (!['allowlist', 'offline'].includes(policy.mode))
@@ -1153,6 +1304,12 @@ export function compileRules(policy) {
           { regexFilter: youtubeChannelRegex(key), resourceTypes: navigation },
           4,
         );
+      }
+    }
+    if (blockEntertainment) {
+      for (const pattern of YOUTUBE_ENTERTAINMENT_SURFACE_PATTERNS) {
+        if (studyMode && !pattern.includes('/gaming')) continue;
+        add('block', { regexFilter: pattern, resourceTypes: navigation }, 4);
       }
     }
   }

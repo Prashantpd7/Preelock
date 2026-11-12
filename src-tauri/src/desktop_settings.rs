@@ -65,6 +65,9 @@ mod mac {
         }
     }
     pub fn sound(volume: u32) {
+        if cfg!(test) || volume == 0 {
+            return;
+        }
         unsafe { preelock_sound(volume.min(100) as f32 / 100.0) };
     }
     pub fn file(save: bool, name: &str) -> Result<String, String> {

@@ -7,7 +7,10 @@
 //! development machine; the Windows adapter supplies the real inputs.
 
 /// TaskId declared by `desktop:StartupTask` in the MSIX manifest.
-pub const STARTUP_TASK_ID: &str = "VYSTRIQ";
+pub const STARTUP_TASK_ID: &str = "Preelock";
+/// Legacy TaskId from prior versions (before standardization on Preelock),
+/// retained strictly for migration / cleanup on upgrade.
+pub const LEGACY_STARTUP_TASK_ID: &str = "VYSTRIQ";
 pub const BACKGROUND_STARTUP_TASK_ID: &str = "PreelockBackground";
 
 /// File stem of the dedicated MSIX background executable. M7: this
@@ -99,6 +102,8 @@ mod tests {
             BACKGROUND_EXE_STEM
         );
         assert_eq!(BACKGROUND_STARTUP_TASK_ID, "PreelockBackground");
+        assert_eq!(STARTUP_TASK_ID, "Preelock");
+        assert_eq!(LEGACY_STARTUP_TASK_ID, "VYSTRIQ");
         assert_eq!(GUI_EXE_FILE_NAME, "Preelock.exe");
     }
 

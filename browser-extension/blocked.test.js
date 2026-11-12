@@ -74,4 +74,12 @@ describe('blocked.js', () => {
     expect(distDoc.getElementById('reason').hidden).toBe(false);
     expect(distDoc.getElementById('hint').hidden).toBe(true);
   });
+  it('shows the entertainment copy when entertainment content is blocked', () => {
+    const doc = render('k=youtube&m=entertainment');
+    expect(doc.getElementById('title').textContent).toBe('Video blocked');
+    expect(doc.getElementById('message').textContent).toBe(
+      'Entertainment content is blocked during your focus session.',
+    );
+    expect(doc.getElementById('hint').hidden).toBe(true);
+  });
 });

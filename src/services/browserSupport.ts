@@ -45,6 +45,7 @@ export function sessionNeedsExtension(focus: FocusConfig): boolean {
     (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
     (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
     !!focus.youtube_study_mode ||
+    !!focus.youtube_block_entertainment ||
     (!!focus.frozen?.enabled && !!focus.browser_app)
   );
 }

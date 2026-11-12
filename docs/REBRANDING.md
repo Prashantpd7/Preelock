@@ -6,19 +6,19 @@ Repository: https://github.com/Prashantpd7/Preelock (renamed in place).
 
 ## Stable identities and user data
 
-| Retained value                                                             | Reason                                                                                |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `Prashantpd7.VYSTRIQ`                                                      | Existing Microsoft Store package identity                                             |
-| `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`                                  | Existing Store publisher                                                              |
-| Store ID `9NCZGZM843N5`, publisher display name `Prashantpd7`              | Existing listing and publisher                                                        |
-| MSIX Application Id and startup TaskId `VYSTRIQ`                           | Preserve app registration and startup consent                                         |
-| `com.vystriq.desktop` and `vystriq.sqlite`                                 | Reuse existing SQLite data and OS permissions without moving files                    |
-| `vystriq-backup`, version 1                                                | Existing backups continue to import                                                   |
-| `vystriq-permissions-v2`                                                   | Preserve first-run consent/setup state                                                |
-| Existing `%USERPROFILE%\VYSTRIQ\browser-extension`                         | Chromium's registered extension path and pairing must not change                      |
-| `browser-token`, bridge port 47832, protocol 3                             | Existing browser authentication and communication                                     |
-| Rust crate/library/native symbols and executable `vystriq` / `VYSTRIQ.exe` | Internal build and process paths; bundle and executable product metadata use Preelock |
-| Legacy Windows registry keys and shortcuts in upgrade code                 | Locate the previous installation and remove obsolete registration after replacement   |
+| Retained value                                                                | Reason                                                                                |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Prashantpd7.Preelock`                                                        | Microsoft Store package identity                                                      |
+| `CN=2A3BE073-2A0A-47AA-958D-9543D60D234A`                                     | Existing Store publisher                                                              |
+| Store ID `9NCZGZM843N5`, publisher display name `Prashantpd7`                 | Existing listing and publisher                                                        |
+| MSIX Application Id and startup TaskId `Preelock` (legacy `VYSTRIQ` migrated) | Standardized on Preelock with automatic legacy migration and cleanup                  |
+| `com.vystriq.desktop` and `vystriq.sqlite`                                    | Reuse existing SQLite data and OS permissions without moving files                    |
+| `vystriq-backup`, version 1                                                   | Existing backups continue to import                                                   |
+| `vystriq-permissions-v2`                                                      | Preserve first-run consent/setup state                                                |
+| Existing `%USERPROFILE%\VYSTRIQ\browser-extension`                            | Chromium's registered extension path and pairing must not change                      |
+| `browser-token`, bridge port 47832, protocol 3                                | Existing browser authentication and communication                                     |
+| Rust crate/library/native symbols and executable `vystriq` / `VYSTRIQ.exe`    | Internal build and process paths; bundle and executable product metadata use Preelock |
+| Legacy Windows registry keys and shortcuts in upgrade code                    | Locate the previous installation and remove obsolete registration after replacement   |
 
 Fresh Store installations export their extension under `%USERPROFILE%\Preelock`.
 Existing extension paths are reused. No SQLite, pairing, session, task or backup

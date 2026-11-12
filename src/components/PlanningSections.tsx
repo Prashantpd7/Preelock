@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { Empty } from './ui';
 import { Dropdown } from './Dropdown';
-import { cleanDomain } from '../services/domains';
-import { inDateRange } from '../services/activitySection';
+import { SessionCard } from './SessionCard';
+import { AllowanceForm } from './AllowanceForm';
+import {
+  inDateRange,
+  isHistoricalSession,
+  isOneShotSession,
+} from '../services/activitySection';
 import type { AnalyticsRange } from '../services/analytics';
 import {
   DAY_LABELS,
@@ -12,6 +17,7 @@ import {
   isScheduleActive,
   isScheduleLockedActive,
   scheduleLockDelayStatus,
+  scheduleTotalTime,
   validateScheduleForm,
 } from '../services/schedules';
 import { oneShotFireAtMs, validateOneShotForm } from '../services/one_shots';
@@ -20,42 +26,45 @@ import {
   allowancePeriodLabel,
   allowanceRemainingMs,
   formatAllowanceMinutes,
-  validateAllowanceForm,
 } from '../services/allowances';
 import {
   defaultFocus,
   lockLabel,
   type Allowance,
+  type FocusSetup,
   type LockConfig,
   type OneShot,
   type Schedule,
 } from '../types';
 // Schedules, one-shot timers, and allowances: they live in the
 // Activity dropdown on the Focus Sessions page, one section at a
-// time, with the same forms, lists, and behavior. `only` renders a
-// single section; with no `only`, all three render (as before).
-// `onNewSchedule` / `onNewOneShot` open the session wizard in
-// schedule / one-shot mode instead of the inline template form; the
-// inline form is still used for editing, and when no callback is
-// passed (standalone use) the New button opens it as before.
-// `allowanceFormSignal` opens the New allowance form when it
-// increments (the Allowances card's button); the form state itself
-// stays here.
+// time, with the same lists and behavior. `only` renders a single
+// section; with no `only`, all three render (as before).
+// `onNewSchedule` / `onNewOneShot` open the session wizard above;
+// `onNewAllowance` / `onEditAllowance` open the allowance form above
+// so Activity stays list-focused. When omitted (standalone use), inline
+// forms remain available as a fallback.
 export function PlanningSections({
   only,
   onNewSchedule,
   onNewOneShot,
-  allowanceFormSignal = 0,
+  onNewAllowance,
+  onEditAllowance,
   range = 'all',
+  setup,
+  onSetupRefresh,
 }: {
   only?: 'schedules' | 'oneshots' | 'allowances';
   onNewSchedule?: () => void;
   onNewOneShot?: () => void;
-  allowanceFormSignal?: number;
+  onNewAllowance?: () => void;
+  onEditAllowance?: (allowance: Allowance) => void;
   /** Date range from the Activity toolbar; 'all' shows everything.
    *  Only the displayed lists are filtered — edit forms and lookups
    *  keep using the full lists below. */
   range?: AnalyticsRange;
+  setup?: FocusSetup | null;
+  onSetupRefresh?: () => Promise<FocusSetup | null>;
 } = {}) {
   const { data, execute, busy } = useAppStore();
   // Scheduled blocks (step 5): the list and form live on the
@@ -74,17 +83,13 @@ export function PlanningSections({
   ]);
   const [schedStart, setSchedStart] = useState('09:00');
   const [schedEnd, setSchedEnd] = useState('10:00');
-  const [schedLock, setSchedLock] = useState(false);
   const [schedEnabled, setSchedEnabled] = useState(true);
-  // Step 10 lock for schedules (same fields as the session wizard
-  // lock, kept separate because the two forms are independent).
+  // Step 10 lock for schedules: the password lock is the only one
+  // this form offers now — window changes and the other lock kinds
+  // are always off (their previous defaults), so there is no state
+  // for them.
   const [schedLockPasswordOn, setSchedLockPasswordOn] = useState(false);
   const [schedLockPassword, setSchedLockPassword] = useState('');
-  const [schedLockChallengeOn, setSchedLockChallengeOn] = useState(false);
-  const [schedLockChallengeLength, setSchedLockChallengeLength] = useState(32);
-  const [schedLockDelayOn, setSchedLockDelayOn] = useState(false);
-  const [schedLockDelayMinutes, setSchedLockDelayMinutes] = useState(5);
-  const [schedLockRestart, setSchedLockRestart] = useState(false);
   // Proofs for changing a locked-active schedule, entered in its
   // edit form (the password is never shown back: editing keeps
   // the stored hash unless a new password is typed above).
@@ -123,116 +128,24 @@ export function PlanningSections({
   const visibleOneShots = oneShots.filter((o) =>
     inDateRange(o.fire_at_ms, range, now),
   );
+  // Once a one-shot fires, the backend removes the pending `OneShot`
+  // timer and creates a `Session` tagged with `one_shot_started`. Show
+  // finished/interrupted one-shot sessions here so past one-shot
+  // activity lives under "Start once at" rather than "Focus Sessions".
+  const historicalOneShots = (data.sessions ?? []).filter(
+    (s) => isHistoricalSession(s) && isOneShotSession(s),
+  );
+  const visibleHistoricalOneShots = historicalOneShots
+    .filter((s) => inDateRange(s.started_at, range, now))
+    .slice()
+    .reverse();
   const visibleAllowances = allowances.filter((a) =>
     inDateRange(a.created_at, range, now),
   );
-  const [allowKind, setAllowKind] = useState<'site' | 'app'>('site');
-  const [allowTitle, setAllowTitle] = useState('');
-  const [allowTarget, setAllowTarget] = useState('');
-  const [allowBudget, setAllowBudget] = useState(30);
-  const [allowPeriod, setAllowPeriod] = useState<'day' | 'week'>('day');
-  const [allowMode, setAllowMode] = useState<'rolling' | 'fixed'>('rolling');
-  const [allowEnabled, setAllowEnabled] = useState(true);
-  const [allowEditingId, setAllowEditingId] = useState<string | null>(null);
+  const [editingAllowance, setEditingAllowance] = useState<Allowance | null>(
+    null,
+  );
   const [allowFormOpen, setAllowFormOpen] = useState(false);
-  const [allowProblem, setAllowProblem] = useState('');
-  // The Allowances card's New allowance button: each increment opens
-  // a fresh New allowance form. Tracked by ref so a later re-render
-  // with the same signal does not reopen (or reset) the form.
-  const lastAllowanceSignal = useRef(0);
-  useEffect(() => {
-    if (allowanceFormSignal > lastAllowanceSignal.current) {
-      lastAllowanceSignal.current = allowanceFormSignal;
-      resetAllowForm();
-      setAllowFormOpen(true);
-    }
-  }, [allowanceFormSignal]);
-  function resetAllowForm() {
-    setAllowKind('site');
-    setAllowTitle('');
-    setAllowTarget('');
-    setAllowBudget(30);
-    setAllowPeriod('day');
-    setAllowMode('rolling');
-    setAllowEnabled(true);
-    setAllowEditingId(null);
-    setAllowProblem('');
-  }
-  function startAllowEdit(a: Allowance) {
-    setAllowKind(a.kind);
-    setAllowTitle(a.title);
-    setAllowTarget(a.target);
-    setAllowBudget(a.budget_minutes);
-    setAllowPeriod(a.period);
-    setAllowMode(a.mode);
-    setAllowEnabled(a.enabled);
-    setAllowEditingId(a.id);
-    setAllowProblem('');
-    setAllowFormOpen(true);
-  }
-  async function submitAllowance(e: React.FormEvent) {
-    e.preventDefault();
-    setAllowProblem('');
-    // Site targets go through the same cleaner as the wizard's
-    // website rules (scheme stripped, host lowercased); the backend
-    // still validates, and rejects paths and search: keywords.
-    const target =
-      allowKind === 'site'
-        ? (cleanDomain(allowTarget) ?? allowTarget.trim())
-        : allowTarget.trim();
-    const problem = validateAllowanceForm({
-      title: allowTitle,
-      kind: allowKind,
-      target,
-      budgetMinutes: allowBudget,
-      period: allowPeriod,
-    });
-    if (problem) {
-      setAllowProblem(problem);
-      return;
-    }
-    if (allowEditingId) {
-      const existing = allowances.find((a) => a.id === allowEditingId);
-      if (!existing) {
-        setAllowProblem('That allowance no longer exists.');
-        return;
-      }
-      if (
-        await execute({
-          type: 'update_allowance',
-          allowance: {
-            ...existing,
-            title: allowTitle.trim(),
-            kind: allowKind,
-            target,
-            budget_minutes: allowBudget,
-            period: allowPeriod,
-            mode: allowMode,
-            enabled: allowEnabled,
-          },
-        })
-      ) {
-        resetAllowForm();
-        setAllowFormOpen(false);
-      }
-      return;
-    }
-    if (
-      await execute({
-        type: 'create_allowance',
-        title: allowTitle.trim(),
-        kind: allowKind,
-        target,
-        budget_minutes: allowBudget,
-        period: allowPeriod,
-        mode: allowMode,
-        enabled: allowEnabled,
-      })
-    ) {
-      resetAllowForm();
-      setAllowFormOpen(false);
-    }
-  }
   function resetOneForm() {
     setOneTemplateId('');
     setOneTitle('');
@@ -277,11 +190,6 @@ export function PlanningSections({
   function resetSchedLockForm() {
     setSchedLockPasswordOn(false);
     setSchedLockPassword('');
-    setSchedLockChallengeOn(false);
-    setSchedLockChallengeLength(32);
-    setSchedLockDelayOn(false);
-    setSchedLockDelayMinutes(5);
-    setSchedLockRestart(false);
     setSchedUnlockPassword('');
     setSchedUnlockChallenge('');
   }
@@ -292,16 +200,6 @@ export function PlanningSections({
       !!schedEditingId && !!editingSchedule?.lock?.password_hash;
     if (schedLockPasswordOn && !schedLockPassword.trim() && !keepingHash)
       return 'Enter a password for the password lock.';
-    if (
-      schedLockChallengeOn &&
-      !(schedLockChallengeLength >= 8 && schedLockChallengeLength <= 64)
-    )
-      return 'Challenge length must be 8-64 characters.';
-    if (
-      schedLockDelayOn &&
-      !(schedLockDelayMinutes >= 1 && schedLockDelayMinutes <= 60)
-    )
-      return 'Delay must be 1-60 minutes.';
     return '';
   }
   function schedLockValue(
@@ -311,12 +209,10 @@ export function PlanningSections({
     lock?: LockConfig;
     lock_password?: string;
   } {
-    const any =
-      schedLockPasswordOn ||
-      schedLockChallengeOn ||
-      schedLockDelayOn ||
-      schedLockRestart;
-    if (!any && !force) return {};
+    // The password lock is the only lock this form offers now:
+    // challenge, delay and restart locks are always off (their
+    // previous defaults), so an edit also clears a stored one.
+    if (!schedLockPasswordOn && !force) return {};
     return {
       lock: {
         // The stored hash is sent back verbatim while the
@@ -324,9 +220,9 @@ export function PlanningSections({
         password_hash: schedLockPasswordOn
           ? (existingHash ?? undefined)
           : undefined,
-        challenge_length: schedLockChallengeOn ? schedLockChallengeLength : 0,
-        delay_minutes: schedLockDelayOn ? schedLockDelayMinutes : 0,
-        restart_lock: schedLockRestart,
+        challenge_length: 0,
+        delay_minutes: 0,
+        restart_lock: false,
       },
       lock_password:
         schedLockPasswordOn && schedLockPassword
@@ -340,7 +236,6 @@ export function PlanningSections({
     setSchedDays([false, true, true, true, true, true, false]);
     setSchedStart('09:00');
     setSchedEnd('10:00');
-    setSchedLock(false);
     setSchedEnabled(true);
     setSchedEditingId(null);
     setSchedProblem('');
@@ -351,19 +246,15 @@ export function PlanningSections({
     setSchedDays(DAY_LABELS.map((_, i) => s.days.includes(i)));
     setSchedStart(s.start_time);
     setSchedEnd(s.end_time);
-    setSchedLock(s.lock_changes);
     setSchedEnabled(s.enabled);
     setSchedEditingId(s.id);
     setSchedProblem('');
     // Load the lock for editing: the password itself is never
-    // shown back (an empty field keeps the stored hash).
+    // shown back (an empty field keeps the stored hash). A stored
+    // challenge, delay or restart lock is dropped on save — the
+    // form no longer offers those kinds.
     setSchedLockPasswordOn(!!s.lock?.password_hash);
     setSchedLockPassword('');
-    setSchedLockChallengeOn((s.lock?.challenge_length ?? 0) > 0);
-    setSchedLockChallengeLength(s.lock?.challenge_length ?? 32);
-    setSchedLockDelayOn((s.lock?.delay_minutes ?? 0) > 0);
-    setSchedLockDelayMinutes(s.lock?.delay_minutes ?? 5);
-    setSchedLockRestart(!!s.lock?.restart_lock);
     setSchedUnlockPassword('');
     setSchedUnlockChallenge('');
     setSchedFormOpen(true);
@@ -405,7 +296,9 @@ export function PlanningSections({
           end_time: schedEnd,
           focus: existing.focus,
           enabled: schedEnabled,
-          lock_changes: schedLock,
+          // The password lock is the only lock offered: window
+          // changes and the other lock kinds stay off.
+          lock_changes: false,
           ...schedLockValue(existing.lock?.password_hash ?? null, true),
           password: schedUnlockPassword || undefined,
           challenge_answer: schedUnlockChallenge || undefined,
@@ -432,7 +325,9 @@ export function PlanningSections({
         end_time: schedEnd,
         focus: structuredClone(template.focus ?? defaultFocus),
         enabled: schedEnabled,
-        lock_changes: schedLock,
+        // The password lock is the only lock offered: window
+        // changes and the other lock kinds stay off.
+        lock_changes: false,
         ...schedLockValue(),
       })
     ) {
@@ -690,19 +585,17 @@ export function PlanningSections({
                     onChange={(e) => setSchedEnd(e.target.value)}
                   />
                 </label>
+                <label>
+                  Total time
+                  <input
+                    type="text"
+                    readOnly
+                    tabIndex={-1}
+                    value={scheduleTotalTime(schedStart, schedEnd)}
+                  />
+                </label>
               </div>
               <p className="small muted">Ends earlier? It runs overnight.</p>
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={schedLock}
-                  onChange={(e) => setSchedLock(e.target.checked)}
-                />
-                Lock changes during the window
-              </label>
-              <p className="small muted">
-                Locked windows can&apos;t be changed early.
-              </p>
               <label className="check-label">
                 <input
                   type="checkbox"
@@ -726,63 +619,6 @@ export function PlanningSections({
                     }
                   />
                 </label>
-              )}
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={schedLockChallengeOn}
-                  onChange={(e) => setSchedLockChallengeOn(e.target.checked)}
-                />
-                Lock with a typed challenge
-              </label>
-              {schedLockChallengeOn && (
-                <label>
-                  Challenge length (characters, 8-64)
-                  <input
-                    type="number"
-                    min={8}
-                    max={64}
-                    value={schedLockChallengeLength}
-                    onChange={(e) =>
-                      setSchedLockChallengeLength(Number(e.target.value))
-                    }
-                  />
-                </label>
-              )}
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={schedLockDelayOn}
-                  onChange={(e) => setSchedLockDelayOn(e.target.checked)}
-                />
-                Lock with a delay
-              </label>
-              {schedLockDelayOn && (
-                <label>
-                  Delay (minutes, 1-60)
-                  <input
-                    type="number"
-                    min={1}
-                    max={60}
-                    value={schedLockDelayMinutes}
-                    onChange={(e) =>
-                      setSchedLockDelayMinutes(Number(e.target.value))
-                    }
-                  />
-                </label>
-              )}
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={schedLockRestart}
-                  onChange={(e) => setSchedLockRestart(e.target.checked)}
-                />
-                Keep the lock after a restart
-              </label>
-              {(schedLockPasswordOn ||
-                schedLockChallengeOn ||
-                schedLockDelayOn) && (
-                <p className="small muted">Locks pass together, lift at end.</p>
               )}
               {editingLockedActive && (
                 <>
@@ -879,7 +715,7 @@ export function PlanningSections({
           <p className="small muted section-desc">
             One block at a chosen time.
           </p>
-          {visibleOneShots.length ? (
+          {visibleOneShots.length || visibleHistoricalOneShots.length ? (
             <div className="session-list">
               {visibleOneShots.map((o) => (
                 <div className="panel" key={o.id}>
@@ -902,8 +738,18 @@ export function PlanningSections({
                   </div>
                 </div>
               ))}
+              {visibleHistoricalOneShots.map((s) => (
+                <SessionCard
+                  key={s.id}
+                  session={s}
+                  showStartedAt
+                  hideStart
+                  setup={setup}
+                  onSetupRefresh={onSetupRefresh}
+                />
+              ))}
             </div>
-          ) : oneShots.length ? (
+          ) : oneShots.length || historicalOneShots.length ? (
             <Empty>No one-shot timers in this period.</Empty>
           ) : (
             <Empty>No one-shot timers yet.</Empty>
@@ -998,7 +844,7 @@ export function PlanningSections({
             <h2>Allowances</h2>
           </div>
           <p className="small muted section-desc">
-            Daily or weekly time budgets. Blocks always lift on reset.
+            Daily or weekly time allowances. Blocks always lift on reset.
           </p>
           {visibleAllowances.length ? (
             <div className="session-list">
@@ -1014,7 +860,7 @@ export function PlanningSections({
                     </p>
                     <p className="small muted">
                       {exhausted
-                        ? 'Budget used up; blocked until reset.'
+                        ? 'Allowance used up; blocked until reset.'
                         : `${formatAllowanceMinutes(remaining)} left of ${formatAllowanceMinutes(a.budget_minutes * 60_000)}`}
                     </p>
                     <div className="row controls">
@@ -1042,7 +888,14 @@ export function PlanningSections({
                         type="button"
                         className="secondary"
                         disabled={busy}
-                        onClick={() => startAllowEdit(a)}
+                        onClick={() => {
+                          if (onEditAllowance) {
+                            onEditAllowance(a);
+                            return;
+                          }
+                          setEditingAllowance(a);
+                          setAllowFormOpen(true);
+                        }}
                       >
                         Edit
                       </button>
@@ -1071,7 +924,11 @@ export function PlanningSections({
               <button
                 type="button"
                 onClick={() => {
-                  resetAllowForm();
+                  if (onNewAllowance) {
+                    onNewAllowance();
+                    return;
+                  }
+                  setEditingAllowance(null);
                   setAllowFormOpen(true);
                 }}
               >
@@ -1080,127 +937,19 @@ export function PlanningSections({
               </button>
             </div>
           ) : (
-            <form className="panel form-panel" onSubmit={submitAllowance}>
-              <h2>{allowEditingId ? 'Edit allowance' : 'New allowance'}</h2>
-              <label className="grow">
-                Allowance name
-                <input
-                  required
-                  maxLength={160}
-                  value={allowTitle}
-                  onChange={(e) => setAllowTitle(e.target.value)}
-                  placeholder="e.g. YouTube"
-                />
-              </label>
-              <label>
-                Budget for
-                <Dropdown
-                  value={allowKind}
-                  onChange={(value) => {
-                    setAllowKind(value as 'site' | 'app');
-                    setAllowProblem('');
-                  }}
-                  options={[
-                    { value: 'site', label: 'A site' },
-                    { value: 'app', label: 'An app' },
-                  ]}
-                />
-              </label>
-              <label className="grow">
-                {allowKind === 'site' ? 'Site' : 'App id'}
-                <input
-                  required
-                  value={allowTarget}
-                  onChange={(e) => setAllowTarget(e.target.value)}
-                  placeholder={
-                    allowKind === 'site'
-                      ? 'e.g. youtube.com or *.example.com'
-                      : 'e.g. com.example.game'
-                  }
-                />
-              </label>
-              {allowKind === 'site' && (
-                <p className="small muted">
-                  Domain only; no paths or searches.
-                </p>
-              )}
-              <div className="simple-grid allowance-grid">
-                <label>
-                  Budget (minutes)
-                  <input
-                    type="number"
-                    required
-                    min={1}
-                    max={allowPeriod === 'day' ? 1440 : 10080}
-                    value={allowBudget}
-                    onChange={(e) => setAllowBudget(Number(e.target.value))}
-                  />
-                </label>
-                <label>
-                  Period
-                  <Dropdown
-                    value={allowPeriod}
-                    onChange={(value) =>
-                      setAllowPeriod(value as 'day' | 'week')
-                    }
-                    options={[
-                      { value: 'day', label: 'Daily' },
-                      { value: 'week', label: 'Weekly' },
-                    ]}
-                  />
-                </label>
-                <label>
-                  Reset
-                  <Dropdown
-                    value={allowMode}
-                    onChange={(value) =>
-                      setAllowMode(value as 'rolling' | 'fixed')
-                    }
-                    options={[
-                      {
-                        value: 'rolling',
-                        label: 'Rolling (last 24h / 7 days)',
-                      },
-                      {
-                        value: 'fixed',
-                        label: 'Fixed (calendar day / Monday week)',
-                      },
-                    ]}
-                  />
-                </label>
-              </div>
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={allowEnabled}
-                  onChange={(e) => setAllowEnabled(e.target.checked)}
-                />
-                Enabled
-              </label>
-              {allowProblem && (
-                <p className="error small" role="alert">
-                  {allowProblem}
-                </p>
-              )}
-              <div
-                className="row controls"
-                style={{ justifyContent: 'flex-end' }}
-              >
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => {
-                    resetAllowForm();
-                    setAllowFormOpen(false);
-                  }}
-                >
-                  Cancel
-                </button>
-                <button disabled={busy}>
-                  {allowEditingId ? 'Save allowance' : 'Create allowance'}
-                </button>
-              </div>
-            </form>
+            <AllowanceForm
+              key={editingAllowance?.id ?? 'new'}
+              className="panel form-panel"
+              editing={editingAllowance}
+              onSaved={() => {
+                setEditingAllowance(null);
+                setAllowFormOpen(false);
+              }}
+              onCancel={() => {
+                setEditingAllowance(null);
+                setAllowFormOpen(false);
+              }}
+            />
           )}
         </section>
       )}

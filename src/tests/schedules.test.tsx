@@ -8,7 +8,10 @@ import { useAppStore } from '../state/store';
 import { defaultFocus, type Schedule, type Session } from '../types';
 import {
   formatDays,
+  formatScheduleDuration,
   isScheduleActive,
+  scheduleTotalTime,
+  scheduleWindow,
   validateScheduleForm,
 } from '../services/schedules';
 
@@ -137,6 +140,36 @@ it('validates the schedule form', () => {
   expect(
     validateScheduleForm({ ...base, start_time: '22:00', end_time: '06:00' }),
   ).toBe('');
+});
+
+it('computes schedule window durations, including overnight', () => {
+  expect(scheduleWindow('09:00', '10:00')).toEqual({
+    minutes: 60,
+    overnight: false,
+  });
+  expect(scheduleWindow('09:00', '11:30')).toEqual({
+    minutes: 150,
+    overnight: false,
+  });
+  expect(scheduleWindow('21:00', '06:00')).toEqual({
+    minutes: 540,
+    overnight: true,
+  });
+  // End equal to start follows the overnight rule: a full day.
+  expect(scheduleWindow('09:00', '09:00')).toEqual({
+    minutes: 1440,
+    overnight: true,
+  });
+  expect(scheduleWindow('25:00', '10:00')).toBeNull();
+  expect(formatScheduleDuration(45)).toBe('45 min');
+  expect(formatScheduleDuration(60)).toBe('1 hr');
+  expect(formatScheduleDuration(90)).toBe('1 hr 30 min');
+  expect(scheduleTotalTime('09:00', '10:00')).toBe('1 hr');
+  expect(scheduleTotalTime('09:00', '11:30')).toBe('2 hr 30 min');
+  expect(scheduleTotalTime('09:00', '09:45')).toBe('45 min');
+  expect(scheduleTotalTime('21:00', '06:00')).toBe('9 hr · Overnight');
+  expect(scheduleTotalTime('09:00', '09:00')).toBe('24 hr · Overnight');
+  expect(scheduleTotalTime('25:00', '10:00')).toBe('—');
 });
 
 it('formats day lists', () => {
@@ -285,4 +318,74 @@ it('still opens the template form when rendered without the wizard callback', as
     screen.getByRole('option', { name: 'Write outline · 25 min' }),
   );
   expect(screen.getByLabelText('Schedule name')).toHaveValue('Write outline');
+});
+
+it('edit form offers only the password lock and clears stored delay/restart locks on save', async () => {
+  // A schedule saved when the other lock kinds existed: delay +
+  // restart locks on, password lock on. Its window is not active
+  // (a different day), so the edit form opens without proofs.
+  const otherDay = (new Date().getDay() + 1) % 7;
+  const stored = schedule({
+    days: [otherDay],
+    lock: {
+      password_hash: 'v1:100000:aa:bb',
+      challenge_length: 0,
+      delay_minutes: 5,
+      restart_lock: true,
+    },
+  });
+  const snapshot = {
+    ...structuredClone(emptySnapshot),
+    sessions: [templateSession],
+    schedules: [stored],
+  };
+  useAppStore.setState({
+    data: snapshot,
+    loading: false,
+    error: null,
+    busy: false,
+  });
+  vi.mocked(api.execute).mockResolvedValue({ ...snapshot });
+  const user = userEvent.setup();
+  render(<PlanningSections only="schedules" />);
+  expect(await screen.findByText('Morning block')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Edit' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Edit schedule' }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText('Total time')).toHaveValue('1 hr');
+  expect(
+    screen.getByRole('checkbox', { name: 'Lock with a password' }),
+  ).toBeChecked();
+  for (const removed of [
+    'Lock changes during the window',
+    'Lock with a typed challenge',
+    'Lock with a delay',
+    'Keep the lock after a restart',
+  ]) {
+    expect(
+      screen.queryByRole('checkbox', { name: removed }),
+    ).not.toBeInTheDocument();
+  }
+  await user.click(screen.getByRole('button', { name: 'Save schedule' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_schedule',
+      id: 'sched-1',
+      lock_changes: false,
+    }),
+  );
+  const call = vi.mocked(api.execute).mock.calls[0][0];
+  expect(call.type).toBe('update_schedule');
+  if (call.type === 'update_schedule') {
+    // The stored delay and restart locks are gone; the password
+    // hash is kept (the field was left empty on purpose).
+    expect(call.lock).toEqual({
+      password_hash: 'v1:100000:aa:bb',
+      challenge_length: 0,
+      delay_minutes: 0,
+      restart_lock: false,
+    });
+    expect(call.lock_password).toBeUndefined();
+  }
 });

@@ -43,11 +43,13 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 # feature provides the MSIX startupTask state/consent API.
 windows = { version = "0.62", features = [
     "ApplicationModel",
+    "Data_Xml_Dom",
     "Foundation",
     "Graphics_Imaging",
     "Media",
     "Media_Capture",
     "Media_FaceAnalysis",
+    "UI_Notifications",
     "Win32_System_WinRT",
     # Native website identification: UI Automation reads the Chromium
     # address bar value (no extension, no process-memory inspection).

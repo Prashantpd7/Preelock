@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Modal } from './SettingsControls';
 import { SessionReview } from './SessionReview';
+import { sessionNeedsExtension } from '../services/browserSupport';
 import type { FocusConfig } from '../types';
 
 /**
@@ -26,6 +28,7 @@ export function SessionConfirmDialog({
   safariWarning,
   onStart,
   onCancel,
+  onConnectBrowser,
 }: {
   title: string;
   minutes: number;
@@ -40,51 +43,113 @@ export function SessionConfirmDialog({
   safariWarning?: boolean;
   onStart: () => void;
   onCancel: () => void;
+  onConnectBrowser?: () => void;
 }) {
+  const [askConnect, setAskConnect] = useState(false);
+  const needsExtension = focus ? sessionNeedsExtension(focus) : false;
+  const missingBrowser = needsExtension && !browserConnected;
+
+  function handleStartClick() {
+    if (missingBrowser && !askConnect) {
+      setAskConnect(true);
+      return;
+    }
+    onStart();
+  }
+
   return (
-    <Modal title="Review your session" onClose={onCancel}>
+    <Modal
+      title={
+        askConnect ? 'Connect browser before starting?' : 'Review your session'
+      }
+      onClose={onCancel}
+    >
       <div className="dialog-stack">
-        {focus ? (
-          <SessionReview
-            focus={focus}
-            title={title}
-            timing={{ kind: 'immediate', minutes }}
-            appNames={appNames}
-            browserName={browserName}
-            browserConnected={browserConnected}
-            cameraPermission={cameraPermission}
-            platform={platform}
-            safariWarning={safariWarning}
-          />
-        ) : (
+        {askConnect ? (
           <div>
             <p>
-              <strong>{title}</strong>
+              <strong>Browser extension is not connected.</strong>
             </p>
-            <p className="muted">
-              {minutes} min · {strict ? 'Strict' : 'Standard'} mode
+            <p className="muted" style={{ margin: '0.75rem 0' }}>
+              This session includes website rules, but Preelock is not connected
+              to your browser. Distracting websites will stay unblocked until
+              you connect the extension.
             </p>
+            <div
+              className="row controls"
+              style={{ justifyContent: 'flex-end', marginTop: '1rem' }}
+            >
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setAskConnect(false)}
+                disabled={busy}
+              >
+                Back
+              </button>
+              {onConnectBrowser && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onConnectBrowser}
+                  disabled={busy}
+                >
+                  Connect browser
+                </button>
+              )}
+              <button type="button" onClick={onStart} disabled={busy}>
+                Start anyway
+              </button>
+            </div>
           </div>
+        ) : (
+          <>
+            {focus ? (
+              <SessionReview
+                focus={focus}
+                title={title}
+                timing={{ kind: 'immediate', minutes }}
+                appNames={appNames}
+                browserName={browserName}
+                browserConnected={browserConnected}
+                cameraPermission={cameraPermission}
+                platform={platform}
+                safariWarning={safariWarning}
+              />
+            ) : (
+              <div>
+                <p>
+                  <strong>{title}</strong>
+                </p>
+                <p className="muted">
+                  {minutes} min · {strict ? 'Strict' : 'Standard'} mode
+                </p>
+              </div>
+            )}
+            {strict && (
+              <p>
+                Strict mode will block everything except your work apps. This
+                can&rsquo;t be undone — finish the session properly.
+              </p>
+            )}
+            <div
+              className="row controls"
+              style={{ justifyContent: 'flex-end' }}
+            >
+              <button
+                type="button"
+                className="secondary"
+                onClick={onCancel}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+              <button type="button" onClick={handleStartClick} disabled={busy}>
+                Start session
+              </button>
+            </div>
+          </>
         )}
-        {strict && (
-          <p>
-            Strict mode will block everything except your work apps. This
-            can&rsquo;t be undone — finish the session properly.
-          </p>
-        )}
-        <div className="row controls" style={{ justifyContent: 'flex-end' }}>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onCancel}
-            disabled={busy}
-          >
-            Cancel
-          </button>
-          <button type="button" onClick={onStart} disabled={busy}>
-            Start session
-          </button>
-        </div>
       </div>
     </Modal>
   );

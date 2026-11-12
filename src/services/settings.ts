@@ -4,12 +4,12 @@ export const preferenceDefaults: Required<Preferences> = {
   theme: 'dark',
   default_minutes: 25,
   large_text: false,
-  menu_timer: false,
+  menu_timer: true,
   daily_goal: 0,
   session_alert: true,
-  sound: false,
-  session_start_alert: false,
-  session_start_sound: false,
+  sound: true,
+  session_start_alert: true,
+  session_start_sound: true,
   volume: 50,
   reminder: false,
   reminder_time: '09:00',
@@ -18,7 +18,8 @@ export const preferenceDefaults: Required<Preferences> = {
   break_minutes: 5,
   break_alert: true,
   notifications_enabled: true,
-  warning_minutes: '5',
+  notifications_sound: true,
+  warning_minutes: '2',
   grace_seconds: 60,
   saved_setups: [],
   category_overrides: {},
@@ -30,6 +31,7 @@ export type SettingsAction =
         | 'status'
         | 'allow_notifications'
         | 'test_browser'
+        | 'reconnect_browser'
         | 'test_camera'
         | 'stop_camera_test'
         | 'start_break'

@@ -61,8 +61,9 @@ Install Rust normally using the prerequisite commands for a durable setup; tempo
 
 ## Data and recovery
 
-macOS: `~/Library/Application Support/com.vystriq.desktop/vystriq.sqlite`.
-Windows: `%APPDATA%\com.vystriq.desktop\vystriq.sqlite`.
+macOS: `~/Library/Application Support/com.preelock.desktop/preelock.sqlite`.
+Windows: `%APPDATA%\com.preelock.desktop\preelock.sqlite`.
+(Legacy `com.vystriq.desktop` and `vystriq.sqlite` paths are automatically migrated on startup.)
 
 Quit Preelock before backing up the database and any `-wal`/`-shm` sidecars. If startup reports a corrupted or newer database, preserve those files, verify the matching application version and restore a known-good backup. Do not delete user data automatically. To deliberately start fresh, move the closed application's entire data directory to a backup location and relaunch. Ordinary restarts restore session timing; browser-dependent sessions re-enter preparation and must receive fresh extension acknowledgement. Paused sessions remain paused. Phase 2 app redirection stops when Preelock quits. Browser recovery is independently available in the extension; see docs/FOCUS_MODE.md. Reopen hidden/minimized apps normally.
 
@@ -70,7 +71,7 @@ Quit Preelock before backing up the database and any `-wal`/`-shm` sidecars. If 
 
 CI validates frontend and native Rust, builds Windows x64 NSIS and macOS ARM64/Intel app bundles, and uploads build artifacts. Intel macOS is cross-compiled on the macOS runner; Rust tests run on the runner's host architecture. CI configuration is not proof of successful execution. Use native hardware for release smoke tests. Unsigned builds are development artifacts; signing, notarization, Windows publisher identity, update signing and release distribution are not configured. Gatekeeper may flag unsigned builds.
 
-The bundle identifier is `com.vystriq.desktop`; verify ownership before a public release. Phase 2 began on a clean main branch tracking origin/main. The existing remote and history were preserved; no commits or pushes were made during Phase 2.
+The bundle identifier is `com.preelock.desktop`; verify ownership before a public release. Phase 2 began on a clean main branch tracking origin/main. The existing remote and history were preserved; no commits or pushes were made during Phase 2.
 
 ## Phase 2 native checks
 

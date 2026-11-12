@@ -17,13 +17,45 @@ export function liveSession(sessions: Session[]): Session | undefined {
   return sessions.find((s) => isLiveSessionStatus(s.status));
 }
 
-/** Human label for a session's origin. Scheduled sessions carry
- *  `schedule_id`; one-shot sessions carry no marker (the engine
- *  creates them with `schedule_id: None` and the one-shot record
- *  is purged when it fires), so they show as a plain focus
- *  session — the type is only claimed when the data proves it. */
+/** Human label for a session's origin, from the kind the backend
+ *  records at creation and persists on the session. Sessions
+ *  saved before the backend recorded it have no `kind`, so the
+ *  label falls back to `schedule_id` — that still proves a
+ *  scheduled session, while an old one-shot session (whose timer
+ *  record was purged) shows as a plain focus session. */
 export function sessionTypeLabel(session: Session): string {
-  return session.schedule_id ? 'Scheduled session' : 'Focus session';
+  switch (session.kind) {
+    case 'scheduled':
+      return 'Scheduled session';
+    case 'one_shot':
+      return 'One-shot session';
+    case 'focus':
+      return 'Focus session';
+    default:
+      return session.schedule_id ? 'Scheduled session' : 'Focus session';
+  }
+}
+
+/** Live focus totals for a session, from the same fields
+ *  SessionCard's "Time so far" / "Final result" uses: the
+ *  productive time the engine credits plus the attention
+ *  buckets, which the engine updates on every tick while the
+ *  session runs. Only meaningful when focus checks are on. */
+export function liveTimeStats(session: Session): {
+  focusedMs: number;
+  distractedMs: number;
+  awayMs: number;
+  totalMs: number;
+} {
+  const focusedMs = session.focused_ms;
+  const distractedMs = session.attention?.distracted_ms ?? 0;
+  const awayMs = session.attention?.absent_ms ?? 0;
+  return {
+    focusedMs,
+    distractedMs,
+    awayMs,
+    totalMs: focusedMs + distractedMs + awayMs,
+  };
 }
 
 /** Whether this session needs the browser extension connected.
@@ -184,32 +216,38 @@ export type YoutubePolicy =
       blocked: string[];
       allowed: string[];
       watchLater: boolean;
+      entertainment?: boolean;
     }
   | {
       mode: 'block';
       blocked: string[];
       allowed: string[];
       watchLater: boolean;
+      entertainment?: boolean;
     }
   | {
       mode: 'study';
       blocked: string[];
       allowed: string[];
       watchLater: boolean;
+      entertainment?: boolean;
     };
 
 /** The session's exact YouTube configuration. Study mode allows
  *  only the allowed list; otherwise the blocked list applies.
- *  Watch Later is a separate toggle, reported as-is. */
+ *  Watch Later and entertainment blocking are reported as flags. */
 export function youtubePolicy(focus: FocusConfig | undefined): YoutubePolicy {
   const blocked = focus?.youtube_blocked_channels ?? [];
   const allowed = focus?.youtube_allowed_channels ?? [];
   const watchLater = focus?.youtube_allow_watch_later ?? false;
+  const ent = focus?.youtube_block_entertainment
+    ? { entertainment: true as const }
+    : {};
   if (focus?.youtube_study_mode)
-    return { mode: 'study', blocked, allowed, watchLater };
+    return { mode: 'study', blocked, allowed, watchLater, ...ent };
   if (blocked.length > 0)
-    return { mode: 'block', blocked, allowed, watchLater };
-  return { mode: 'none', blocked, allowed, watchLater };
+    return { mode: 'block', blocked, allowed, watchLater, ...ent };
+  return { mode: 'none', blocked, allowed, watchLater, ...ent };
 }
 
 /** "Type of work" label for the attention `task` value, matching

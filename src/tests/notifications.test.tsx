@@ -83,9 +83,9 @@ it('shows block warnings and grace period in Alerts and saves them', async () =>
   render(<Settings />);
   await user.click(screen.getByRole('button', { name: 'Alerts' }));
   const warnings = screen.getByLabelText('Block warning minutes');
-  expect(warnings).toHaveValue('5');
+  expect(warnings).toHaveValue(2);
   await user.clear(warnings);
-  await user.type(warnings, '5, 15');
+  await user.type(warnings, '5');
   const grace = screen.getByLabelText('Grace period seconds');
   expect(grace).toHaveValue(60);
   await user.clear(grace);
@@ -95,7 +95,7 @@ it('shows block warnings and grace period in Alerts and saves them', async () =>
     expect.objectContaining({
       type: 'update_preferences',
       preferences: expect.objectContaining({
-        warning_minutes: '5, 15',
+        warning_minutes: '5',
         grace_seconds: 120,
       }),
     }),

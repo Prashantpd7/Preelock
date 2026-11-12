@@ -276,6 +276,9 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 attention: Default::default(),
                 force_quit: false,
                 schedule_id: None,
+                // A manually created session is an instant focus
+                // session, whatever its template was.
+                kind: crate::models::SessionKind::Focus,
                 pomodoro,
                 reward: Default::default(),
                 lock,
@@ -284,6 +287,13 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 browser_fail_closed: false,
                 // Step 14: manual sessions never get grace.
                 grace_until_ms: None,
+                // Step 14 grace-start notification: a manual
+                // session never enters grace, so never notifies.
+                grace_notified: false,
+                durability: crate::models::SessionDurability {
+                    recovery_status: Some("clean".into()),
+                    ..Default::default()
+                },
             });
         }
         // Reject the old IPC command as well as removing its UI. Keep the
@@ -802,6 +812,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             // to the schedule's window, so it is not ended at window
             // end and is not covered by the schedule's lock.
             s.schedule_id = None;
+            s.kind = crate::models::SessionKind::Focus;
             s.force_quit = false;
             // Step 11: a fresh run has no extension history — its
             // policy must be applied anew before it can count as
@@ -811,6 +822,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             // Step 14: a restarted session is a fresh manual run —
             // it keeps no grace from its previous run.
             s.grace_until_ms = None;
+            s.grace_notified = false;
             s.status = Status::Ready;
             s.started_at = None;
             s.ended_at = None;
@@ -1092,6 +1104,26 @@ mod tests {
         d
     }
     #[test]
+    fn flexible_wizard_session_stores_allow_pause_and_pauses() {
+        // Item 6 (backend half): the wizard sends allow_pause for a
+        // Flexible session; the stored session keeps it, so the pause
+        // gate lets a running flexible session pause.
+        let mut d = data(true);
+        assert!(d.sessions[0].allow_pause);
+        let id = d.sessions[0].id.clone();
+        apply(
+            &mut d,
+            Action::PauseSession {
+                id,
+                password: None,
+                challenge_answer: None,
+            },
+            2000,
+        )
+        .unwrap();
+        assert_eq!(d.sessions[0].status, Status::Paused);
+    }
+    #[test]
     fn completion_caps_focus_at_planned_duration() {
         let mut d = data(true);
         advance(&mut d.sessions[0], 90_000, 91_000);
@@ -1125,6 +1157,28 @@ mod tests {
         // The same card can start again.
         apply(&mut d, Action::StartSession { id }, 200_000).unwrap();
         assert_eq!(d.sessions[0].status, Status::Running);
+    }
+    #[test]
+    fn manual_session_kind_is_focus_and_restart_resets_a_schedule_session() {
+        // A manually created session is an instant focus session.
+        let mut d = data(true);
+        assert_eq!(d.sessions[0].kind, crate::models::SessionKind::Focus);
+        // A restarted schedule session becomes a manual session: its
+        // kind resets to Focus alongside schedule_id.
+        let id = d.sessions[0].id.clone();
+        advance(&mut d.sessions[0], 90_000, 91_000);
+        assert_eq!(d.sessions[0].status, Status::Completed);
+        d.sessions[0].kind = crate::models::SessionKind::Scheduled;
+        d.sessions[0].schedule_id = Some("sched".into());
+        apply(&mut d, Action::RestartSession { id }, 200_000).unwrap();
+        assert_eq!(d.sessions[0].kind, crate::models::SessionKind::Focus);
+        assert_eq!(d.sessions[0].schedule_id, None);
+        // Sessions saved before the kind field load as Focus.
+        let old: crate::models::Session = serde_json::from_value(
+            serde_json::json!({"id":"old","title":"Old","duration_minutes":25,"remaining_ms":1500000,"focused_ms":0,"allow_pause":true,"status":"completed","started_at":1000,"ended_at":2000,"deadline_ms":null}),
+        )
+        .unwrap();
+        assert_eq!(old.kind, crate::models::SessionKind::Focus);
     }
     #[test]
     fn camera_can_be_restarted_after_stop() {
@@ -2353,5 +2407,124 @@ mod tests {
         )
         .is_ok());
         assert!(d.schedules[0].lock.password_hash.is_some());
+    }
+
+    #[test]
+    fn password_only_schedule_lock_gates_pause_and_end() {
+        // The password lock is the only lock the schedule popup
+        // offers now: window changes and the other lock kinds are
+        // off. A schedule-fired session inherits the schedule's
+        // lock, and the password alone must gate pausing and
+        // ending it early — no challenge or delay lock needed.
+        let now = now_ms();
+        let mut d = Snapshot::default();
+        let window = active_window_schedule(now, false);
+        let (days, start_time, end_time) = (
+            window.days.clone(),
+            window.start_time.clone(),
+            window.end_time.clone(),
+        );
+        apply(
+            &mut d,
+            Action::CreateSchedule {
+                title: "Block".into(),
+                days,
+                start_time,
+                end_time,
+                focus: Default::default(),
+                enabled: true,
+                lock_changes: false,
+                lock: crate::locks::LockConfig {
+                    password_hash: None,
+                    challenge_length: 0,
+                    delay_minutes: 0,
+                    restart_lock: false,
+                },
+                lock_password: Some("sched-secret".into()),
+            },
+            now,
+        )
+        .unwrap();
+        let schedule = d.schedules[0].clone();
+        assert!(schedule.lock.password_hash.is_some());
+        // The engine creates this session on window entry; the
+        // test links it by hand, inheriting the schedule's lock
+        // the way the engine does. allow_pause is true here so
+        // the pause gate itself is exercised (a real
+        // schedule-fired session is never pausable, so in the app
+        // the password gates ending it early).
+        apply(
+            &mut d,
+            Action::CreateSession {
+                title: "Block".into(),
+                minutes: 60,
+                allow_pause: true,
+                focus: Default::default(),
+                lock: schedule.lock.clone(),
+                lock_password: None,
+            },
+            now,
+        )
+        .unwrap();
+        d.sessions[0].schedule_id = Some(schedule.id.clone());
+        d.sessions[0].status = Status::Running;
+        let id = d.sessions[0].id.clone();
+        // No password: pause blocked. Wrong password: blocked.
+        assert!(apply(
+            &mut d,
+            Action::PauseSession {
+                id: id.clone(),
+                password: None,
+                challenge_answer: None,
+            },
+            now,
+        )
+        .is_err());
+        assert!(apply(
+            &mut d,
+            Action::PauseSession {
+                id: id.clone(),
+                password: Some("wrong".into()),
+                challenge_answer: None,
+            },
+            now,
+        )
+        .is_err());
+        assert_eq!(d.sessions[0].status, Status::Running);
+        // The password alone pauses it.
+        apply(
+            &mut d,
+            Action::PauseSession {
+                id: id.clone(),
+                password: Some("sched-secret".into()),
+                challenge_answer: None,
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(d.sessions[0].status, Status::Paused);
+        apply(&mut d, Action::ResumeSession { id: id.clone() }, now).unwrap();
+        // And the password alone ends it early.
+        assert!(apply(
+            &mut d,
+            Action::EndSession {
+                id: id.clone(),
+                password: None,
+                challenge_answer: None,
+            },
+            now,
+        )
+        .is_err());
+        apply(
+            &mut d,
+            Action::EndSession {
+                id: id.clone(),
+                password: Some("sched-secret".into()),
+                challenge_answer: None,
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(d.sessions[0].status, Status::Ended);
     }
 }

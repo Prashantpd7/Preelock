@@ -8,16 +8,23 @@ export function BrowserSetup({
   setup,
   refresh,
   browserId = '',
+  allowAdd = false,
+  onBack,
 }: {
   setup: FocusSetup | null;
   refresh: () => Promise<void>;
   browserId?: string;
+  allowAdd?: boolean;
+  onBack?: () => void;
 }) {
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
   const [installGuide, setInstallGuide] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const [lockedDialog, setLockedDialog] = useState(false);
+  const [initialConnectedCount] = useState(
+    setup?.connected_browsers?.length ?? 0,
+  );
   // Disconnecting and reconnecting is locked while a strict focus
   // session is live; the backend rejects reset_pairing then too.
   const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
@@ -29,16 +36,21 @@ export function BrowserSetup({
   // Keep checking while the guide is open so it flips to Connected
   // on its own once the user connects in the browser.
   useEffect(() => {
-    if (connected) return;
+    if (connected && !allowAdd) return;
     const timer = setInterval(() => {
       void refresh();
-    }, 3000);
+    }, 2000);
     return () => clearInterval(timer);
-  }, [connected, refresh]);
-  // When connected, show a confirmation instead of rendering nothing —
+  }, [connected, allowAdd, refresh]);
+
+  const newlyConnected =
+    allowAdd &&
+    (setup?.connected_browsers?.length ?? 0) > initialConnectedCount;
+
+  // When connected and not adding another browser, show a confirmation instead of rendering nothing —
   // returning null here left an empty broken dialog in the "Before you
   // start" popup when the fresh status check already showed connected.
-  if (connected) {
+  if (connected && !allowAdd) {
     return (
       <div className="setup-guide">
         <p className="ready-box">Connected</p>
@@ -132,12 +144,68 @@ export function BrowserSetup({
     }
     setCopied(true);
     setNotice('');
+    setTimeout(() => setCopied(false), 2000);
   }
   return (
     <div className="setup-guide">
-      <p role="alert" className="connect-warn">
-        Browser is not connected. Follow the steps below to connect it.
-      </p>
+      {onBack && (
+        <button
+          type="button"
+          className="text-link"
+          onClick={onBack}
+          style={{ marginBottom: '0.75rem', display: 'inline-block' }}
+        >
+          ← Back to connected browsers
+        </button>
+      )}
+      {newlyConnected ? (
+        <div
+          style={{
+            padding: '0.75rem 1rem',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(34, 197, 94, 0.15)',
+            border: '1px solid rgba(34, 197, 94, 0.3)',
+            color: '#4ade80',
+            marginBottom: '0.875rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '0.5rem',
+          }}
+        >
+          <span>✓ New browser connected successfully!</span>
+          {onBack && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={onBack}
+              style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+            >
+              View connected browsers
+            </button>
+          )}
+        </div>
+      ) : (
+        <p
+          role="status"
+          className={allowAdd ? 'small muted' : 'connect-warn'}
+          style={
+            allowAdd
+              ? {
+                  padding: '0.625rem 0.875rem',
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  marginBottom: '0.75rem',
+                }
+              : undefined
+          }
+        >
+          {allowAdd
+            ? 'Pair an additional browser. Copy the connection code below and paste it in the Preelock extension in your other browser.'
+            : 'Browser is not connected. Follow the steps below to connect it.'}
+        </p>
+      )}
       <div className="row">
         <button
           type="button"

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Bell, BellOff } from 'lucide-react';
 import { PermissionsPanel } from '../components/PermissionsPanel';
 import { PageHeading } from '../components/ui';
 import {
@@ -15,6 +16,16 @@ import {
   type SettingsAction,
   type SettingsInfo,
 } from '../services/settings';
+// Block warnings is one minute now, not a comma list: keep only the
+// first stored value, so an old "5, 15" still warns at 5 minutes and
+// saves as a single number. Empty (or 0) means no warnings.
+function singleWarningMinute(text: string | undefined): string {
+  const first = (text ?? '').split(',')[0]?.trim() ?? '';
+  const value = Number(first);
+  if (!Number.isFinite(value) || value < 1) return '';
+  return String(Math.min(60, Math.floor(value)));
+}
+
 const tabs = [
   'General',
   'Focus',
@@ -64,6 +75,9 @@ export function Settings({
   const [draft, setDraft] = useState({
     ...preferenceDefaults,
     ...data.preferences,
+    warning_minutes: singleWarningMinute(
+      data.preferences.warning_minutes ?? preferenceDefaults.warning_minutes,
+    ),
   });
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState('');
@@ -102,9 +116,13 @@ export function Settings({
   }
   async function save(next = draft) {
     if (await execute({ type: 'update_preferences', preferences: next })) {
+      const saved = useAppStore.getState().data.preferences;
       setDraft({
         ...preferenceDefaults,
-        ...useAppStore.getState().data.preferences,
+        ...saved,
+        warning_minutes: singleWarningMinute(
+          saved.warning_minutes ?? preferenceDefaults.warning_minutes,
+        ),
       });
       setDirty(false);
       setNotice('Saved');
@@ -130,15 +148,7 @@ export function Settings({
   }
   function switchRow(
     label: string,
-    key:
-      | 'large_text'
-      | 'menu_timer'
-      | 'session_alert'
-      | 'sound'
-      | 'session_start_alert'
-      | 'session_start_sound'
-      | 'notifications_enabled'
-      | 'reminder',
+    key: 'large_text' | 'menu_timer' | 'notifications_enabled' | 'reminder',
     hint?: string,
     extraDisabled = false,
   ) {
@@ -150,6 +160,49 @@ export function Settings({
           onChange={(v) => change(key, v)}
           disabled={disabled || extraDisabled}
         />
+      </SettingRow>
+    );
+  }
+  function alertRow(
+    label: string,
+    alertKey: 'notifications_enabled' | 'session_alert' | 'session_start_alert',
+    soundKey: 'notifications_sound' | 'sound' | 'session_start_sound',
+    options?: {
+      hint?: string;
+      onToggle?: (v: boolean) => void;
+      toggleDisabled?: boolean;
+      soundDisabled?: boolean;
+    },
+  ) {
+    const soundEnabled = draft[soundKey] ?? true;
+    const alertEnabled = draft[alertKey] ?? true;
+    return (
+      <SettingRow title={label} hint={options?.hint}>
+        <div className="alert-controls">
+          <button
+            type="button"
+            className="sound-button"
+            aria-label={`${label} sound`}
+            aria-pressed={soundEnabled}
+            title={soundEnabled ? 'Mute sound' : 'Play sound'}
+            disabled={disabled || Boolean(options?.soundDisabled)}
+            onClick={() => change(soundKey, !soundEnabled)}
+          >
+            {soundEnabled ? <Bell size={15} /> : <BellOff size={15} />}
+          </button>
+          <Toggle
+            label={label}
+            checked={alertEnabled}
+            onChange={(v) => {
+              if (options?.onToggle) {
+                options.onToggle(v);
+              } else {
+                change(alertKey, v);
+              }
+            }}
+            disabled={disabled || Boolean(options?.toggleDisabled)}
+          />
+        </div>
       </SettingRow>
     );
   }
@@ -230,7 +283,9 @@ export function Settings({
                 />
               </SettingRow>
               {switchRow(
-                'Show timer in menu bar',
+                info.platform === 'windows'
+                  ? 'Show timer in system tray'
+                  : 'Show timer in menu bar',
                 'menu_timer',
                 'Keep off for the icon only.',
               )}
@@ -325,14 +380,14 @@ export function Settings({
           {tab === 'Alerts' && (
             <section className="settings-section">
               <h2>Alerts</h2>
-              <SettingRow
-                title="Notifications"
-                hint="Allow focus and reminder alerts."
-              >
-                <Toggle
-                  label="Notifications"
-                  checked={draft.notifications_enabled ?? true}
-                  onChange={(v) => {
+              {alertRow(
+                'Notifications',
+                'notifications_enabled',
+                'notifications_sound',
+                {
+                  hint: 'Allow focus and reminder alerts.',
+                  soundDisabled: !notificationsOn,
+                  onToggle: (v) => {
                     change('notifications_enabled', v);
                     if (v) {
                       // Ask the OS for permission right away when turning on.
@@ -341,30 +396,26 @@ export function Settings({
                         'Notifications are ready.',
                       );
                     }
-                  }}
-                  disabled={disabled}
-                />
-              </SettingRow>
-              {switchRow(
-                'Session finished',
-                'session_alert',
-                undefined,
-                !notificationsOn,
+                  },
+                },
               )}
-              {switchRow('Play a sound', 'sound', undefined, !notificationsOn)}
-              {switchRow(
+              {alertRow('Session finished', 'session_alert', 'sound', {
+                toggleDisabled: !notificationsOn,
+                soundDisabled: !notificationsOn || !draft.session_alert,
+              })}
+              {alertRow(
                 'Session started',
                 'session_start_alert',
-                undefined,
-                !notificationsOn,
-              )}
-              {switchRow(
-                'Play a sound',
                 'session_start_sound',
-                undefined,
-                !notificationsOn,
+                {
+                  toggleDisabled: !notificationsOn,
+                  soundDisabled:
+                    !notificationsOn || !(draft.session_start_alert ?? true),
+                },
               )}
-              {(draft.sound || draft.session_start_sound) && (
+              {((draft.notifications_sound ?? true) ||
+                draft.sound ||
+                draft.session_start_sound) && (
                 <SettingRow title="Volume">
                   <div className="volume-control">
                     <input
@@ -393,17 +444,32 @@ export function Settings({
               )}
               <SettingRow
                 title="Block warnings"
-                hint="Warn before a scheduled or one-shot block starts. Minutes, separated by commas. Leave blank for no warnings."
+                hint="Warn before a scheduled or one-shot block starts."
               >
-                <input
-                  aria-label="Block warning minutes"
-                  className="time-input"
-                  type="text"
-                  inputMode="text"
-                  value={draft.warning_minutes ?? '5'}
-                  disabled={disabled || !notificationsOn}
-                  onChange={(e) => change('warning_minutes', e.target.value)}
-                />
+                <label className="number-control">
+                  <input
+                    aria-label="Block warning minutes"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={singleWarningMinute(draft.warning_minutes)}
+                    disabled={disabled || !notificationsOn}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '') {
+                        change('warning_minutes', '');
+                        return;
+                      }
+                      const value = Number(raw);
+                      if (!Number.isFinite(value) || value <= 0) {
+                        change('warning_minutes', '');
+                        return;
+                      }
+                      change('warning_minutes', singleWarningMinute(raw));
+                    }}
+                  />{' '}
+                  min
+                </label>
               </SettingRow>
               <SettingRow
                 title="Grace period"
@@ -635,7 +701,9 @@ export function Settings({
                   <h3>Session completion</h3>
                   <p>
                     Restrictions are released when the session finishes. You can
-                    quit Preelock from the menu bar when no session is active.
+                    quit Preelock from the{' '}
+                    {info.platform === 'windows' ? 'system tray' : 'menu bar'}{' '}
+                    when no session is active.
                   </p>
                 </article>
               </div>
@@ -651,8 +719,9 @@ export function Settings({
                 </p>
                 <p>
                   During a session, closing or quitting only hides the window —
-                  the session keeps running in the menu bar. When idle, use the
-                  tray icon to reopen or quit.
+                  the session keeps running in the{' '}
+                  {info.platform === 'windows' ? 'system tray' : 'menu bar'}.
+                  When idle, use the tray icon to reopen or quit.
                 </p>
               </div>
               <p className="settings-footnote">
@@ -727,7 +796,9 @@ export function Settings({
                           minutes: s.duration_minutes,
                           focus: {
                             ...s.focus,
-                            activity_consent: false,
+                            // Other apps are always blocked now, so a
+                            // saved setup stores consent on too.
+                            activity_consent: true,
                             camera: false,
                           },
                         },

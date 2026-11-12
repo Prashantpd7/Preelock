@@ -7,8 +7,8 @@
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/verify-msix.ps1 `
-#     -Package src-tauri/target/msix/VYSTRIQ_0.4.1_x64.msix `
-#     -ExpectedIdentity 12345Publisher.VYSTRIQ `
+#     -Package src-tauri/target/msix/Preelock_0.5.4_x64.msix `
+#     -ExpectedIdentity Prashantpd7.Preelock `
 #     -ExpectedPublisher "CN=1A2B3C4D-0000-0000-0000-000000000000" `
 #     -ExpectedVersion 0.4.1.0 -ExpectedArchitecture x64
 
@@ -67,7 +67,7 @@ $packageHash = (Get-FileHash $Package -Algorithm SHA256).Hash.ToLower()
 Write-Output "  sha256 $packageHash"
 
 $makeappx = Find-MakeAppx
-$extract = Join-Path ([System.IO.Path]::GetTempPath()) ("vystriq-msix-" + [guid]::NewGuid().ToString("N"))
+$extract = Join-Path ([System.IO.Path]::GetTempPath()) ("preelock-msix-" + [guid]::NewGuid().ToString("N"))
 try {
     & $makeappx unpack /o /p $Package /d $extract | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed ($LASTEXITCODE); the file is not a readable MSIX" }
@@ -103,7 +103,7 @@ try {
     Check ($applications.Count -eq 1) "Exactly one Application entry"
     $application = $applications[0]
     Check ($application.EntryPoint -eq "Windows.FullTrustApplication") "Entry point is Windows.FullTrustApplication"
-    Check ($application.Id -ceq "VYSTRIQ") "Application registration identity is unchanged"
+    Check ($application.Id -ceq "Preelock") "Application registration identity is Preelock"
     Check ($application.VisualElements.DisplayName -ceq "Preelock") "Application display name is Preelock"
     Check ($application.VisualElements.DefaultTile.ShortName -ceq "Preelock") "Tile name is Preelock"
     $executable = Join-Path $extract $application.Executable
@@ -119,7 +119,7 @@ try {
     $startup = @($manifest.SelectNodes("//*[local-name()='StartupTask']"))
     Check ($startup.Count -eq 2) "Exactly two startupTasks are declared"
     if ($startup.Count -eq 2) {
-        $mainTask = @($startup | Where-Object { $_.TaskId -eq "VYSTRIQ" })
+        $mainTask = @($startup | Where-Object { $_.TaskId -eq "Preelock" })
         $backgroundTask = @($startup | Where-Object { $_.TaskId -eq "PreelockBackground" })
         Check ($mainTask.Count -eq 1) "Main startupTask is declared"
         Check ($backgroundTask.Count -eq 1) "Background startupTask is declared"

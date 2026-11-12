@@ -548,6 +548,7 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
     };
 
     const document = {
+      title: overrides.documentTitle || '',
       visibilityState: 'visible',
       getElementById: (id) => elements[id] || null,
       createElement: (tag) => makeNode(tag),
@@ -662,6 +663,7 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
       api: context.__preelockYoutube,
       controlsApi: context.__preelockYoutubeControls,
       windowObj,
+      document,
       messages,
       replaced,
       postedMessages,
@@ -1797,5 +1799,208 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
     });
     await settle();
     expect(env.elements['preelock-yt-guard']).toBeUndefined();
+  });
+
+  it('guards while metadata loads, allows educational videos, and blocks entertainment videos', async () => {
+    const entPolicy = {
+      mode: 'blocklist',
+      domains: [],
+      youtube_block_entertainment: true,
+    };
+    const watchVideo = {
+      paused: false,
+      ended: false,
+      currentTime: 0,
+      pause: () => {
+        watchVideo.paused = true;
+      },
+      play: () => {
+        watchVideo.paused = false;
+        return Promise.resolve();
+      },
+    };
+    const sentBlocks = [];
+    const env = loadIntegrated({
+      href: 'https://www.youtube.com/watch?v=entcheck1',
+      queryAll: (sel) => (sel === 'video' ? [watchVideo] : []),
+      fetch: async () => ({ ok: false }),
+      onMessage: (m) => {
+        if (m.type === 'youtube_policy') {
+          return { policy: entPolicy, browsingClosed: false };
+        }
+        if (m.type === 'youtube_page_check') return { blocked: false };
+        if (m.type === 'youtube_check') {
+          return youtubeVideoDecision(
+            m.url,
+            m.channels ?? [],
+            entPolicy,
+            Boolean(m.unidentified),
+            m.watchLaterMember ?? null,
+            m.videoMeta ?? null,
+          );
+        }
+        if (m.type === 'youtube_block') {
+          sentBlocks.push(m);
+          return { ok: true };
+        }
+        return { ok: true };
+      },
+    });
+    await settle();
+    expect(env.elements['preelock-yt-guard']).toBeDefined();
+
+    // Educational video metadata lifts the guard.
+    env.fireWindow('message', {
+      source: env.windowObj,
+      origin: 'https://www.youtube.com',
+      data: {
+        source: 'preelock-page',
+        type: 'video',
+        videoId: 'entcheck1',
+        channelId: 'UCEdu1234567890123456',
+        ownerUrl: '/@educhannel',
+        title: 'Linear Algebra Lecture 1',
+        category: 'Education',
+        keywords: ['math', 'lecture'],
+      },
+    });
+    await settle();
+    expect(env.elements['preelock-yt-guard']).toBeUndefined();
+    expect(sentBlocks).toHaveLength(0);
+
+    // Entertainment video metadata arriving on update blocks the video immediately.
+    env.fireWindow('message', {
+      source: env.windowObj,
+      origin: 'https://www.youtube.com',
+      data: {
+        source: 'preelock-page',
+        type: 'video',
+        videoId: 'entcheck1',
+        channelId: 'UCFun1234567890123456',
+        ownerUrl: '/@prankster',
+        title: 'Funny Dog Vlog and Prank',
+        category: 'Comedy',
+        keywords: ['comedy', 'vlog'],
+      },
+    });
+    await settle();
+    expect(sentBlocks).toHaveLength(1);
+    expect(watchVideo.paused).toBe(true);
+    expect(watchVideo.muted).toBe(true);
+  });
+
+  it('detects and blocks comedy videos from document.title during SPA navigation without bridge delay', async () => {
+    const entPolicy = {
+      mode: 'blocklist',
+      domains: [],
+      youtube_block_entertainment: true,
+    };
+    const watchVideo = {
+      paused: false,
+      ended: false,
+      currentTime: 2,
+      muted: false,
+      pause: () => {
+        watchVideo.paused = true;
+      },
+      play: () => {
+        watchVideo.paused = false;
+        return Promise.resolve();
+      },
+    };
+    const sentBlocks = [];
+    const env = loadIntegrated({
+      href: 'https://www.youtube.com/',
+      documentTitle: 'YouTube',
+      queryAll: (sel) => (sel === 'video' ? [watchVideo] : []),
+      fetch: async () => ({ ok: false }),
+      onMessage: (m) => {
+        if (m.type === 'youtube_policy') {
+          return { policy: entPolicy, browsingClosed: false };
+        }
+        if (m.type === 'youtube_page_check') return { blocked: false };
+        if (m.type === 'youtube_check') {
+          return youtubeVideoDecision(
+            m.url,
+            m.channels ?? [],
+            entPolicy,
+            Boolean(m.unidentified),
+            m.watchLaterMember ?? null,
+            m.videoMeta ?? null,
+          );
+        }
+        if (m.type === 'youtube_block') {
+          sentBlocks.push(m);
+          return { ok: true };
+        }
+        return { ok: true };
+      },
+    });
+    await settle();
+    expect(sentBlocks).toHaveLength(0);
+
+    // Simulate SPA navigation transition to comedy video
+    env.windowObj.location.href = 'https://www.youtube.com/watch?v=standup999';
+    env.document.title =
+      '(320) OUT OF CONTROL | Gaurav kapoor | Standup Comedy - YouTube';
+    env.fireWindow('message', {
+      source: env.windowObj,
+      origin: 'https://www.youtube.com',
+      data: {
+        source: 'preelock-page',
+        type: 'nav',
+        href: 'https://www.youtube.com/watch?v=standup999',
+      },
+    });
+    await settle();
+
+    // Immediately detected as entertainment from document.title fallback and blocked
+    expect(sentBlocks).toHaveLength(1);
+    expect(sentBlocks[0].videoMeta.title).toBe(
+      'OUT OF CONTROL | Gaurav kapoor | Standup Comedy',
+    );
+    expect(watchVideo.paused).toBe(true);
+    expect(watchVideo.muted).toBe(true);
+  });
+
+  it('accurately identifies entertainment vs discipline/productivity/educational card titles', () => {
+    const { api } = loadScript();
+    // Discipline, productivity, self-improvement, study & explanatory titles are NOT entertainment
+    const productiveTitles = [
+      "I'll Kill Your Procrastination in Under 1 Minute.",
+      'HOW TO BECOME ADDICTED TO DOING HARD THINGS (with neuroscience)',
+      'life without social media',
+      "Indians Need to Stop Playing Small Abroad: Here's Why!",
+      'Deep Work & Focus: 10 Habits for Daily Discipline',
+      'Why You Cannot Focus and How to Fix It',
+      'Quantum Mechanics Explained Simply',
+      'Python Tutorial for Beginners - Full Course in 11 Hours',
+      'How to Build a Compiler in Rust',
+      'MIT 18.06 Linear Algebra Lecture 1',
+      'The Neuroscience of Sleep and Brain Performance',
+      'Marcus Aurelius - Meditations: Stoic Philosophy Explained',
+    ];
+    for (const title of productiveTitles) {
+      expect(api.isProductiveEducationalText(title)).toBe(true);
+      expect(api.isEntertainmentCardTitle(title)).toBe(false);
+    }
+
+    // Unambiguous entertainment titles are strictly identified
+    const entertainmentTitles = [
+      'OUT OF CONTROL | Gaurav kapoor | Standup Comedy',
+      'BEST OF KAPIL SHARMA SHOW | COMEDY SCENES',
+      'College Campus Prank Gone Wrong',
+      'TRY NOT TO LAUGH - IMPOSSIBLE CHALLENGE',
+      'Cutest Puppies and Kittens Compilation 2026',
+      'GTA 5 Gameplay Walkthrough Part 1',
+      'My Daily Vlog in Tokyo: Shopping & Food',
+      'Giant Spicy Noodles Mukbang',
+      'Roasting The Cringiest TikTokers',
+      'Official Movie Trailer #1',
+    ];
+    for (const title of entertainmentTitles) {
+      expect(api.isStrongEntertainmentText(title)).toBe(true);
+      expect(api.isEntertainmentCardTitle(title)).toBe(true);
+    }
   });
 });

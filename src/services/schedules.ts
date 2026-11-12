@@ -30,6 +30,42 @@ export function scheduleMinutes(time: string): number | null {
   return hour * 60 + minute;
 }
 
+/** Duration of a schedule window in minutes, with whether it runs
+ *  overnight. Mirrors `isScheduleActive`: an end earlier than (or
+ *  equal to) the start is an overnight window — end equal to start
+ *  is a full 24 hours (the form still rejects equal times on
+ *  submit; this is only the live display). Null when either time
+ *  is invalid. */
+export function scheduleWindow(
+  startTime: string,
+  endTime: string,
+): { minutes: number; overnight: boolean } | null {
+  const start = scheduleMinutes(startTime);
+  const end = scheduleMinutes(endTime);
+  if (start === null || end === null) return null;
+  if (end > start) return { minutes: end - start, overnight: false };
+  return { minutes: 24 * 60 - start + end, overnight: true };
+}
+
+/** Short duration label: "45 min", "1 hr", "1 hr 30 min". */
+export function formatScheduleDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours > 0 && mins > 0) return `${hours} hr ${mins} min`;
+  if (hours > 0) return `${hours} hr`;
+  return `${mins} min`;
+}
+
+/** Total-time text for the schedule forms: the duration, plus
+ *  "· Overnight" for windows that cross midnight. "—" when
+ *  either time is invalid. */
+export function scheduleTotalTime(startTime: string, endTime: string): string {
+  const window = scheduleWindow(startTime, endTime);
+  if (!window) return '—';
+  const text = formatScheduleDuration(window.minutes);
+  return window.overnight ? `${text} · Overnight` : text;
+}
+
 /** Wall-clock start instant (epoch ms) of the next window start
  *  after `nowMs`, mirroring the backend `next_window_start_ms`
  *  (step 14): the `start_time` on a listed day, for same-day and

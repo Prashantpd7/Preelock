@@ -84,6 +84,20 @@ pub fn decide(has_active: bool, owns_engine_lock: bool) -> QuitDecision {
     }
 }
 
+/// Authoritative GUI quit rule when `--background` is the sole session engine
+/// owner: Cmd+Q / Quit exits ONLY the desktop UI process (`ExitUiOnly`),
+/// leaving `--background` running. Wait before exiting only if background
+/// is unreachable while a strict session is live (refuse fail-open exit).
+/// Note: `--background` itself is responsible for relaunching the UI (~5s)
+/// strictly when `has_active_strict` is true, and never when false.
+pub fn gui_quit_action(background_reachable: bool, has_active_strict: bool) -> QuitDecision {
+    if !background_reachable && has_active_strict {
+        QuitDecision::CloseUiOnly
+    } else {
+        QuitDecision::ExitUiOnly
+    }
+}
+
 /// M6: whether the main window is shown at GUI startup after an OS
 /// shutdown / logout / restart.
 ///
@@ -201,6 +215,14 @@ mod tests {
         // Idle observer (the M1 transient): exit the UI only — no
         // shutdown, no "finish your session" notice.
         assert_eq!(decide(false, false), QuitDecision::ExitUiOnly);
+    }
+
+    #[test]
+    fn gui_quit_exits_ui_when_background_owns_session() {
+        assert_eq!(gui_quit_action(true, true), QuitDecision::ExitUiOnly);
+        assert_eq!(gui_quit_action(true, false), QuitDecision::ExitUiOnly);
+        assert_eq!(gui_quit_action(false, false), QuitDecision::ExitUiOnly);
+        assert_eq!(gui_quit_action(false, true), QuitDecision::CloseUiOnly);
     }
 
     #[test]

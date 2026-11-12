@@ -191,6 +191,17 @@ pub fn timer_text(session: &Session, now_ms: i64) -> String {
     }
 }
 
+/// The tray tooltip text for Windows System Tray parity (and general tooltip representation):
+/// During an active session: "Preelock · <timer_text>" (e.g. "Preelock · 25:00 left",
+/// "Preelock · Paused - 25:00", "Preelock · Starting in 45s", "Preelock · Starting session...").
+/// When idle: "Preelock".
+pub fn tooltip_text(live: Option<&Session>, now_ms: i64) -> String {
+    match live {
+        Some(session) => format!("Preelock · {}", timer_text(session, now_ms)),
+        None => "Preelock".to_string(),
+    }
+}
+
 /// The tray menu: a live session shows only the timer item (no Quit
 /// — same rule as the GUI tray); idle shows only "Quit Preelock".
 /// (Moved unchanged from `lib.rs`.)
@@ -234,6 +245,19 @@ pub fn should_show_gui(desktop_alive: bool, last_spawn_ms: i64, now_ms: i64) -> 
 fn show_gui() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = crate::launch::gui_executable(&exe);
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = crate::background::app_bundle_root(&exe) {
+        return Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg("-a")
+            .arg(&bundle)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not reopen Preelock bundle: {e}"));
+    }
     Command::new(&exe)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -330,6 +354,11 @@ pub fn run() -> i32 {
                         }
                     }
                 }
+                #[cfg(target_os = "windows")]
+                if let Some(tray) = handle.tray_by_id(TRAY_ID) {
+                    let _ =
+                        tray.set_tooltip(Some(&tooltip_text(live.as_ref(), crate::clock::now())));
+                }
             });
             Ok(())
         })
@@ -375,6 +404,7 @@ mod tests {
             attention: Default::default(),
             force_quit: false,
             schedule_id: None,
+            kind: crate::models::SessionKind::Focus,
             pomodoro: Default::default(),
             reward: Default::default(),
             lock: Default::default(),
@@ -382,6 +412,8 @@ mod tests {
             policy_applied: false,
             browser_fail_closed: false,
             grace_until_ms: None,
+            grace_notified: false,
+            durability: Default::default(),
         }
     }
 
@@ -497,5 +529,46 @@ mod tests {
         assert!(is_invocation(&["--tray".to_string()]));
         assert!(!is_invocation(&["--background".to_string()]));
         assert!(!is_invocation(&[]));
+    }
+
+    #[test]
+    fn windows_tooltip_parity_matrix() {
+        let now = 1_000_000i64;
+        // 1. Idle tooltip
+        assert_eq!(tooltip_text(None, now), "Preelock");
+
+        // 2. Running active session countdown
+        let running_session = test_session(Status::Running, 90_000);
+        assert_eq!(
+            tooltip_text(Some(&running_session), now),
+            "Preelock · 01:30 left"
+        );
+        let running_session_countdown = test_session(Status::Running, 89_000);
+        assert_eq!(
+            tooltip_text(Some(&running_session_countdown), now),
+            "Preelock · 01:29 left"
+        );
+
+        // 3. Paused session
+        let paused_session = test_session(Status::Paused, 90_000);
+        assert_eq!(
+            tooltip_text(Some(&paused_session), now),
+            "Preelock · Paused - 01:30"
+        );
+
+        // 4. Preparing session
+        let preparing_session = test_session(Status::Preparing, 90_000);
+        assert_eq!(
+            tooltip_text(Some(&preparing_session), now),
+            "Preelock · Starting session..."
+        );
+
+        // 5. Grace starting session
+        let mut grace_session = test_session(Status::Running, 90_000);
+        grace_session.grace_until_ms = Some(now + 30_000);
+        assert_eq!(
+            tooltip_text(Some(&grace_session), now),
+            "Preelock · Starting in 30s"
+        );
     }
 }

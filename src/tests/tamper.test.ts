@@ -44,14 +44,11 @@ describe('tamperNote (step 11)', () => {
     expect(tamperNote(sessionWithEvents(['clock_jump']))).toBe(
       'Clock jump noted — jumped time was not credited.',
     );
-    expect(tamperNote(sessionWithEvents(['extension_removed']))).toBe(
-      'Browser blocked until the extension is connected.',
-    );
-    // Latest wins, and the full detail is never surfaced.
+    expect(tamperNote(sessionWithEvents(['extension_removed']))).toBeNull();
     const note = tamperNote(
-      sessionWithEvents(['clock_jump', 'extension_removed']),
+      sessionWithEvents(['extension_removed', 'clock_jump']),
     );
-    expect(note).toBe('Browser blocked until the extension is connected.');
+    expect(note).toBe('Clock jump noted — jumped time was not credited.');
     expect(note).not.toContain('detail');
   });
   it('carries the step 11 fail-closed flag on the session type', () => {

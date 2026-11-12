@@ -121,6 +121,15 @@ describe('SessionReview', () => {
     expect(screen.queryByText('YouTube restrictions')).not.toBeInTheDocument();
   });
 
+  it('shows entertainment blocking summary when youtube_block_entertainment is on', () => {
+    renderReview({}, { youtube_block_entertainment: true });
+    expect(
+      screen.getByText(
+        'Entertainment content (comedy, pranks, vlogs, funny/animal clips) is blocked.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('warns when camera is required but permission is not granted', () => {
     renderReview(
       { cameraPermission: 'denied', platform: 'darwin' },
@@ -156,7 +165,7 @@ describe('SessionReview', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows focus checks, type of work and grace when attention is on', () => {
+  it('shows focus checks and type of work when attention is on', () => {
     renderReview(
       { platform: 'darwin' },
       {
@@ -177,8 +186,8 @@ describe('SessionReview', () => {
       screen.getByText(/Type of work: Watching a lesson/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Wait before labeling a distraction: 10s/),
-    ).toBeInTheDocument();
+      screen.queryByText(/Wait before labeling a distraction/),
+    ).not.toBeInTheDocument();
   });
 
   it('shows Pomodoro only when enabled', () => {
