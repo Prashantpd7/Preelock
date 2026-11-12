@@ -22,6 +22,25 @@
         font-size: 20px;
         margin-top: 32px;
       }
+      h3 {
+        font-size: 16px;
+        margin-top: 20px;
+        margin-bottom: 6px;
+      }
+      ul {
+        padding-left: 20px;
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      code {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.9em;
+        background: #f4f4f4;
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
       .updated {
         color: #666;
         font-size: 14px;
@@ -31,61 +50,202 @@
   </head>
   <body>
     <h1>Privacy Policy — Preelock</h1>
-    <p class="updated">Last updated: October 23, 2026</p>
+    <p class="updated">Last updated: November 12, 2026</p>
 
     <p>
-      Preelock is a local-first focus and productivity application developed by
-      Prashant Dwivedi. Your privacy is central to how Preelock is built:
-      <strong
-        >the app does not collect, transmit, or store your personal data on any
-        server.</strong
+      Preelock is a local-first focus and productivity tool developed by
+      Prashant Dwivedi. This Privacy Policy applies to both the
+      <strong>Preelock Chrome Extension (v0.5.4)</strong> and the optional
+      <strong>Preelock Desktop Application</strong> (macOS and Windows).
+      Preelock has no user accounts, no developer cloud backend, no analytics
+      SDKs, and no advertising trackers.
+    </p>
+
+    <h2>1. Preelock Chrome Extension — Data Handled Locally</h2>
+    <p>
+      The Preelock browser extension processes browsing-related signals locally
+      inside your browser to provide website blocking, search-keyword filtering,
+      YouTube distraction controls, and optional pairing with Preelock Desktop
+      on the same computer:
+    </p>
+    <ul>
+      <li>
+        <strong>Browser URLs and hostnames:</strong> Navigation and open-tab
+        URLs are checked locally in memory against your enabled standalone
+        Website Controls (bundled adult-domain list and distracting-domain list)
+        and active desktop focus-session rules via Chromium
+        <code>declarativeNetRequest</code> and tab listeners. When a page is
+        blocked, the tab redirects to the extension's local blocked screen with
+        display-only parameters (hostname and block reason/timer); blocked URLs
+        are not uploaded.
+      </li>
+      <li>
+        <strong>Search queries (in-memory only):</strong> When keyword
+        distraction rules are active during a desktop focus session, the
+        extension inspects the search query parameter on Google, Bing,
+        DuckDuckGo, and YouTube search result pages strictly in memory to check
+        for a keyword match. Search queries and full search URLs are never saved
+        to storage or transmitted.
+      </li>
+      <li>
+        <strong>YouTube page DOM, channels, playback &amp; Watch Later:</strong>
+        On <code>youtube.com</code>, content scripts read channel identifiers
+        (<code>UC...</code> IDs, <code>@handle</code> links, metadata tags, and
+        player response data), Watch Later playlist links
+        (<code>list=WL</code>), and <code>&lt;video&gt;</code> playback state
+        (play/pause/ended status, playhead advancement, duration, ad indicator,
+        and tab visibility) locally to enforce channel rules, Watch Later
+        exceptions, lecture-playback detection, and your YouTube UI hiding and
+        autoplay controls.
+      </li>
+      <li>
+        <strong>Browser identity:</strong> The extension checks browser user
+        agent and brand signals locally so Preelock Desktop can verify a
+        supported Chromium browser during pairing.
+      </li>
+    </ul>
+
+    <h3>Local Browser Storage</h3>
+    <p>
+      The extension uses Chromium's local and session storage (<code
+        >chrome.storage.local</code
       >
+      and <code>chrome.storage.session</code>), never Chrome Sync
+      (<code>chrome.storage.sync</code>):
     </p>
+    <ul>
+      <li>
+        <strong
+          >Persistent local settings
+          (<code>chrome.storage.local</code>):</strong
+        >
+        Your 64-character local desktop pairing token and disabled state, a
+        locally generated random profile UUID (<code>client</code>), detected
+        browser identifier, Website Controls toggles, YouTube Controls
+        preferences, and a bounded local cache (up to 800 entries) mapping
+        YouTube channel IDs to <code>@handle</code> aliases.
+      </li>
+      <li>
+        <strong
+          >Session-only state (<code>chrome.storage.session</code>):</strong
+        >
+        Short-lived desktop focus policy leases (expiring within 70 seconds),
+        applied policy ID, an aggregate blocked-request integer counter (on
+        unpacked builds only, never URLs), channel-blocked tab IDs, and local
+        connection status messages. Cleared when the browser closes.
+      </li>
+      <li>
+        <strong
+          >YouTube Watch Later session list
+          (<code>sessionStorage</code>):</strong
+        >
+        During Watch-Later-only sessions, up to 500 video IDs from your rendered
+        Watch Later playlist are held in <code>youtube.com</code> tab
+        <code>sessionStorage</code> to verify allowed videos and are cleared
+        when the session policy ends.
+      </li>
+    </ul>
 
-    <h2>Data We Collect</h2>
+    <h2>2. Local Communication &amp; External Network Requests</h2>
+    <ul>
+      <li>
+        <strong
+          >Loopback communication with Preelock Desktop
+          (<code>127.0.0.1:47832</code>):</strong
+        >
+        If you connect the extension to Preelock Desktop on your own computer,
+        requests travel strictly over loopback
+        (<code>http://127.0.0.1:47832/sync</code>) authenticated by your local
+        Bearer pairing token. Standard heartbeats include protocol version,
+        local client UUID, browser ID, applied policy ID, aggregate block count,
+        and error status. Only when you enable Screen Time tracking or consented
+        session attention tracking in Preelock Desktop does the extension also
+        include the active focused tab's
+        <strong>hostname</strong> (HTTP/HTTPS only—never paths, page titles, or
+        queries) along with boolean flags for browser focus, search-keyword
+        distraction match, channel block status, and lecture video playback.
+      </li>
+      <li>
+        <strong
+          >YouTube oEmbed lookup (<code>www.youtube.com/oembed</code>):</strong
+        >
+        When you are on a YouTube video page during an active session policy and
+        the page DOM or player object has not yet provided channel
+        identification or a channel handle, the extension issues an HTTPS GET
+        request to YouTube's own oEmbed endpoint
+        (<code>https://www.youtube.com/oembed</code>) with that YouTube video
+        URL solely to read the channel's
+        <code>author_url</code> for local rule enforcement. This request is sent
+        only to <code>www.youtube.com</code> (the first-party site you are
+        already visiting), never runs on non-YouTube sites, and does not contact
+        any Preelock or third-party server.
+      </li>
+    </ul>
+
+    <h2>3. Preelock Desktop Application Features (Separate from Extension)</h2>
     <p>
-      We collect <strong>no personal data</strong>. Preelock has no user
-      accounts, no cloud backend, no analytics SDKs, and no telemetry. All of
-      your data — focus sessions, tasks, activity history, and settings — is
-      stored locally on your own device in a local database and never leaves it.
+      The optional Preelock Desktop application on macOS and Windows stores your
+      focus sessions, tasks, preferences, local pairing token, and (when
+      enabled) Screen Time website-hostname and application-usage totals in a
+      local SQLite database on your device.
     </p>
+    <ul>
+      <li>
+        <strong>Camera Presence Check (Desktop macOS only):</strong> Preelock
+        Desktop offers an optional on-device camera presence check on macOS to
+        detect whether you are at your desk during a focus session. Frames are
+        processed in memory on your device and are never recorded, saved, or
+        transmitted. The <strong>Preelock Chrome Extension</strong> never
+        requests permission for or accesses your camera.
+      </li>
+    </ul>
 
-    <h2>Camera</h2>
+    <h2>4. No Analytics, Tracking, or Third-Party Sharing</h2>
     <p>
-      Preelock offers an optional camera presence check that can verify you are
-      at your desk during a focus session. When enabled, camera frames are
-      processed <strong>entirely on your device</strong> for presence detection
-      only. No images or video are recorded, saved, or transmitted anywhere.
+      Preelock contains <strong>no</strong> analytics SDKs, telemetry
+      collectors, crash reporters, remote executable code, or advertising
+      identifiers. Apart from the optional first-party
+      <code>youtube.com/oembed</code> channel lookup described above, extension
+      data does not leave your device. The developer never receives, collects,
+      sells, rents, or transfers your browsing data or personal information to
+      any third party, and never uses extension data for advertising, profiling,
+      or creditworthiness.
     </p>
 
-    <h2>Network Access</h2>
+    <h2>5. Data Retention, Clearing, and Deletion</h2>
+    <ul>
+      <li>
+        <strong>Chrome Extension:</strong> Toggle off standalone Website
+        Controls or YouTube Controls, reset YouTube settings from the extension
+        popup, clear extension site data in Chrome, or uninstall Preelock from
+        <code>chrome://extensions</code> to permanently remove all stored
+        extension settings, pairing tokens, and cached channel aliases.
+      </li>
+      <li>
+        <strong>Preelock Desktop:</strong> Rotate or reset browser pairing
+        tokens in Desktop Settings, delete individual sessions or use Settings
+        to delete session history or block-attempt history, or remove the local
+        Preelock (<code>com.vystriq.desktop</code>) application-data directory
+        on your computer.
+      </li>
+    </ul>
+
+    <h2>6. Children</h2>
     <p>
-      Preelock does not require an internet connection to function. The optional
-      browser extension communicates only with the Preelock app running on your
-      own device to enforce website-blocking rules during sessions.
+      Preelock is a general productivity tool and does not knowingly collect
+      personal information from anyone, including children under 13, because it
+      operates no central user-data collection service.
     </p>
 
-    <h2>Third Parties</h2>
-    <p>
-      Because no data leaves your device, no data is shared with any third
-      party.
-    </p>
-
-    <h2>Children</h2>
-    <p>
-      Preelock does not knowingly collect any information from anyone, including
-      children under 13, because it collects no information at all.
-    </p>
-
-    <h2>Changes to This Policy</h2>
+    <h2>7. Changes to This Policy</h2>
     <p>
       If this policy changes, the updated version will be published at this page
       with a revised "Last updated" date.
     </p>
 
-    <h2>Contact</h2>
+    <h2>8. Contact</h2>
     <p>
-      For privacy questions, contact:
+      For privacy questions, contact Prashant Dwivedi at:
       <a href="mailto:prashantdwivedi2112@gmail.com"
         >prashantdwivedi2112@gmail.com</a
       >
