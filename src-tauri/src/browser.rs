@@ -19,7 +19,7 @@ pub const PORT: u16 = 47832;
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
-pub const EXTENSION_VERSION: u32 = 12;
+pub const EXTENSION_VERSION: u32 = 13;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
     #[serde(skip)]
@@ -370,6 +370,79 @@ pub struct Bridge {
 /// them to report the bridge truthfully (owned elsewhere) instead of
 /// claiming it is unavailable, and to tell a live bridge apart from
 /// a stale lock or a stale port binding.
+fn generate_pairing_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn valid_pairing_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn write_token_atomic(dir: &Path, token: &str) -> Result<(), String> {
+    use std::io::Write;
+    let temp = dir.join(format!(".browser-token-{}", uuid::Uuid::new_v4()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let write_res = (|| -> Result<(), String> {
+        let mut file = opts.open(&temp).map_err(|e| e.to_string())?;
+        file.write_all(token.as_bytes())
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&temp, dir.join("browser-token")).map_err(|e| e.to_string())
+    })();
+    if write_res.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    write_res
+}
+
+/// Reads the persisted 64-character hex pairing token from `dir/browser-token`,
+/// or atomically creates one using CSPRNG (`uuid::Uuid::new_v4`) if missing or
+/// zero-byte from an interrupted prior write.
+pub fn read_or_create_token(dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let lock_file = File::create(dir.join("browser-token.lock")).map_err(|e| e.to_string())?;
+    lock_file.lock_exclusive().map_err(|e| e.to_string())?;
+    let result = (|| -> Result<String, String> {
+        let path = dir.join("browser-token");
+        match std::fs::read_to_string(&path) {
+            Ok(existing) => {
+                if let Some(valid) = valid_pairing_token(&existing) {
+                    return Ok(valid);
+                }
+                if existing.trim().is_empty() {
+                    let fresh = generate_pairing_token();
+                    write_token_atomic(dir, &fresh)?;
+                    return Ok(fresh);
+                }
+                Err("Browser pairing token is invalid. Quit and remove only browser-token to reset pairing.".into())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let fresh = generate_pairing_token();
+                write_token_atomic(dir, &fresh)?;
+                Ok(fresh)
+            }
+            Err(err) => Err(err.to_string()),
+        }
+    })();
+    let _ = lock_file.unlock();
+    result
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BridgeProbe {
     pub lock_held: bool,
@@ -449,32 +522,7 @@ impl Bridge {
         lock_attempts: u32,
         bind_attempts: u32,
     ) -> Result<Self, String> {
-        let path = dir.join("browser-token");
-        let token = if path.exists() {
-            std::fs::read_to_string(&path).map_err(|e| e.to_string())?
-        } else {
-            let token = format!(
-                "{}{}",
-                uuid::Uuid::new_v4().simple(),
-                uuid::Uuid::new_v4().simple()
-            );
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            use std::io::Write;
-            opts.open(&path)
-                .map_err(|e| e.to_string())?
-                .write_all(token.as_bytes())
-                .map_err(|e| e.to_string())?;
-            token
-        };
-        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err("Browser pairing token is invalid. Quit and remove only browser-token to reset pairing.".into());
-        }
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let ownership = File::create(dir.join("bridge.lock")).map_err(|e| e.to_string())?;
         let mut ownership_error = String::new();
         let mut ownership_acquired = false;
@@ -497,6 +545,7 @@ impl Bridge {
                 "Browser bridge ownership unavailable: {ownership_error}"
             ));
         }
+        let token = read_or_create_token(dir)?;
         let mut last_error = String::new();
         let server = (0..bind_attempts)
             .find_map(
@@ -744,25 +793,13 @@ impl Bridge {
             .unwrap_or_default()
     }
     pub fn rotate_token(&mut self, dir: &Path) -> Result<(), String> {
-        use std::io::Write;
-        let token = format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        );
-        let temp = dir.join(format!(".browser-token-{}", uuid::Uuid::new_v4()));
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&temp).map_err(|e| e.to_string())?;
-        file.write_all(token.as_bytes())
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, dir.join("browser-token")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let lock_file = File::create(dir.join("browser-token.lock")).map_err(|e| e.to_string())?;
+        lock_file.lock_exclusive().map_err(|e| e.to_string())?;
+        let token = generate_pairing_token();
+        let write_res = write_token_atomic(dir, &token);
+        let _ = lock_file.unlock();
+        write_res?;
         *self.auth_key.lock().map_err(|_| "Pairing unavailable.")? = token.clone();
         self.token = token;
         *self.state.lock().map_err(|_| "Pairing unavailable.")? = State::default();
@@ -1608,7 +1645,13 @@ mod tests {
     #[test]
     fn probe_distinguishes_a_live_bridge_from_a_free_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let free = Bridge::probe(dir.path(), PORT);
+        // Reserve and immediately release an ephemeral loopback port so this
+        // test does not collide with a Preelock desktop instance running on
+        // default port 47832 on the developer's machine.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let free_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let free = Bridge::probe(dir.path(), free_port);
         assert!(!free.lock_held);
         assert!(!free.port_listening);
         let bridge = Bridge::test_bridge(dir.path());
@@ -1643,5 +1686,105 @@ mod tests {
         assert!(Bridge::try_start_at(dir.path(), port).is_err());
         drop(listener);
         assert!(Bridge::try_start_at(dir.path(), port).is_ok());
+    }
+
+    #[test]
+    fn read_or_create_token_is_atomic_repairs_empty_and_rejects_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = read_or_create_token(dir.path()).unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(read_or_create_token(dir.path()).unwrap(), first);
+
+        // Trailing newline/whitespace is tolerated without regenerating.
+        std::fs::write(dir.path().join("browser-token"), format!("{first}\n")).unwrap();
+        assert_eq!(read_or_create_token(dir.path()).unwrap(), first);
+
+        // Zero-byte file from an interrupted prior write is repaired automatically.
+        std::fs::write(dir.path().join("browser-token"), b"").unwrap();
+        let repaired = read_or_create_token(dir.path()).unwrap();
+        assert_eq!(repaired.len(), 64);
+        assert_ne!(repaired, first);
+
+        // Non-empty malformed contents fail closed.
+        std::fs::write(dir.path().join("browser-token"), "not-a-valid-token").unwrap();
+        assert!(read_or_create_token(dir.path()).is_err());
+    }
+
+    #[test]
+    fn simultaneous_token_init_threads_receive_identical_64_hex_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    read_or_create_token(&path).unwrap()
+                })
+            })
+            .collect();
+        let tokens: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(tokens[0].len(), 64);
+        for token in &tokens[1..] {
+            assert_eq!(token, &tokens[0]);
+        }
+    }
+
+    #[test]
+    fn bridge_enforces_cws_origin_loopback_host_and_bearer_auth() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let cws_origin = "chrome-extension://mgpnhmbnccboobdmlkjjhfekjgdjfkba";
+        let valid_body = serde_json::json!({
+            "client": "11111111-1111-1111-1111-111111111111",
+            "browser": "com.google.chrome",
+            "applied_id": "",
+        })
+        .to_string();
+
+        let send = |raw: String| {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(raw.as_bytes()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        };
+
+        // Preflight OPTIONS for CWS origin includes private network allowance.
+        let preflight = send(format!(
+            "OPTIONS /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {cws_origin}\r\nConnection: close\r\n\r\n"
+        ));
+        assert!(preflight.starts_with("HTTP/1.1 204"));
+        assert!(preflight.contains("Access-Control-Allow-Private-Network: true"));
+        assert!(preflight.contains(&format!("Access-Control-Allow-Origin: {cws_origin}")));
+
+        // Web origins, invalid extension IDs, wrong Host, wrong path, and wrong token are rejected.
+        for bad_req in [
+            format!("POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", bridge.token, valid_body.len()),
+            format!("POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://shortid\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", bridge.token, valid_body.len()),
+            format!("POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", bridge.token, valid_body.len()),
+            format!("POST /sync HTTP/1.1\r\nHost: evil.example:{port}\r\nOrigin: {cws_origin}\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", bridge.token, valid_body.len()),
+            format!("POST /other HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {cws_origin}\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", bridge.token, valid_body.len()),
+            format!("POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {cws_origin}\r\nAuthorization: Bearer wrongtoken\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}", valid_body.len()),
+        ] {
+            let res = send(bad_req);
+            assert!(res.starts_with("HTTP/1.1 403"), "expected 403, got: {res}");
+        }
+
+        // Valid CWS extension origin + bearer token authenticates and receives 200.
+        let ok = send(format!(
+            "POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {cws_origin}\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid_body}",
+            bridge.token,
+            valid_body.len()
+        ));
+        assert!(ok.starts_with("HTTP/1.1 200"), "expected 200, got: {ok}");
     }
 }

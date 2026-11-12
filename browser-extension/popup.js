@@ -10,6 +10,7 @@ const connectionStatusBadge = document.getElementById('connection-status');
 const connectionStatusText = document.getElementById('connection-status-text');
 const incognitoWarning = document.getElementById('incognito-warning');
 const pairView = document.getElementById('pair-view');
+const pairCloseBtn = document.getElementById('pair-close');
 const pairForm = document.getElementById('pair');
 const connectBtn = document.getElementById('connect-btn');
 const pairStatus = document.getElementById('pair-status');
@@ -23,6 +24,13 @@ const ytResetBtn = document.getElementById('yt-reset');
 const ytControlsApi = globalThis.__preelockYoutubeControls;
 
 let pairingInFlight = false;
+// Whether the user opened the connect box via the "Not connected" pill.
+// The box stays hidden while unpaired until the pill is clicked;
+// show() re-runs every 2s and must never override this choice.
+let pairViewOpen = false;
+// Last known connection state, so the pill only opens the box while
+// unpaired (when connected it does nothing).
+let isConnected = false;
 
 // The popup is the only extension context where the Brave probe is
 // available, so detection happens here and the worker reuses the
@@ -47,16 +55,26 @@ async function show() {
   ]);
   const { token, disabled } = localData || {};
   const connected = Boolean(token) && !disabled && !data?.error;
+  isConnected = connected;
 
   if (connectionStatusBadge && connectionStatusText) {
     connectionStatusBadge.classList.toggle('is-connected', connected);
     connectionStatusBadge.classList.toggle('is-unpaired', !connected);
+    connectionStatusBadge.classList.toggle('is-clickable', !connected);
+    connectionStatusBadge.setAttribute(
+      'aria-disabled',
+      connected ? 'true' : 'false',
+    );
     connectionStatusText.textContent = connected
       ? 'Connected'
       : 'Not connected';
   }
   if (pairView) {
-    pairView.hidden = connected;
+    // A successful connect closes the box automatically (connected
+    // hides it); while unpaired it only shows once the user opens
+    // it via the pill.
+    if (connected) pairViewOpen = false;
+    pairView.hidden = connected || !pairViewOpen;
   }
 
   const detected = await rememberIdentity();
@@ -101,6 +119,26 @@ async function show() {
   }
 }
 
+if (connectionStatusBadge) {
+  connectionStatusBadge.addEventListener('click', () => {
+    // Connected pill does nothing; unpaired pill reveals the box.
+    if (isConnected) return;
+    pairViewOpen = true;
+    if (pairView) {
+      pairView.hidden = false;
+      const field = document.getElementById('token');
+      if (field) field.focus();
+    }
+  });
+}
+
+if (pairCloseBtn) {
+  pairCloseBtn.addEventListener('click', () => {
+    pairViewOpen = false;
+    if (pairView) pairView.hidden = true;
+  });
+}
+
 if (pairForm) {
   pairForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -140,7 +178,7 @@ if (pairForm) {
       // can never override what the browser reported.
       await chrome.storage.local.remove('browser_choice');
       if (field) field.value = '';
-      await chrome.runtime.sendMessage({ type: 'sync' });
+      await chrome.runtime.sendMessage({ type: 'sync', force: true });
       await show();
     } catch {
       setPairError('Cannot reach Preelock. Open the desktop app, then retry.');
@@ -252,7 +290,6 @@ async function initWebsiteControls() {
 let currentControls = ytControlsApi
   ? ytControlsApi.normalizeYoutubeControls(null)
   : null;
-let conflictNoteEl = null;
 const groupRefs = new Map();
 const controlInputs = new Map();
 
@@ -368,12 +405,6 @@ function syncControlsUi(controls) {
     ref.badge.hidden = count === 0;
   }
 
-  if (conflictNoteEl) {
-    const note = ytControlsApi.subscriptionsConflictNote(currentControls);
-    conflictNoteEl.textContent = note;
-    conflictNoteEl.hidden = !note;
-  }
-
   const total = ytControlsApi.countActiveControls(currentControls);
   if (ytActiveCount) {
     ytActiveCount.textContent = `${total} active`;
@@ -416,22 +447,8 @@ function buildControlsUi(initialControls) {
   ytGroupsRoot.textContent = '';
   groupRefs.clear();
   controlInputs.clear();
-  if (conflictNoteEl && conflictNoteEl.parentNode) {
-    conflictNoteEl.remove();
-  }
-  conflictNoteEl = null;
 
   const controls = ytControlsApi.normalizeYoutubeControls(initialControls);
-
-  if (ytGroupsRoot.parentNode) {
-    conflictNoteEl = document.createElement('p');
-    conflictNoteEl.className = 'yt-conflict-note';
-    conflictNoteEl.setAttribute('role', 'status');
-    const note = ytControlsApi.subscriptionsConflictNote(controls);
-    conflictNoteEl.textContent = note;
-    conflictNoteEl.hidden = !note;
-    ytGroupsRoot.parentNode.insertBefore(conflictNoteEl, ytGroupsRoot);
-  }
 
   for (const group of ytControlsApi.YOUTUBE_CONTROL_GROUPS) {
     const card = document.createElement('div');
@@ -525,6 +542,14 @@ if (chrome.storage?.onChanged) {
 void initWebsiteControls();
 void initYoutubeControls();
 void show();
+void chrome.storage.local
+  .get(['token', 'disabled'])
+  .then((stored) => {
+    const token = typeof stored?.token === 'string' ? stored.token.trim() : '';
+    if (!token || stored?.disabled) return;
+    return chrome.runtime.sendMessage({ type: 'sync' }).then(() => show());
+  })
+  .catch(() => {});
 // Keep the indicator live while the popup is open.
 setInterval(() => {
   void show();

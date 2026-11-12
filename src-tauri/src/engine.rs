@@ -849,10 +849,10 @@ impl Engine {
             .unwrap_or_default()
     }
     pub fn pairing_token(&self) -> String {
-        self.bridge
-            .as_ref()
-            .map(|b| b.token.clone())
-            .unwrap_or_default()
+        if let Some(b) = &self.bridge {
+            return b.token.clone();
+        }
+        browser::read_or_create_token(&self.data_dir).unwrap_or_default()
     }
     pub fn reset_pairing(&mut self, path: &Path) -> Result<(), String> {
         // M1: pairing reset can start a bridge — holder only, so an
@@ -871,8 +871,14 @@ impl Engine {
         if let Some(bridge) = self.bridge.as_mut() {
             bridge.rotate_token(path)?;
         } else {
-            self.bridge = Some(Bridge::start(path)?);
+            let mut bridge = Bridge::start(path)?;
+            bridge.rotate_token(path)?;
+            bridge.set_screen_time_tracking(true);
+            self.bridge = Some(bridge);
+            self.bridge_error = String::new();
+            self.bridge_retry_at = 0;
         }
+        self.publish();
 
         Ok(())
     }
@@ -4627,6 +4633,20 @@ mod tests {
         e.data.sessions[0].status = Status::Completed;
         assert!(e.reset_pairing(dir.path()).is_ok());
         assert_ne!(e.pairing_token(), token_before);
+    }
+
+    #[test]
+    fn observer_pairing_token_matches_holder_token_without_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observer-token.sqlite");
+        let mut holder = Engine::open(&path).unwrap();
+        holder.bridge = Some(Bridge::test_bridge(dir.path()));
+        let observer = Engine::open(&path).unwrap();
+        assert!(!observer.owns_engine_lock());
+        assert!(observer.bridge.is_none());
+        let expected = holder.pairing_token();
+        assert_eq!(expected.len(), 64);
+        assert_eq!(observer.pairing_token(), expected);
     }
 
     #[test]

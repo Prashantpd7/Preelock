@@ -323,7 +323,7 @@ it('reports the extension version on every sync', async () => {
   for (const [, init] of request.mock.calls) {
     const body = JSON.parse(init.body);
     // Kept in sync with EXTENSION_VERSION in worker.js and browser.rs.
-    expect(body.v).toBe(12);
+    expect(body.v).toBe(13);
   }
 });
 
@@ -967,4 +967,62 @@ it('enforces local Website Controls independently of desktop sessions and combin
   await send({ type: 'reconcile_website_controls' });
   expect(dynamicRules.some((r) => r.id === 100001)).toBe(false);
   expect(dynamicRules.some((r) => r.id >= 101000)).toBe(true);
+});
+
+it('verifies DNR rule installation in packed CWS builds without testMatchOutcome', async () => {
+  delete chrome.declarativeNetRequest.testMatchOutcome;
+  let first = true;
+  const request = vi.fn(async () => {
+    const test_id = first ? 'cws-test' : '';
+    first = false;
+    return { ok: true, json: async () => ({ policy: null, test_id }) };
+  });
+  vi.stubGlobal('fetch', request);
+  await import('./worker.js');
+  await send({ type: 'sync' });
+  expect(
+    request.mock.calls.some(
+      ([, opts]) =>
+        JSON.parse(opts.body).test_result ===
+        'Passed · Rule engine verified (live matcher checks unpacked only)',
+    ),
+  ).toBe(true);
+  expect(rules).toEqual([]);
+});
+
+it('auto-generates missing client UUID and queues explicit sync after an in-flight poll', async () => {
+  local.token = 'c'.repeat(64);
+  delete local.client;
+  let releaseFirst;
+  let calls = 0;
+  const seenTokens = [];
+  const seenClients = [];
+  const fetchMock = vi.fn(async (_url, opts) => {
+    calls += 1;
+    const auth = opts.headers.Authorization;
+    seenTokens.push(auth);
+    const parsed = JSON.parse(opts.body);
+    seenClients.push(parsed.client);
+    if (calls === 1) {
+      await new Promise((r) => {
+        releaseFirst = r;
+      });
+      return response(null, 403);
+    }
+    return response(null, 200);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  await import('./worker.js');
+  await vi.waitFor(() => expect(calls).toBe(1));
+
+  // User saves a fresh valid token while first poll with old token is still pending.
+  local.token = 'd'.repeat(64);
+  const explicitSync = send({ type: 'sync', force: true });
+  releaseFirst();
+  await explicitSync;
+
+  expect(seenClients[0]).toBeTruthy();
+  expect(local.client).toBe(seenClients[0]);
+  expect(seenTokens).toContain(`Bearer ${'d'.repeat(64)}`);
+  expect(session.error).toBe('');
 });

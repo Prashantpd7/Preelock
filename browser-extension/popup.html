@@ -7,20 +7,28 @@
   <body>
     <header class="popup-header">
       <h1>Preelock</h1>
-      <span
+      <button
         id="connection-status"
+        type="button"
         class="status-badge is-unpaired"
-        role="status"
-        aria-live="polite"
+        aria-disabled="false"
       >
         <span class="status-dot" aria-hidden="true"></span>
-        <span id="connection-status-text" class="status-text"
+        <span id="connection-status-text" class="status-text" aria-live="polite"
           >Not connected</span
         >
-      </span>
+      </button>
     </header>
     <p id="incognito-warning" class="incognito-warn" role="status" hidden></p>
     <div id="pair-view" class="pair-card" hidden>
+      <button
+        id="pair-close"
+        type="button"
+        class="pair-close"
+        aria-label="Close"
+      >
+        ×
+      </button>
       <h2 class="pair-heading">Connect to Preelock</h2>
       <p class="pair-subtitle">
         Paste your connection code from the Preelock desktop app.

@@ -6,6 +6,32 @@ export async function selfTest() {
     throw new Error(
       'End the active session before running the browser self-test.',
     );
+  if (typeof chrome.declarativeNetRequest.testMatchOutcome !== 'function') {
+    const testing = compileRules({
+      mode: 'blocklist',
+      domains: ['preelock-test.invalid'],
+    }).map((rule) => ({
+      ...rule,
+      condition: { ...rule.condition, tabIds: [2147483646] },
+    }));
+    if (!testing.length) throw new Error('Matcher compiled zero test rules');
+    try {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [],
+        addRules: testing,
+      });
+      const active = await chrome.declarativeNetRequest.getSessionRules();
+      const ids = new Set(active.map((r) => r.id));
+      if (!testing.every((r) => ids.has(r.id)))
+        throw new Error('Rule engine verification failed');
+    } finally {
+      const rules = await chrome.declarativeNetRequest.getSessionRules();
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: rules.map((r) => r.id),
+      });
+    }
+    return 'Passed · Rule engine verified (live matcher checks unpacked only)';
+  }
   const check = async (mode, domains, url, expected, type = 'main_frame') => {
     const old = await chrome.declarativeNetRequest.getSessionRules();
     const testing = compileRules({ mode, domains }).map((rule) => ({

@@ -224,6 +224,9 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
     expect(
       document.getElementById('connection-status-text').textContent.trim(),
     ).toBe('Not connected');
+    // The connect box stays hidden until the pill is clicked.
+    expect(document.getElementById('pair-view').hidden).toBe(true);
+    document.getElementById('connection-status').click();
     expect(document.getElementById('pair-view').hidden).toBe(false);
 
     const adultInput = document.querySelector(
@@ -299,6 +302,10 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
     });
 
     await mountPopup();
+    // The box only appears after the pill is clicked.
+    expect(document.getElementById('pair-view').hidden).toBe(true);
+    document.getElementById('connection-status').click();
+    expect(document.getElementById('pair-view').hidden).toBe(false);
     const form = document.getElementById('pair');
     const tokenInput = document.getElementById('token');
     const connectBtn = document.getElementById('connect-btn');
@@ -345,7 +352,7 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
     expect(document.getElementById('pair-view').hidden).toBe(true);
   });
 
-  it('persists independent YouTube toggles, keeps synced toggles in sync, shows conflict notice, restores on reload, and resets cleanly', async () => {
+  it('persists independent YouTube toggles, keeps synced toggles in sync, enforces Redirect/Hide Subscriptions mutual exclusion, restores on reload, and resets cleanly', async () => {
     await mountPopup();
 
     const checkControl = async (path, checked) => {
@@ -391,16 +398,32 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(chatInputs[0].checked).toBe(true);
 
-    const conflictNote = document.querySelector('.yt-conflict-note');
-    expect(conflictNote.hidden).toBe(true);
+    // Redirect to Subscriptions and Hide Subscriptions are mutually
+    // exclusive: enabling one turns the other off, and no warning
+    // element ever renders.
+    expect(document.querySelector('.yt-conflict-note')).toBeNull();
+    const redirectInput = () =>
+      document.querySelector(
+        'input[data-control-path="home.redirectToSubscriptions"]',
+      );
+    const hideSubsInput = () =>
+      document.querySelector(
+        'input[data-control-path="navigation.hideSubscriptions"]',
+      );
     await checkControl('home.redirectToSubscriptions', true);
-    expect(conflictNote.hidden).toBe(true);
+    expect(redirectInput().checked).toBe(true);
+    expect(hideSubsInput().checked).toBe(false);
+    expect(localStore.youtubeControls.home.redirectToSubscriptions).toBe(true);
+    expect(localStore.youtubeControls.navigation.hideSubscriptions).toBe(false);
     await checkControl('navigation.hideSubscriptions', true);
-    expect(conflictNote.hidden).toBe(false);
-    expect(conflictNote.textContent).toMatch(/Subscriptions/i);
+    expect(hideSubsInput().checked).toBe(true);
+    expect(redirectInput().checked).toBe(false);
+    expect(localStore.youtubeControls.home.redirectToSubscriptions).toBe(false);
+    expect(localStore.youtubeControls.navigation.hideSubscriptions).toBe(true);
+    expect(document.querySelector('.yt-conflict-note')).toBeNull();
 
     expect(document.getElementById('yt-active-count').textContent).toBe(
-      '5 active',
+      '4 active',
     );
     expect(document.getElementById('yt-reset').hidden).toBe(false);
 
@@ -422,10 +445,15 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
       document.querySelector(
         'input[data-control-path="home.redirectToSubscriptions"]',
       ).checked,
+    ).toBe(false);
+    expect(
+      document.querySelector(
+        'input[data-control-path="navigation.hideSubscriptions"]',
+      ).checked,
     ).toBe(true);
-    expect(document.querySelector('.yt-conflict-note').hidden).toBe(false);
+    expect(document.querySelector('.yt-conflict-note')).toBeNull();
     expect(document.getElementById('yt-active-count').textContent).toBe(
-      '5 active',
+      '4 active',
     );
 
     document.getElementById('yt-reset').click();
@@ -460,22 +488,111 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
     );
   });
 
-  it('keeps conflict warning unclipped outside group accordions and prevents group flex-squeezing or broken scroll', async () => {
+  it('never renders the redirect/hidden warning and keeps group layout unclipped with working scroll', async () => {
     expect(css).toContain('[hidden]');
     expect(css).toMatch(/\.yt-groups\s*\{[^}]*overflow-y:\s*auto/);
     expect(css).not.toContain('max-height: 330px');
     expect(css).toMatch(/\.yt-group\s*\{[^}]*flex:\s*0\s+0\s+auto/);
     expect(css).not.toMatch(/\.yt-group\s*\{[^}]*overflow:\s*hidden/);
-    expect(css).toMatch(/\.yt-conflict-note\s*\{[^}]*flex:\s*0\s+0\s+auto/);
+    // The warning is gone entirely: no element, no CSS, no logic.
+    expect(css).not.toContain('.yt-conflict-note');
+    expect(js).not.toContain('subscriptionsConflictNote');
+    expect(js).not.toContain('yt-conflict-note');
 
     await mountPopup();
-    const controlsSection = document.getElementById('youtube-controls');
-    const note = controlsSection.querySelector('.yt-conflict-note');
-    const ytGroups = document.getElementById('yt-groups');
-    expect(note).not.toBeNull();
-    expect(note.parentElement).toBe(controlsSection);
-    expect(note.nextElementSibling).toBe(ytGroups);
-    expect(note.closest('.yt-group')).toBeNull();
+    expect(document.querySelector('.yt-conflict-note')).toBeNull();
+  });
+
+  it('normalizes legacy stored state so Redirect and Hide Subscriptions are never both on', async () => {
+    // Stored by an older version with both flags on.
+    localStore.youtubeControls = {
+      version: 1,
+      home: { hideHomeFeed: false, redirectToSubscriptions: true },
+      navigation: { hideExploreAndTrending: false, hideSubscriptions: true },
+    };
+    await mountPopup();
+
+    // API-level: normalization keeps Redirect, drops Hide.
+    const api = globalThis.__preelockYoutubeControls;
+    const normalized = api.normalizeYoutubeControls({
+      home: { redirectToSubscriptions: true },
+      navigation: { hideSubscriptions: true },
+    });
+    expect(normalized.home.redirectToSubscriptions).toBe(true);
+    expect(normalized.navigation.hideSubscriptions).toBe(false);
+
+    // UI-level: only Redirect shows as on; no warning element.
+    expect(
+      document.querySelector(
+        'input[data-control-path="home.redirectToSubscriptions"]',
+      ).checked,
+    ).toBe(true);
+    expect(
+      document.querySelector(
+        'input[data-control-path="navigation.hideSubscriptions"]',
+      ).checked,
+    ).toBe(false);
+    expect(document.querySelector('.yt-conflict-note')).toBeNull();
+    expect(document.getElementById('yt-active-count').textContent).toBe(
+      '1 active',
+    );
+    expect(
+      document
+        .querySelector('[data-group-id="home"] .yt-group-badge')
+        .textContent.trim(),
+    ).toBe('1');
+  });
+
+  it('keeps the connect box hidden until the Not connected pill is clicked, closes it with the X, and does nothing when Connected', async () => {
+    localStore = { client: 'client-123' };
+    sessionStore = {};
+    await mountPopup();
+
+    const badge = document.getElementById('connection-status');
+    const pairView = document.getElementById('pair-view');
+    expect(badge.tagName).toBe('BUTTON');
+    expect(
+      document.getElementById('connection-status-text').textContent.trim(),
+    ).toBe('Not connected');
+    expect(pairView.hidden).toBe(true);
+    expect(document.getElementById('pair-close')).not.toBeNull();
+
+    // Pill click reveals the box; X closes it; pill reopens it.
+    badge.click();
+    await Promise.resolve();
+    expect(pairView.hidden).toBe(false);
+    document.getElementById('pair-close').click();
+    expect(pairView.hidden).toBe(true);
+    badge.click();
+    expect(pairView.hidden).toBe(false);
+
+    // Reopen while connected: the box stays hidden and the Connected
+    // pill does nothing.
+    localStore.token = 'a'.repeat(64);
+    await mountPopup();
+    expect(
+      document.getElementById('connection-status-text').textContent.trim(),
+    ).toBe('Connected');
+    expect(document.getElementById('pair-view').hidden).toBe(true);
+    document.getElementById('connection-status').click();
+    expect(document.getElementById('pair-view').hidden).toBe(true);
+  });
+
+  it('shows the stored connection error inside the connect box once opened', async () => {
+    localStore = { client: 'client-123' };
+    sessionStore = {
+      error: 'Connection code rejected. Copy it again from Preelock Settings.',
+    };
+    await mountPopup();
+
+    // Box is hidden until the pill is clicked; the error is not
+    // visible yet.
+    expect(document.getElementById('pair-view').hidden).toBe(true);
+    document.getElementById('connection-status').click();
+    expect(document.getElementById('pair-view').hidden).toBe(false);
+    const pairStatus = document.getElementById('pair-status');
+    expect(pairStatus.hidden).toBe(false);
+    expect(pairStatus.textContent).toContain('Connection code rejected');
   });
 
   it('starts every group and nested sub-control dropdown closed on open and reopen even with active settings', async () => {
@@ -564,5 +681,31 @@ describe('Popup header, Website Controls, and YouTube Controls UI', () => {
         (panel) => panel.hidden === true,
       ),
     ).toBe(true);
+  });
+
+  it('requests a live worker sync on open when paired and flips to Not connected if the bridge rejects or is down', async () => {
+    localStore = {
+      token: 'a'.repeat(64),
+      client: '11111111-1111-1111-1111-111111111111',
+      disabled: false,
+    };
+    sessionStore = {};
+    sendMessageMock = vi.fn(async (msg) => {
+      if (msg.type === 'sync') {
+        sessionStore.error =
+          'Cannot reach Preelock. Open the desktop app, then reconnect.';
+        return { ok: true };
+      }
+      return { ok: true };
+    });
+
+    await mountPopup();
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sendMessageMock).toHaveBeenCalledWith({ type: 'sync' });
+    expect(
+      document.getElementById('connection-status-text').textContent.trim(),
+    ).toBe('Not connected');
   });
 });

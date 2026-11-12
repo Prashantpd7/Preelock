@@ -196,6 +196,11 @@ export function BrowserSetup({
           title="Add Preelock to your browser"
           onClose={() => setInstallGuide(false)}
         >
+          <p className="muted small">
+            Install <strong>Preelock Focus</strong> from the Chrome Web Store
+            and enter the connection code above, or load the bundled extension
+            folder manually below:
+          </p>
           <ol className="install-steps">
             <li>
               <strong className="step-title">Open the extensions page</strong>

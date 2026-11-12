@@ -203,6 +203,11 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
           title="Add Preelock to your browser"
           onClose={() => setBrowserGuide(false)}
         >
+          <p className="muted small">
+            Already installed <strong>Preelock Focus</strong> from the Chrome
+            Web Store? Copy the connection code in step 4 and connect directly
+            in the extension popup.
+          </p>
           <ol className="install-steps">
             <li>
               <strong className="step-title">Open the extensions page</strong>

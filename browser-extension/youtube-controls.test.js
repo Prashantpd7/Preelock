@@ -28,7 +28,6 @@ const {
   setControlValue,
   hasActiveYoutubeControls,
   countActiveControls,
-  subscriptionsConflictNote,
   isMainYouTubeHost,
   isShortsPath,
   youtubeRouteKind,
@@ -90,26 +89,34 @@ describe('youtube-controls schema and normalization', () => {
     expect(countActiveControls(next2)).toBe(2);
   });
 
-  it('explains conflict only when Redirect to Subscriptions and Hide Subscriptions are both active', () => {
+  it('keeps Redirect to Subscriptions and Hide Subscriptions mutually exclusive', () => {
     const redirectOnly = setControlValue(
       null,
       'home.redirectToSubscriptions',
       true,
     );
-    const hideOnly = setControlValue(
-      null,
-      'navigation.hideSubscriptions',
-      true,
-    );
-    const both = setControlValue(
+    const thenHide = setControlValue(
       redirectOnly,
       'navigation.hideSubscriptions',
       true,
     );
-    expect(subscriptionsConflictNote(null)).toBe('');
-    expect(subscriptionsConflictNote(redirectOnly)).toBe('');
-    expect(subscriptionsConflictNote(hideOnly)).toBe('');
-    expect(subscriptionsConflictNote(both)).toMatch(/Subscriptions/i);
+    expect(thenHide.home.redirectToSubscriptions).toBe(false);
+    expect(thenHide.navigation.hideSubscriptions).toBe(true);
+
+    const thenRedirect = setControlValue(
+      thenHide,
+      'home.redirectToSubscriptions',
+      true,
+    );
+    expect(thenRedirect.home.redirectToSubscriptions).toBe(true);
+    expect(thenRedirect.navigation.hideSubscriptions).toBe(false);
+
+    const normalizedBoth = normalizeYoutubeControls({
+      home: { redirectToSubscriptions: true },
+      navigation: { hideSubscriptions: true },
+    });
+    expect(normalizedBoth.home.redirectToSubscriptions).toBe(true);
+    expect(normalizedBoth.navigation.hideSubscriptions).toBe(false);
   });
 });
 

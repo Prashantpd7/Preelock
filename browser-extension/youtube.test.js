@@ -1092,6 +1092,90 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
     expect(subsSection.getAttribute('data-preelock-hidden')).toBe(null);
   });
 
+  it('normalizes legacy both-on Subscriptions flags in the content script: Redirect wins on Home and Hide never applies', async () => {
+    const makeSection = (querySelector) => ({
+      attrs: new Map(),
+      getAttribute(k) {
+        return this.attrs.has(k) ? this.attrs.get(k) : null;
+      },
+      setAttribute(k, v) {
+        this.attrs.set(k, String(v));
+      },
+      removeAttribute(k) {
+        this.attrs.delete(k);
+      },
+      querySelector,
+    });
+    const subsSection = makeSection((sel) => {
+      if (sel.includes('a[href="/"')) return null;
+      if (sel.includes('/feed/trending')) return null;
+      if (sel.includes('/@')) return { href: '/@veritasium' };
+      return null;
+    });
+    const primarySection = makeSection((sel) => {
+      if (sel.includes('a[href="/"')) return { href: '/' };
+      return null;
+    });
+    const wlSection = makeSection((sel) => {
+      if (sel.includes('/playlist?list=WL'))
+        return { href: '/playlist?list=WL' };
+      return null;
+    });
+    const exploreSection = makeSection((sel) => {
+      if (sel === '#guide-section-title') return { textContent: 'Explore' };
+      if (sel.includes('/channel/UC-9-kyTW8ZkZNDHQJ6FgpwQ')) {
+        return { href: '/channel/UC-9-kyTW8ZkZNDHQJ6FgpwQ' };
+      }
+      return null;
+    });
+
+    const env = loadIntegrated({
+      href: 'https://www.youtube.com/',
+      youtubeControls: {
+        home: { redirectToSubscriptions: true },
+        navigation: { hideSubscriptions: true },
+      },
+      queryAll: (selector) => {
+        if (selector === 'ytd-guide-section-renderer') {
+          return [primarySection, subsSection, wlSection, exploreSection];
+        }
+        if (selector === '[data-preelock-hidden="subscriptions"]') {
+          return [
+            primarySection,
+            subsSection,
+            wlSection,
+            exploreSection,
+          ].filter(
+            (n) => n.getAttribute('data-preelock-hidden') === 'subscriptions',
+          );
+        }
+        return [];
+      },
+      onMessage: (m) => {
+        if (m.type === 'youtube_policy')
+          return { policy: null, browsingClosed: false };
+        if (m.type === 'youtube_page_check') return { blocked: false };
+        return {};
+      },
+    });
+    await settle();
+
+    // Redirect won on Home: the page moved to Subscriptions.
+    expect(env.replaced).toEqual([
+      'https://www.youtube.com/feed/subscriptions',
+    ]);
+
+    // Re-apply the same legacy both-on state on the Subscriptions
+    // page: Hide must not apply after normalization.
+    env.fireStorageChange({
+      home: { redirectToSubscriptions: true },
+      navigation: { hideSubscriptions: true },
+    });
+    await settle();
+    expect(subsSection.getAttribute('data-preelock-hidden')).toBe(null);
+    expect(primarySection.getAttribute('data-preelock-hidden')).toBe(null);
+  });
+
   it('ignores stale page-bridge messages, stops on yt-navigate-start, resolves via oEmbed, and fails closed on channel timeout', async () => {
     const video = {
       tagName: 'VIDEO',

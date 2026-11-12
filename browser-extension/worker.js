@@ -64,7 +64,7 @@ import { selfTest } from './self-test.js';
 // Bump this every time extension behavior changes. The desktop app
 // compares it against its own copy to spot extension copies that were
 // never reloaded after an app update.
-const EXTENSION_VERSION = 12;
+const EXTENSION_VERSION = 13;
 // Learned UC-id <-> @handle aliases. YouTube's player data names a
 // video's stable channel id, the page metadata names its handle, and a
 // Preelock rule may use either form. Identities observed together for
@@ -119,13 +119,20 @@ const enqueue = (work) => {
   serial = serial.then(work, work);
   return serial;
 };
-// Coalesce timer/alarm triggers while a bridge request is pending.
+// Coalesce timer/alarm triggers while a bridge request is pending, but allow
+// explicit user pairing actions to queue a fresh sync after any in-flight poll.
 let pendingSync;
 function requestSync() {
   if (!pendingSync)
     pendingSync = enqueue(sync).finally(() => {
       pendingSync = null;
     });
+  return pendingSync;
+}
+function forceSync() {
+  pendingSync = enqueue(sync).finally(() => {
+    pendingSync = null;
+  });
   return pendingSync;
 }
 async function removeRules() {
@@ -500,14 +507,24 @@ async function activity(policy) {
 async function sync() {
   const websiteControls = await readWebsiteControls();
   await syncWebsiteControlRules(websiteControls);
-  const { token, client, disabled } = await chrome.storage.local.get([
+  const stored = await chrome.storage.local.get([
     'token',
     'client',
     'disabled',
   ]);
+  const token = typeof stored.token === 'string' ? stored.token.trim() : '';
+  const disabled = Boolean(stored.disabled);
   if (!token || disabled) {
     await removeRules();
     return;
+  }
+  let client =
+    typeof stored.client === 'string' && stored.client.trim()
+      ? stored.client.trim()
+      : '';
+  if (!client) {
+    client = crypto.randomUUID();
+    await chrome.storage.local.set({ client });
   }
   const browser = await browserIdentity();
   let {
@@ -544,10 +561,13 @@ async function sync() {
     let testResult = {};
     if (payload.test_id && !leaseValid(next)) {
       try {
-        await selfTest();
+        const outcome = await selfTest();
         testResult = {
           test_id: payload.test_id,
-          test_result: 'Passed · 8 browser checks',
+          test_result:
+            typeof outcome === 'string' && outcome.startsWith('Passed ·')
+              ? outcome
+              : 'Passed · 8 browser checks',
         };
       } catch (error) {
         testResult = {
@@ -822,7 +842,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === 'sync') {
-    requestSync().then(
+    (message.force ? forceSync() : requestSync()).then(
       () => sendResponse({ ok: true }),
       (e) => sendResponse({ error: String(e) }),
     );

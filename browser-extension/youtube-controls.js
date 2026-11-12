@@ -208,6 +208,17 @@
         }
       }
     }
+    // "Redirect to Subscriptions" and "Hide Subscriptions" are mutually
+    // exclusive: redirecting home to Subscriptions while the Subscriptions
+    // nav link is hidden strands the user on a page they cannot reach
+    // from the nav. If stored state has both on (older version), Redirect
+    // wins so both can never be applied at once.
+    if (
+      normalized.home.redirectToSubscriptions &&
+      normalized.navigation.hideSubscriptions
+    ) {
+      normalized.navigation.hideSubscriptions = false;
+    }
     return normalized;
   }
 
@@ -230,6 +241,18 @@
       Object.prototype.hasOwnProperty.call(next[sectionName], keyName)
     ) {
       next[sectionName][keyName] = Boolean(value);
+      // Mutual exclusion: enabling one of the Subscriptions pair turns
+      // the other off; the last one enabled wins.
+      if (Boolean(value)) {
+        if (sectionName === 'home' && keyName === 'redirectToSubscriptions') {
+          next.navigation.hideSubscriptions = false;
+        } else if (
+          sectionName === 'navigation' &&
+          keyName === 'hideSubscriptions'
+        ) {
+          next.home.redirectToSubscriptions = false;
+        }
+      }
     }
     return next;
   }
@@ -261,14 +284,6 @@
       }
     }
     return count;
-  }
-
-  function subscriptionsConflictNote(controls) {
-    var c = normalizeYoutubeControls(controls);
-    if (c.home.redirectToSubscriptions && c.navigation.hideSubscriptions) {
-      return 'Homepage redirects to Subscriptions while the Subscriptions nav link stays hidden.';
-    }
-    return '';
   }
 
   function isMainYouTubeHost(hostname) {
@@ -726,7 +741,6 @@
     setControlValue: setControlValue,
     hasActiveYoutubeControls: hasActiveYoutubeControls,
     countActiveControls: countActiveControls,
-    subscriptionsConflictNote: subscriptionsConflictNote,
     isMainYouTubeHost: isMainYouTubeHost,
     isShortsPath: isShortsPath,
     youtubeRouteKind: youtubeRouteKind,
