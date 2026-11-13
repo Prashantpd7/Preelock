@@ -31,12 +31,24 @@ function Stop-InstalledProcesses {
             $_.WaitForExit(10000) | Out-Null
         }
 }
+Stop-InstalledProcesses
 $legacyApp = Start-Process (Join-Path $installDir "preelock.exe") `
     -WorkingDirectory $installDir -PassThru
 try {
-    Start-Sleep -Seconds 15
-    if ($legacyApp.HasExited -or !(Test-Path $legacyDatabase)) {
-        throw "Legacy startup failed"
+    for ($i = 0; $i -lt 45; $i++) {
+        if (Test-Path $legacyDatabase) {
+            break
+        }
+        if ($legacyApp.HasExited) {
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
+    if ($legacyApp.HasExited) {
+        throw "Legacy app exited prematurely: exit code $($legacyApp.ExitCode)"
+    }
+    if (!(Test-Path $legacyDatabase)) {
+        throw "Legacy startup did not create database within 45 seconds"
     }
 } finally {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
@@ -73,9 +85,17 @@ foreach ($entry in $config.bundle.resources.PSObject.Properties) {
 }
 $app = Start-Process $executable -WorkingDirectory $installDir -PassThru
 try {
-    Start-Sleep -Seconds 15
+    for ($i = 0; $i -lt 45; $i++) {
+        if (Test-Path $database) {
+            break
+        }
+        if ($app.HasExited) {
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
     if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
-    if (!(Test-Path $database)) { throw "Installed app did not initialize its database" }
+    if (!(Test-Path $database)) { throw "Installed app did not initialize its database within 45 seconds" }
     Write-Output "Installed application remained running and initialized its database."
 } finally {
     if (!$app.HasExited) {
