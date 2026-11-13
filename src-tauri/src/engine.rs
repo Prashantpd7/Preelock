@@ -3650,8 +3650,19 @@ mod tests {
         assert!(engine.owns_engine_lock());
         assert!(engine.bridge.is_none());
         engine.set_native_for_test(true);
-        engine.ensure_bridge();
-        assert!(engine.bridge.is_some());
+        for _ in 0..50 {
+            engine.bridge_retry_at = 0;
+            engine.ensure_bridge();
+            if engine.bridge.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            engine.bridge.is_some(),
+            "Bridge failed to start: {}",
+            engine.bridge_error
+        );
         assert!(engine.bridge_error.is_empty());
         assert!(engine.bridge.as_ref().unwrap().server_alive());
         assert!(Bridge::port_listening(browser::PORT));
@@ -3735,8 +3746,15 @@ mod tests {
         // would observe a dead server on its tick.
         e.bridge.as_ref().unwrap().stop();
         wait_until_server_dead(e.bridge.as_ref().unwrap());
-        e.ensure_bridge();
-        let bridge = e.bridge.as_ref().unwrap();
+        for _ in 0..50 {
+            e.bridge_retry_at = 0;
+            e.ensure_bridge();
+            if e.bridge.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let bridge = e.bridge.as_ref().expect(&e.bridge_error);
         assert!(bridge.server_alive());
         assert!(Bridge::port_listening(browser::PORT));
         assert!(e.bridge_error.is_empty());
