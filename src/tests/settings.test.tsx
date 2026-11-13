@@ -43,7 +43,11 @@ beforeEach(() => {
     busy: false,
     error: null,
   });
-  vi.mocked(settingsAction).mockResolvedValue({ login: 0, notifications: 0 });
+  vi.mocked(settingsAction).mockResolvedValue({
+    login: 0,
+    login_user_pref: false,
+    notifications: 0,
+  });
   vi.mocked(api.snapshot).mockResolvedValue(structuredClone(emptySnapshot));
   vi.mocked(api.execute).mockImplementation(async (action) => ({
     ...emptySnapshot,
@@ -93,6 +97,27 @@ it('opens camera settings after denial instead of requesting permission again', 
   await user.click(screen.getAllByRole('button', { name: 'Open settings' })[0]);
   expect(api.openSetup).toHaveBeenCalledWith('camera_settings');
   expect(api.requestCamera).not.toHaveBeenCalled();
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Turn on Preelock under Camera, then return here.',
+  );
+});
+it('requests camera permission from the guide without starting a session', async () => {
+  const setup = await api.focusSetup();
+  vi.mocked(api.focusSetup).mockResolvedValue({
+    ...setup,
+    camera_permission: 'not_requested',
+  });
+  const user = userEvent.setup();
+  render(<PermissionsGuide onClose={() => {}} />);
+  const button = await screen.findByRole('button', { name: 'Allow camera' });
+  expect(button).toBeEnabled();
+  await user.click(button);
+  expect(api.requestCamera).toHaveBeenCalledTimes(1);
+  expect(api.openSetup).not.toHaveBeenCalled();
+  expect(api.execute).not.toHaveBeenCalled();
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Choose Allow in the Mac permission window.',
+  );
 });
 it('gives Windows permission guidance without Mac-only controls', async () => {
   const setup = await api.focusSetup();
@@ -346,6 +371,44 @@ it('offers startup on first run and does not request camera again when granted',
   expect(settingsAction).toHaveBeenCalledWith({ type: 'login', enabled: true });
   expect(screen.getByRole('button', { name: 'Allowed' })).toBeDisabled();
   expect(api.requestCamera).not.toHaveBeenCalled();
+});
+
+it('flips Open at login in the guide and reflects the saved preference', async () => {
+  const user = userEvent.setup();
+  let pref = false;
+  vi.mocked(settingsAction).mockImplementation(async (action) => {
+    if (action.type === 'login') {
+      pref = action.enabled;
+    }
+    return {
+      login: pref ? 1 : 0,
+      login_user_pref: pref,
+      notifications: 0,
+    };
+  });
+  render(<PermissionsGuide onClose={() => {}} />);
+  const toggle = await screen.findByRole('switch', { name: 'Open at login' });
+  expect(screen.getByText('Opens the app at login.')).toBeInTheDocument();
+  expect(
+    screen.queryByText(/when there was an active session/),
+  ).not.toBeInTheDocument();
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  await user.click(toggle);
+  expect(settingsAction).toHaveBeenCalledWith({ type: 'login', enabled: true });
+  await waitFor(() =>
+    expect(screen.getByRole('switch', { name: 'Open at login' })).toBeChecked(),
+  );
+  await user.click(screen.getByRole('switch', { name: 'Open at login' }));
+  expect(settingsAction).toHaveBeenCalledWith({
+    type: 'login',
+    enabled: false,
+  });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('switch', { name: 'Open at login' }),
+    ).not.toBeChecked(),
+  );
 });
 
 it('toggles Open at login from Settings and saves the preference', async () => {

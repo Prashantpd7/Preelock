@@ -402,11 +402,27 @@
   function applyAutoplay(disabled) {
     if (!disabled) return;
     try {
-      var player = document.querySelector('#movie_player');
-      if (player && typeof player.setAutonav === 'function') {
+      var player = document.querySelector(
+        'ytd-watch-flexy #movie_player, #player #movie_player, #movie_player',
+      );
+      if (
+        !player ||
+        player.id === 'inline-preview-player' ||
+        (player.closest &&
+          (player.closest('#inline-preview-player') ||
+            player.closest('ytd-inline-preview-player') ||
+            player.closest('ytd-rich-item-renderer') ||
+            player.closest('ytd-video-renderer') ||
+            player.closest('ytd-compact-video-renderer') ||
+            player.closest('a#thumbnail') ||
+            player.closest('a[href^="/watch"]')))
+      ) {
+        return;
+      }
+      if (typeof player.setAutonav === 'function') {
         player.setAutonav(false);
       }
-      if (player && typeof player.setAutonavState === 'function') {
+      if (typeof player.setAutonavState === 'function') {
         player.setAutonavState(1);
       }
     } catch (e) {}
@@ -452,17 +468,38 @@
     }
   });
 
+  function isVideoRoute() {
+    try {
+      var path = location.pathname;
+      if (!path && location.href) {
+        try {
+          path = new URL(location.href).pathname;
+        } catch (err) {}
+      }
+      var p = path || '';
+      return (
+        p === '/watch' ||
+        p === '/watch/' ||
+        p.startsWith('/shorts') ||
+        p.startsWith('/live')
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
   // The player's response changes when YouTube swaps videos, including
   // autoplay and playlist transitions where nothing else reliably tells
-  // us in time. A short interval keeps this cheap and immediate.
+  // us in time. An efficient 1000ms polling fallback is only active on
+  // video routes; instant event-based dispatching handles all navigations.
   setInterval(function () {
-    read(false);
-  }, 200);
-  for (var i = 0; i < 20; i++) {
-    setTimeout(function () {
+    if (isVideoRoute()) {
       read(false);
-    }, i * 250);
-  }
+    }
+  }, 1000);
+  setTimeout(function () {
+    read(false);
+  }, 150);
   window.addEventListener(
     'yt-navigate-start',
     function () {

@@ -159,12 +159,15 @@ async fn focus_setup(
             .collect();
         for installed in platform::installed_browsers() {
             if focus::supported_browser(&installed.id)
-                && !browsers.iter().any(|b| b.id == installed.id)
+                && !browsers
+                    .iter()
+                    .any(|b| b.id.eq_ignore_ascii_case(&installed.id))
             {
                 browsers.push(installed);
             }
         }
         let extension_directory = setup::extension_dir(&app)?;
+        let default_browser = setup::default_browser_id();
         // Default to the first known browser, matching the wizard's dropdown.
         let browser_id = browser_id
             .filter(|s| !s.is_empty())
@@ -180,7 +183,8 @@ async fn focus_setup(
             "browser":setup_info.browser,
             "connected_browsers":setup_info.connected_browsers,
             "pairing_token":setup_info.pairing_token,
-            "extension_directory":extension_directory
+            "extension_directory":extension_directory,
+            "default_browser":default_browser
         }))
     })
     .await

@@ -1009,11 +1009,34 @@ impl Engine {
             .map(|b| b.test_result())
             .unwrap_or_default()
     }
+    pub fn ensure_bridge_ready(&mut self) {
+        if !self.native || !self.owns_engine_lock() {
+            return;
+        }
+        if let Some(bridge) = &self.bridge {
+            if bridge.server_alive() {
+                return;
+            }
+            log::warn!(
+                "Browser bridge server thread is no longer answering; restarting bridge for setup request."
+            );
+            self.bridge = None;
+        }
+        self.bridge_retry_at = 0;
+        self.ensure_bridge();
+    }
     pub fn pairing_token(&self) -> String {
         if let Some(b) = &self.bridge {
             return b.token.clone();
         }
-        browser::read_or_create_token(&self.data_dir).unwrap_or_default()
+        match browser::read_or_create_token(&self.data_dir) {
+            Ok(token) => token,
+            Err(err) => {
+                log::warn!("Pairing token read failed ({err}); generating fresh token");
+                let _ = std::fs::remove_file(self.data_dir.join("browser-token"));
+                browser::read_or_create_token(&self.data_dir).unwrap_or_default()
+            }
+        }
     }
     pub fn reset_pairing(&mut self, path: &Path) -> Result<(), String> {
         // M1: pairing reset can start a bridge — holder only, so an
@@ -5025,6 +5048,21 @@ mod tests {
         let expected = holder.pairing_token();
         assert_eq!(expected.len(), 64);
         assert_eq!(observer.pairing_token(), expected);
+    }
+
+    #[test]
+    fn pairing_token_auto_heals_corrupted_or_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("heal-test.sqlite");
+        let e = Engine::open(&path).unwrap();
+        // Write corrupt garbage to browser-token
+        std::fs::write(dir.path().join("browser-token"), "corrupted-token-payload").unwrap();
+        // pairing_token auto-heals and generates a valid 64-hex token
+        let token = e.pairing_token();
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Second read returns the same healed token
+        assert_eq!(e.pairing_token(), token);
     }
 
     #[test]

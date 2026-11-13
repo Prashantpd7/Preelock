@@ -1106,11 +1106,7 @@ describe('youtubeVideoDecision Watch Later and blocked-channel precedence', () =
     ).toBe(true);
 
     // Pure entertainment categories blocked on /watch
-    for (const category of [
-      'Comedy',
-      'Pets & Animals',
-      'Gaming',
-    ]) {
+    for (const category of ['Comedy', 'Pets & Animals', 'Gaming']) {
       expect(
         youtubeVideoDecision(
           'https://www.youtube.com/watch?v=vid1',

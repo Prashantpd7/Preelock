@@ -704,6 +704,16 @@
     for (var i = 0; i < selectors.length; i++) {
       rules.push(selectors[i] + '{display:none!important}');
     }
+    if (c.home.hideHomeFeed) {
+      rules.push(
+        'html[data-preelock-route="home"] ytd-browse[page-subtype="home"]{min-height:calc(100vh - 56px)!important;contain:layout}',
+      );
+    }
+    if (c.recommendations.hideVideoSidebar) {
+      rules.push(
+        'ytd-watch-flexy[flexy] #primary.ytd-watch-flexy{max-width:100%!important;min-width:0!important}',
+      );
+    }
     if (c.other.hideTopHeader) {
       rules.push(
         'ytd-app{--ytd-masthead-height:0px!important;--ytd-toolbar-height:0px!important}',

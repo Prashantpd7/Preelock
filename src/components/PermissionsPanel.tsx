@@ -320,11 +320,8 @@ export function PermissionsPanel() {
                       }
                     }}
                   >
-                    Reset all browser connections
+                    Disconnect every browser
                   </button>
-                  <p className="small muted" style={{ marginTop: '0.25rem' }}>
-                    Disconnects every browser; each will need the code again.
-                  </p>
                 </div>
               </div>
             ) : (

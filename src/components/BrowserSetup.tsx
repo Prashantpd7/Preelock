@@ -4,6 +4,55 @@ import { hasLiveStrictSession } from '../services/activitySection';
 import { useAppStore } from '../state/store';
 import type { FocusSetup } from '../types';
 import { Modal } from './SettingsControls';
+
+export function isSupportedBrowser(id: string): boolean {
+  const lower = id.toLowerCase();
+  const known = [
+    'com.google.chrome',
+    'com.microsoft.edgemac',
+    'com.brave.browser',
+    'com.vivaldi.vivaldi',
+    'org.chromium.chromium',
+    'ai.perplexity.comet',
+  ];
+  if (known.includes(lower)) return true;
+  return [
+    'chrome.exe',
+    'msedge.exe',
+    'brave.exe',
+    'vivaldi.exe',
+    'chromium.exe',
+    'comet.exe',
+  ].some((name) => lower.endsWith(`\\${name}`) || lower === name);
+}
+
+export function getBrowserDisplayName(browser: {
+  id: string;
+  name?: string;
+}): string {
+  if (browser.name && browser.name.trim()) return browser.name;
+  const id = browser.id.toLowerCase();
+  if (id.includes('comet')) return 'Comet';
+  if (id.includes('brave')) return 'Brave';
+  if (id.includes('edgemac') || id.includes('msedge')) return 'Microsoft Edge';
+  if (id.includes('vivaldi')) return 'Vivaldi';
+  if (id.includes('chromium')) return 'Chromium';
+  if (id.includes('chrome')) return 'Google Chrome';
+  return browser.id;
+}
+
+export function getInstallButtonText(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes('chrome') && !lower.includes('chromium'))
+    return 'Add to Chrome';
+  if (lower.includes('brave')) return 'Add to Brave';
+  if (lower.includes('edge')) return 'Add to Edge';
+  if (lower.includes('comet')) return 'Add to Comet';
+  if (lower.includes('vivaldi')) return 'Add to Vivaldi';
+  if (lower.includes('chromium')) return 'Add to Chromium';
+  return `Add to ${name}`;
+}
+
 export function BrowserSetup({
   setup,
   refresh,
@@ -12,29 +61,72 @@ export function BrowserSetup({
   onBack,
 }: {
   setup: FocusSetup | null;
-  refresh: () => Promise<void>;
+  refresh: (browserId?: string) => Promise<unknown>;
   browserId?: string;
   allowAdd?: boolean;
   onBack?: () => void;
 }) {
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
-  const [installGuide, setInstallGuide] = useState(false);
-  const [pathCopied, setPathCopied] = useState(false);
+  const [launching, setLaunching] = useState(false);
   const [lockedDialog, setLockedDialog] = useState(false);
   const [initialConnectedCount] = useState(
     setup?.connected_browsers?.length ?? 0,
   );
-  // Disconnecting and reconnecting is locked while a strict focus
-  // session is live; the backend rejects reset_pairing then too.
+
   const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
-  // Detected live on this PC by the app — never a hardcoded path.
-  const folderPath = setup?.extension_directory ?? '';
-  // The app already filters the connection status to this browser:
-  // connected here means the paired extension lives in this browser.
   const connected = !!setup?.browser.connected && !setup?.browser.error;
-  // Keep checking while the guide is open so it flips to Connected
-  // on its own once the user connects in the browser.
+
+  // Filter only browsers actually installed on the user's computer and supported
+  const supportedBrowsers = (setup?.browsers ?? [])
+    .filter((b) => isSupportedBrowser(b.id))
+    .map((b) => ({
+      id: b.id,
+      name: getBrowserDisplayName(b),
+    }));
+
+  const [explicitBrowserId, setExplicitBrowserId] = useState<string>('');
+
+  // Resolved browser selection:
+  // 1. User's explicit choice in dropdown (if valid)
+  // 2. browserId prop (if valid)
+  // 3. setup.default_browser (if supported & installed)
+  // 4. First supported installed browser
+  const activeBrowserId = (() => {
+    if (
+      explicitBrowserId &&
+      supportedBrowsers.some(
+        (b) => b.id.toLowerCase() === explicitBrowserId.toLowerCase(),
+      )
+    ) {
+      return supportedBrowsers.find(
+        (b) => b.id.toLowerCase() === explicitBrowserId.toLowerCase(),
+      )!.id;
+    }
+    if (
+      browserId &&
+      supportedBrowsers.some(
+        (b) => b.id.toLowerCase() === browserId.toLowerCase(),
+      )
+    ) {
+      return supportedBrowsers.find(
+        (b) => b.id.toLowerCase() === browserId.toLowerCase(),
+      )!.id;
+    }
+    if (
+      setup?.default_browser &&
+      supportedBrowsers.some(
+        (b) => b.id.toLowerCase() === setup.default_browser!.toLowerCase(),
+      )
+    ) {
+      return supportedBrowsers.find(
+        (b) => b.id.toLowerCase() === setup.default_browser!.toLowerCase(),
+      )!.id;
+    }
+    return supportedBrowsers[0]?.id ?? '';
+  })();
+
+  // Keep checking while open so it flips to Connected on its own once paired
   useEffect(() => {
     if (connected && !allowAdd) return;
     const timer = setInterval(() => {
@@ -47,9 +139,43 @@ export function BrowserSetup({
     allowAdd &&
     (setup?.connected_browsers?.length ?? 0) > initialConnectedCount;
 
-  // When connected and not adding another browser, show a confirmation instead of rendering nothing —
-  // returning null here left an empty broken dialog in the "Before you
-  // start" popup when the fresh status check already showed connected.
+  const selectedBrowser =
+    supportedBrowsers.find(
+      (b) => b.id.toLowerCase() === activeBrowserId.toLowerCase(),
+    ) ?? supportedBrowsers[0];
+
+  const installButtonText = selectedBrowser
+    ? getInstallButtonText(selectedBrowser.name)
+    : 'Add to Chrome';
+
+  async function handleInstallExtension() {
+    setNotice('');
+    setLaunching(true);
+    try {
+      const targetBrowser = selectedBrowser?.id ?? activeBrowserId;
+      await api.openSetup('install_extension', targetBrowser);
+    } catch (e) {
+      setNotice(String(e));
+    } finally {
+      setLaunching(false);
+    }
+  }
+
+  async function copyCode() {
+    const code = setup?.pairing_token ?? '';
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setNotice('');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setNotice(
+        'Could not copy to clipboard. Please select and copy manually.',
+      );
+    }
+  }
+
   if (connected && !allowAdd) {
     return (
       <div className="setup-guide">
@@ -107,45 +233,7 @@ export function BrowserSetup({
       </div>
     );
   }
-  async function openExtensions() {
-    try {
-      // No browser id: opens the extensions page in the default browser.
-      await api.openSetup('extensions', browserId);
-      setNotice('');
-    } catch (e) {
-      setNotice(String(e));
-    }
-  }
-  async function openFolder() {
-    try {
-      await api.openSetup('extension_folder', browserId);
-      setNotice('');
-    } catch (e) {
-      setNotice(String(e));
-    }
-  }
-  async function copyFolderPath() {
-    if (!folderPath) return;
-    try {
-      await navigator.clipboard.writeText(folderPath);
-    } catch {
-      // Clipboard unavailable — the path is shown as text below.
-    }
-    setPathCopied(true);
-    setNotice('');
-  }
-  async function copyCode() {
-    const code = setup?.pairing_token ?? '';
-    if (!code) return;
-    try {
-      await navigator.clipboard.writeText(code);
-    } catch {
-      // Clipboard unavailable — the code is selectable as text below.
-    }
-    setCopied(true);
-    setNotice('');
-    setTimeout(() => setCopied(false), 2000);
-  }
+
   return (
     <div className="setup-guide">
       {onBack && (
@@ -158,7 +246,8 @@ export function BrowserSetup({
           ← Back to connected browsers
         </button>
       )}
-      {newlyConnected ? (
+
+      {newlyConnected && (
         <div
           style={{
             padding: '0.75rem 1rem',
@@ -185,168 +274,180 @@ export function BrowserSetup({
             </button>
           )}
         </div>
-      ) : (
-        <p
-          role="status"
-          className={allowAdd ? 'small muted' : 'connect-warn'}
-          style={
-            allowAdd
-              ? {
-                  padding: '0.625rem 0.875rem',
-                  borderRadius: '6px',
-                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
-                  marginBottom: '0.75rem',
-                }
-              : undefined
-          }
-        >
-          {allowAdd
-            ? 'Pair an additional browser. Copy the connection code below and paste it in the Preelock extension in your other browser.'
-            : 'Browser is not connected. Follow the steps below to connect it.'}
+      )}
+
+      {!allowAdd && (
+        <p role="status" className="connect-warn">
+          Browser is not connected.
         </p>
       )}
-      <div className="row">
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => void openExtensions()}
-        >
-          Open Extensions
-        </button>
-      </div>
-      <label className="code-label">
-        Connection code
-        <div className="code-row">
-          <input
-            aria-label="Connection code"
-            readOnly
-            value={setup?.pairing_token ?? ''}
-            onFocus={(e) => e.target.select()}
-          />
-          <button
-            type="button"
-            className="secondary"
-            disabled={!setup?.pairing_token}
-            onClick={() => void copyCode()}
+
+      {!allowAdd ? (
+        <div style={{ marginTop: '1rem', marginBottom: '1.25rem' }}>
+          <strong
+            className="step-title"
+            style={{
+              display: 'block',
+              marginBottom: '0.5rem',
+              fontSize: '0.95rem',
+            }}
           >
-            {copied ? 'Copied' : 'Copy code'}
-          </button>
+            Step 1: Select and install a browser extension
+          </strong>
+          {supportedBrowsers.length === 0 ? (
+            <p className="small muted">
+              No supported browser detected. Please install Google Chrome,
+              Brave, Microsoft Edge, or Comet.
+            </p>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.625rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <select
+                aria-label="Select browser"
+                value={selectedBrowser?.id ?? activeBrowserId}
+                onChange={(e) => setExplicitBrowserId(e.target.value)}
+                style={{
+                  minWidth: '140px',
+                  maxWidth: '280px',
+                  width: 'auto',
+                  height: '38px',
+                  padding: '6px 32px 6px 12px',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px',
+                  color: 'var(--text)',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                {supportedBrowsers.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="secondary"
+                disabled={launching || supportedBrowsers.length === 0}
+                onClick={() => void handleInstallExtension()}
+              >
+                {installButtonText}
+              </button>
+            </div>
+          )}
         </div>
-      </label>
-      <p className="muted small code-hint">
-        Copy the code and paste it in the Preelock extension in your browser
-        toolbar, then click Connect there.
-      </p>
-      <p className="muted small">
-        Extension not installed?{' '}
-        <button
-          type="button"
-          className="text-link"
-          onClick={() => setInstallGuide(true)}
-        >
-          Click here
-        </button>{' '}
-        to see how to add it.
-      </p>
+      ) : (
+        !newlyConnected && (
+          <div style={{ marginBottom: '1rem' }}>
+            {supportedBrowsers.length === 0 ? (
+              <p className="small muted">
+                No supported browser detected. Please install Google Chrome,
+                Brave, Microsoft Edge, or Comet.
+              </p>
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.625rem',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <select
+                  aria-label="Select browser"
+                  value={selectedBrowser?.id ?? activeBrowserId}
+                  onChange={(e) => setExplicitBrowserId(e.target.value)}
+                  style={{
+                    minWidth: '140px',
+                    maxWidth: '280px',
+                    width: 'auto',
+                    height: '38px',
+                    padding: '6px 32px 6px 12px',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    color: 'var(--text)',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {supportedBrowsers.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={launching || supportedBrowsers.length === 0}
+                  onClick={() => void handleInstallExtension()}
+                >
+                  {installButtonText}
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      )}
+
+      {(!allowAdd || !newlyConnected) && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          {!allowAdd && (
+            <strong
+              className="step-title"
+              style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontSize: '0.95rem',
+              }}
+            >
+              Step 2: Connect your browser
+            </strong>
+          )}
+          <label className="code-label" style={{ marginTop: 0 }}>
+            Connection code
+            <div className="code-row">
+              <input
+                aria-label="Connection code"
+                readOnly
+                value={setup?.pairing_token ?? ''}
+                placeholder={setup ? 'Generating connection code…' : 'Loading…'}
+                onFocus={(e) => e.target.select()}
+              />
+              <button
+                type="button"
+                className="secondary"
+                disabled={!setup?.pairing_token}
+                onClick={() => void copyCode()}
+              >
+                {copied ? 'Copied' : 'Copy code'}
+              </button>
+            </div>
+          </label>
+          <p className="muted small code-hint" style={{ marginTop: '0.5rem' }}>
+            Copy the code and paste it in the Preelock extension in your
+            browser.
+          </p>
+        </div>
+      )}
+
       {setup?.browser.error && (
-        <p role="alert" className="small">
+        <p role="alert" className="small" style={{ marginTop: '0.5rem' }}>
           {setup.browser.error}
         </p>
       )}
       {notice && (
-        <p role="status" className="small">
+        <p role="status" className="small" style={{ marginTop: '0.5rem' }}>
           {notice}
         </p>
-      )}
-      {installGuide && (
-        <Modal
-          title="Add Preelock to your browser"
-          onClose={() => setInstallGuide(false)}
-        >
-          <p className="muted small">
-            Install <strong>Preelock Focus</strong> from the Chrome Web Store
-            and enter the connection code above, or load the bundled extension
-            folder manually below:
-          </p>
-          <ol className="install-steps">
-            <li>
-              <strong className="step-title">Open the extensions page</strong>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void openExtensions()}
-              >
-                Open extensions page
-              </button>
-            </li>
-            <li>
-              <strong className="step-title">Turn on Developer mode</strong>
-              <span className="muted">
-                The switch at the top-right of the extensions page.
-              </span>
-            </li>
-            <li>
-              <strong className="step-title">Load the extension folder</strong>
-              {setup?.platform === 'windows' ? (
-                <span className="muted">
-                  Click <strong>Load unpacked</strong> in the browser, paste the
-                  folder path below into the file picker's address bar, press
-                  Enter, then select the folder.
-                </span>
-              ) : (
-                <span className="muted">
-                  Click <strong>Load unpacked</strong> in the browser. In the
-                  file picker, press <strong>⌘⇧G</strong>, paste the folder
-                  path, press Enter, then click <strong>Select</strong>.
-                </span>
-              )}
-              <label className="code-label">
-                Extension folder on this PC
-                <div className="code-row">
-                  <input
-                    aria-label="Extension folder path"
-                    readOnly
-                    value={folderPath}
-                    placeholder="Loading…"
-                    onFocus={(e) => e.target.select()}
-                  />
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={!folderPath}
-                    onClick={() => void copyFolderPath()}
-                  >
-                    {pathCopied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </label>
-              <p className="muted small">
-                Prefer browsing yourself?{' '}
-                <button
-                  type="button"
-                  className="text-link"
-                  onClick={() => void openFolder()}
-                >
-                  Open extension folder
-                </button>
-                .
-              </p>
-            </li>
-            <li>
-              <strong className="step-title">Connect the extension</strong>
-              <span className="muted">
-                Copy the <strong>connection code</strong> from the setup guide,
-                click the Preelock icon in your browser's toolbar, paste the
-                code, and click <strong>Connect</strong> there. Keep your
-                browser open.
-              </span>
-            </li>
-          </ol>
-          <button type="button" onClick={() => setInstallGuide(false)}>
-            Done
-          </button>
-        </Modal>
       )}
     </div>
   );

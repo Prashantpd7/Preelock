@@ -512,9 +512,15 @@ export function isEntertainmentVideo(videoMeta, urlString = '') {
   const category = String(videoMeta.category || '')
     .trim()
     .toLowerCase();
-  const author = String(videoMeta.author || videoMeta.channelTitle || '').trim();
-  const hashtags = (Array.isArray(videoMeta.hashtags) ? videoMeta.hashtags : []).join(' ');
-  const keywords = (Array.isArray(videoMeta.keywords) ? videoMeta.keywords : []).join(' ');
+  const author = String(
+    videoMeta.author || videoMeta.channelTitle || '',
+  ).trim();
+  const hashtags = (
+    Array.isArray(videoMeta.hashtags) ? videoMeta.hashtags : []
+  ).join(' ');
+  const keywords = (
+    Array.isArray(videoMeta.keywords) ? videoMeta.keywords : []
+  ).join(' ');
 
   const titleHasProductive = title ? isProductiveText(title) : false;
   const titleHasEntertainment = title ? isEntertainmentText(title) : false;

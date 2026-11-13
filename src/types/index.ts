@@ -591,6 +591,7 @@ export interface FocusSetup {
   camera_permission: string;
   browser: BrowserStatus;
   pairing_token: string;
+  default_browser?: string;
 }
 export const defaultFocus: FocusConfig = {
   mode: 'standard',

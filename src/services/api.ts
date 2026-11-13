@@ -18,6 +18,7 @@ export const emptySnapshot: Snapshot = {
 export const api = {
   openSetup: (
     target:
+      | 'install_extension'
       | 'extensions'
       | 'extension_folder'
       | 'camera_settings'

@@ -886,6 +886,67 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
     ).toBe(true);
   });
 
+  it('never clicks autonav toggle on non-watch pages or inside preview/card elements on hover', async () => {
+    let homeAutonavClicks = 0;
+    const homeAutonavBtn = {
+      getAttribute: (k) => (k === 'aria-checked' ? 'true' : null),
+      click: () => {
+        homeAutonavClicks++;
+      },
+    };
+    // 1. On homepage: even with disableAutoplay=true and a hovered preview in DOM, it is never clicked
+    loadIntegrated({
+      href: 'https://www.youtube.com/',
+      youtubeControls: { player: { disableAutoplay: true } },
+      query: (selector) => {
+        if (selector === '.ytp-autonav-toggle-button') return homeAutonavBtn;
+        return undefined;
+      },
+      onMessage: () => ({ policy: null, browsingClosed: false }),
+    });
+    await settle();
+    expect(homeAutonavClicks).toBe(0);
+
+    // 2. On watch page: preview/card autonav buttons are never clicked, only main watch player is clicked
+    let previewClicks = 0;
+    let mainClicks = 0;
+    const previewBtn = {
+      getAttribute: (k) => (k === 'aria-checked' ? 'true' : null),
+      closest: (sel) => (sel === '#inline-preview-player' ? {} : null),
+      click: () => {
+        previewClicks++;
+      },
+    };
+    const mainBtn = {
+      getAttribute: (k) => (k === 'aria-checked' ? 'true' : null),
+      closest: () => null,
+      click: () => {
+        mainClicks++;
+      },
+    };
+    loadIntegrated({
+      href: 'https://www.youtube.com/watch?v=watch12345',
+      youtubeControls: { player: { disableAutoplay: true } },
+      query: (selector) => {
+        if (
+          selector ===
+          'ytd-watch-flexy #movie_player, #player #movie_player, #movie_player'
+        ) {
+          return {
+            querySelector: (sel) =>
+              sel === '.ytp-autonav-toggle-button' ? mainBtn : null,
+          };
+        }
+        if (selector === '.ytp-autonav-toggle-button') return previewBtn;
+        return undefined;
+      },
+      onMessage: () => ({ policy: null, browsingClosed: false }),
+    });
+    await settle();
+    expect(previewClicks).toBe(0);
+    expect(mainClicks).toBe(1);
+  });
+
   it('applies dynamic DOM markers and clears blocked-channel card marks when a session ends', async () => {
     let policy = {
       id: 's1',

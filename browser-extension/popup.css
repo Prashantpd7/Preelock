@@ -127,24 +127,33 @@ button.status-badge.is-clickable {
 }
 .pair-close {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   background: transparent;
   border: 0;
   border-radius: 6px;
   color: #8f9b8f;
-  font:
-    600 14px/1 system-ui,
-    -apple-system,
-    sans-serif;
   cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 .pair-close:hover {
   background: #252e26;
-  color: #e8ece8;
+  color: #f0f4f0;
+}
+.pair-close:focus-visible {
+  outline: 2px solid #a2ca7b;
+  outline-offset: 1px;
+}
+.pair-close svg {
+  pointer-events: none;
 }
 .pair-heading {
   font-size: 13px;

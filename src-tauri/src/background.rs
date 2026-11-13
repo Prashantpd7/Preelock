@@ -962,11 +962,14 @@ fn handle_ipc_request(
             engine.dismiss_blocked_app_page();
             IpcResponse::success(&true)
         }
-        IpcRequest::BrowserSetupInfo { browser_id } => IpcResponse::success(&BrowserSetupInfo {
-            browser: engine.browser_status_for(&browser_id),
-            connected_browsers: engine.connected_browsers(),
-            pairing_token: engine.pairing_token(),
-        }),
+        IpcRequest::BrowserSetupInfo { browser_id } => {
+            engine.ensure_bridge_ready();
+            IpcResponse::success(&BrowserSetupInfo {
+                browser: engine.browser_status_for(&browser_id),
+                connected_browsers: engine.connected_browsers(),
+                pairing_token: engine.pairing_token(),
+            })
+        }
         IpcRequest::NoteFrozenOverlayFailure => {
             engine.note_frozen_overlay_failure();
             IpcResponse::success(&true)

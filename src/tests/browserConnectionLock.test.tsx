@@ -142,7 +142,7 @@ describe('browser connection lock during a strict focus session', () => {
     render(<PermissionsPanel />);
     const user = await openBrowserModal();
     await user.click(
-      screen.getByRole('button', { name: 'Reset all browser connections' }),
+      screen.getByRole('button', { name: 'Disconnect every browser' }),
     );
     expect(await screen.findByRole('dialog')).toHaveTextContent(
       'Browser settings locked',
@@ -166,7 +166,7 @@ describe('browser connection lock during a strict focus session', () => {
     render(<PermissionsPanel />);
     const user = await openBrowserModal();
     await user.click(
-      screen.getByRole('button', { name: 'Reset all browser connections' }),
+      screen.getByRole('button', { name: 'Disconnect every browser' }),
     );
     expect(api.resetPairing).toHaveBeenCalledTimes(1);
     expect(
@@ -184,7 +184,7 @@ describe('browser connection lock during a strict focus session', () => {
     render(<PermissionsPanel />);
     const user = await openBrowserModal();
     await user.click(
-      screen.getByRole('button', { name: 'Reset all browser connections' }),
+      screen.getByRole('button', { name: 'Disconnect every browser' }),
     );
     expect(api.resetPairing).toHaveBeenCalledTimes(1);
     expect(
@@ -202,7 +202,7 @@ describe('browser connection lock during a strict focus session', () => {
     render(<PermissionsPanel />);
     const user = await openBrowserModal();
     await user.click(
-      screen.getByRole('button', { name: 'Reset all browser connections' }),
+      screen.getByRole('button', { name: 'Disconnect every browser' }),
     );
     expect(api.resetPairing).toHaveBeenCalledTimes(1);
     expect(
@@ -266,7 +266,15 @@ describe('browser connection lock during a strict focus session', () => {
       screen.getByRole('button', { name: 'Copy code' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Open Extensions' }),
+      screen.getByRole('button', { name: 'Add to Comet' }),
+    ).toBeInTheDocument();
+    // Changing the browser dropdown dynamically updates the installation button
+    await user.selectOptions(
+      screen.getByLabelText('Select browser'),
+      'com.google.chrome',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Add to Chrome' }),
     ).toBeInTheDocument();
 
     // Can navigate back to the connected list

@@ -336,13 +336,10 @@ impl IpcClient {
                 .ok_or_else(|| "Background engine IPC endpoint is not available.".to_string());
             match ep.and_then(|endpoint| send_http_rpc(&endpoint, req)) {
                 Ok(resp) => return Ok(resp),
-                Err(err) if attempts < 8 => {
+                Err(_err) if attempts < 12 => {
                     // Self-heal if background died unexpectedly between calls.
                     let _ = crate::background::ensure_running_headless(&self.data_dir);
-                    std::thread::sleep(Duration::from_millis(120));
-                    if attempts == 7 {
-                        return Err(err);
-                    }
+                    std::thread::sleep(Duration::from_millis(150));
                 }
                 Err(err) => return Err(err),
             }

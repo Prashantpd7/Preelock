@@ -382,7 +382,7 @@ it('shows Comet and stops unpaired website setup before session creation', async
     ),
   ).toHaveAttribute('role', 'alert');
   expect(
-    screen.getByRole('button', { name: 'Open Extensions' }),
+    screen.getByRole('button', { name: 'Add to Comet' }),
   ).toBeInTheDocument();
   expect(api.execute).not.toHaveBeenCalled();
 });

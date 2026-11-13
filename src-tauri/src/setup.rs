@@ -1,9 +1,13 @@
 //! Fixed setup actions. No arbitrary URLs or shell commands are accepted.
 use tauri::Manager;
 
+/// Official published extension listing URL on the Chrome Web Store.
+pub const EXTENSION_STORE_URL: &str =
+    "https://chromewebstore.google.com/detail/preelock/pfdhedjbablcphabdakgmdkiijddhepd";
+
 /// Bundle id of the user's default browser (macOS), via LaunchServices.
 #[cfg(target_os = "macos")]
-fn default_browser_id() -> Option<String> {
+pub fn default_browser_id() -> Option<String> {
     let script = "ObjC.import('AppKit'); const ws = $.NSWorkspace.sharedWorkspace; \
         const url = $.NSURL.URLWithString('https://example.com'); \
         const appUrl = ws.URLForApplicationToOpenURL(url); \
@@ -31,7 +35,7 @@ fn default_browser_id() -> Option<String> {
 /// Executable name of the user's default browser (Windows), via the
 /// https URL association in the registry.
 #[cfg(target_os = "windows")]
-fn default_browser_id() -> Option<String> {
+pub fn default_browser_id() -> Option<String> {
     let output = std::process::Command::new("reg")
         .args([
             "query",
@@ -62,6 +66,12 @@ fn default_browser_id() -> Option<String> {
     };
     Some(exe.to_string())
 }
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn default_browser_id() -> Option<String> {
+    None
+}
+
 pub fn extension_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let source = app
         .path()
@@ -195,7 +205,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                 let id = launch_target(browser_id)?;
                 cmd.args(["-b", &id]);
             }
-            "extensions" => {
+            "install_extension" | "extensions" => {
                 // Empty id = use the user's default browser.
                 let default_id;
                 let resolved: &str = if browser_id.is_empty() {
@@ -210,9 +220,15 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                     browser_id
                 };
                 if !crate::focus::supported_browser(resolved) {
-                    return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
+                    return Err("Your selected browser is not supported. Choose Chrome, Brave, Edge, Comet, or Vivaldi.".into());
                 }
-                cmd.args(["-b", resolved, "chrome://extensions/"]);
+                let installed = crate::platform::installed_browsers();
+                let resolved_id = installed
+                    .iter()
+                    .find(|b| b.id.eq_ignore_ascii_case(resolved))
+                    .map(|b| b.id.as_str())
+                    .unwrap_or(resolved);
+                cmd.args(["-b", resolved_id, EXTENSION_STORE_URL]);
             }
             _ => return Err("Unknown setup action.".into()),
         }
@@ -224,7 +240,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                 cmd = std::process::Command::new("explorer.exe");
                 cmd.arg(extension_dir(app)?);
             }
-            "extensions" => {
+            "install_extension" | "extensions" => {
                 // Empty id = use the user's default browser.
                 let default_id;
                 let resolved: &str =
@@ -243,7 +259,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                         browser_id
                     };
                 if !crate::focus::supported_browser(resolved) {
-                    return Err("Your default browser is not supported. Open Comet, Chrome, Edge, Brave or Vivaldi first.".into());
+                    return Err("Your selected browser is not supported. Choose Chrome, Brave, Edge, Comet, or Vivaldi.".into());
                 }
                 // When a specific browser was requested, verify it is installed.
                 // The default browser from the registry is resolved to its full
@@ -265,7 +281,7 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                     return Err("Open your browser first, then refresh.".into());
                 }
                 cmd = std::process::Command::new(matched_path.unwrap_or(resolved));
-                cmd.arg("chrome://extensions/");
+                cmd.arg(EXTENSION_STORE_URL);
             }
             "browser_download" => {
                 cmd = std::process::Command::new("explorer.exe");
@@ -302,7 +318,20 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
 }
 #[cfg(test)]
 mod download_links {
-    use super::{browser_download_url, launch_target};
+    use super::{browser_download_url, default_browser_id, launch_target, EXTENSION_STORE_URL};
+
+    #[test]
+    fn extension_store_url_is_official_chrome_web_store() {
+        assert_eq!(
+            EXTENSION_STORE_URL,
+            "https://chromewebstore.google.com/detail/preelock/pfdhedjbablcphabdakgmdkiijddhepd"
+        );
+    }
+
+    #[test]
+    fn default_browser_id_does_not_panic() {
+        let _ = default_browser_id();
+    }
     #[test]
     fn launch_refuses_anything_but_a_supported_browser_id() {
         // Empty, Safari, arbitrary URLs and shell strings never reach

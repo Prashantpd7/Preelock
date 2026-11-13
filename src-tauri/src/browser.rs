@@ -1141,9 +1141,10 @@ pub fn same_browser(id: &str, reported: &str) -> bool {
         "com.vivaldi.vivaldi" => "vivaldi.exe",
         "org.chromium.chromium" => "chromium.exe",
         "ai.perplexity.comet" => "comet.exe",
+        "com.operasoftware.opera" => "opera.exe",
         _ => return false,
     };
-    id.ends_with(&format!("\\{exe}"))
+    id == exe || id.ends_with(&format!("\\{exe}")) || id.ends_with(&format!("/{exe}"))
 }
 /// Comet ships a Chrome-identical user agent and brand list, so the
 /// extension reports it as Chrome. When this machine has Comet installed
@@ -1200,6 +1201,9 @@ mod tests {
             r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
             "com.brave.browser"
         ));
+        assert!(same_browser("brave.exe", "com.brave.browser"));
+        assert!(same_browser("c:/apps/brave/brave.exe", "com.brave.browser"));
+        assert!(same_browser("opera.exe", "com.operasoftware.opera"));
         // Unidentified, unsupported and unrelated identities are refused.
         assert!(!supported_extension_browser(""));
         assert!(!supported_extension_browser("com.operasoftware.opera"));

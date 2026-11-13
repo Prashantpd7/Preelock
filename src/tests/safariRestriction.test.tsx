@@ -166,7 +166,7 @@ describe('Safari is refused for session website blocking', () => {
       await screen.findByText(/Browser is not connected/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /Open Extensions/ }),
+      screen.getByRole('button', { name: /Add to Brave/ }),
     ).toBeInTheDocument();
     expect(mocked.focusSetup).toHaveBeenCalledWith('com.brave.Browser');
   });

@@ -117,9 +117,18 @@ pub fn installed_browsers() -> Vec<Application> {
         ("org.chromium.Chromium", "Chromium", "Chromium.app"),
         ("ai.perplexity.comet", "Comet", "Comet.app"),
     ];
+    let user_apps = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Applications"))
+        .ok();
     known
         .iter()
-        .filter(|(_, _, app)| std::path::Path::new("/Applications").join(app).exists())
+        .filter(|(_, _, app)| {
+            std::path::Path::new("/Applications").join(app).exists()
+                || user_apps
+                    .as_ref()
+                    .map(|p| p.join(app).exists())
+                    .unwrap_or(false)
+        })
         .map(|(id, name, _)| Application {
             id: id.to_string(),
             name: name.to_string(),
