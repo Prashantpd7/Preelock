@@ -135,3 +135,5 @@ pub fn installed_browsers() -> Vec<Application> {
         })
         .collect()
 }
+
+pub fn register_application_restart(_args: &str) {}

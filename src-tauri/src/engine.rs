@@ -3564,9 +3564,16 @@ mod tests {
     // into the other tests, so a poisoned guard is recovered.
     static FIXED_PORT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn fixed_port_guard() -> std::sync::MutexGuard<'static, ()> {
-        FIXED_PORT_GUARD
+        let guard = FIXED_PORT_GUARD
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for _ in 0..50 {
+            if !Bridge::port_listening(browser::PORT) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        guard
     }
 
     /// M4: wait for a stopped bridge server thread to go stale
@@ -3680,9 +3687,19 @@ mod tests {
         drop(holder_bridge);
         // Simulate the retry window passing (the throttle itself is
         // asserted above; waiting 5 s here would only test the clock).
-        engine.bridge_retry_at = 0;
-        engine.ensure_bridge();
-        assert!(engine.bridge.is_some());
+        for _ in 0..50 {
+            engine.bridge_retry_at = 0;
+            engine.ensure_bridge();
+            if engine.bridge.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            engine.bridge.is_some(),
+            "Bridge failed to start: {}",
+            engine.bridge_error
+        );
         assert!(engine.bridge_error.is_empty());
     }
 

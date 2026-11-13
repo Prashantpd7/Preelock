@@ -644,3 +644,13 @@ pub fn installed_browsers() -> Vec<super::Application> {
 pub fn app_icon(_identity: &str) -> Option<String> {
     None
 }
+
+pub fn register_application_restart(args: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Recovery::RegisterApplicationRestart;
+    let wide: Vec<u16> = OsStr::new(args).encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let _ = RegisterApplicationRestart(wide.as_ptr(), 0);
+    }
+}

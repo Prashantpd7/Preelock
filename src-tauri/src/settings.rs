@@ -322,7 +322,7 @@ impl Runtime {
             if let Some(tray) = app.tray_by_id("focus-controller") {
                 #[cfg(target_os = "windows")]
                 let _ = tray.set_tooltip(Some(if p.menu_timer {
-                    crate::tray::tooltip_text(live_session(data), now)
+                    crate::tray::tooltip_text(crate::tray::live_session(data), now as i64)
                 } else {
                     "Preelock".to_string()
                 }));
