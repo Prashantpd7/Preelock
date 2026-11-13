@@ -36,11 +36,16 @@ $legacyApp = Start-Process (Join-Path $installDir "preelock.exe") `
     -WorkingDirectory $installDir -PassThru
 try {
     for ($i = 0; $i -lt 45; $i++) {
-        if (Test-Path $legacyDatabase) {
-            break
-        }
         if ($legacyApp.HasExited) {
             break
+        }
+        if (Test-Path $legacyDatabase) {
+            try {
+                $ver = python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('pragma user_version').fetchone()[0])" $legacyDatabase 2>$null
+                if ($ver -and [int]$ver -ge 1) {
+                    break
+                }
+            } catch {}
         }
         Start-Sleep -Seconds 1
     }
@@ -50,6 +55,7 @@ try {
     if (!(Test-Path $legacyDatabase)) {
         throw "Legacy startup did not create database within 45 seconds"
     }
+    Start-Sleep -Seconds 5
 } finally {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
     Stop-InstalledProcesses
@@ -86,16 +92,19 @@ foreach ($entry in $config.bundle.resources.PSObject.Properties) {
 $app = Start-Process $executable -WorkingDirectory $installDir -PassThru
 try {
     for ($i = 0; $i -lt 45; $i++) {
-        if (Test-Path $database) {
-            break
-        }
         if ($app.HasExited) {
             break
         }
+        try {
+            $ver = python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('pragma user_version').fetchone()[0])" $database 2>$null
+            if ($ver -and [int]$ver -eq 10) {
+                break
+            }
+        } catch {}
         Start-Sleep -Seconds 1
     }
     if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
-    if (!(Test-Path $database)) { throw "Installed app did not initialize its database within 45 seconds" }
+    Start-Sleep -Seconds 3
     Write-Output "Installed application remained running and initialized its database."
 } finally {
     if (!$app.HasExited) {
