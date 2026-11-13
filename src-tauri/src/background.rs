@@ -38,7 +38,7 @@ const HEARTBEAT: &str = "background-heartbeat";
 const DESKTOP_HEARTBEAT: &str = "desktop-heartbeat";
 const SERVICE_STATUS_FILE: &str = "background-service-status.json";
 const META_FILE: &str = "background-meta.json";
-#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
