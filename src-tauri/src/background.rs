@@ -38,6 +38,7 @@ const HEARTBEAT: &str = "background-heartbeat";
 const DESKTOP_HEARTBEAT: &str = "desktop-heartbeat";
 const SERVICE_STATUS_FILE: &str = "background-service-status.json";
 const META_FILE: &str = "background-meta.json";
+#[cfg(target_os = "macos")]
 const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
@@ -316,6 +317,7 @@ pub(crate) fn scheduled_task_xml(exe: &str) -> String {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn app_bundle_root(exe: &Path) -> Option<PathBuf> {
     exe.ancestors().find_map(|ancestor| {
         (ancestor.extension().is_some_and(|e| e == "app")
