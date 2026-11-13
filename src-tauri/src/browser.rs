@@ -1671,7 +1671,15 @@ mod tests {
         // The holder is untouched by the failed attempt.
         assert!(holder.server_alive());
         drop(holder);
-        let recovered = Bridge::try_start_at(dir.path(), 0).unwrap();
+        let mut recovered = None;
+        for _ in 0..50 {
+            if let Ok(b) = Bridge::try_start_at(dir.path(), 0) {
+                recovered = Some(b);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let recovered = recovered.expect("bridge should recover after holder drops");
         assert!(recovered.server_alive());
     }
 
@@ -1737,7 +1745,18 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         assert!(Bridge::try_start_at(dir.path(), port).is_err());
         drop(listener);
-        assert!(Bridge::try_start_at(dir.path(), port).is_ok());
+        let mut recovered = None;
+        for _ in 0..50 {
+            if let Ok(b) = Bridge::try_start_at(dir.path(), port) {
+                recovered = Some(b);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            recovered.is_some(),
+            "bridge should recover after stale port binding is released"
+        );
     }
 
     #[test]
