@@ -556,6 +556,8 @@ pub fn web_permission() -> &'static str {
     "granted"
 }
 pub fn request_web_permission() {}
+pub fn redirect_safari_blocked() {}
+pub fn redirect_browser_blocked(_: &str) {}
 pub fn installed_browsers() -> Vec<super::Application> {
     use winreg::{enums::*, RegKey};
     let mut candidates = Vec::new();

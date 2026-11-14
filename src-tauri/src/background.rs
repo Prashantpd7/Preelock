@@ -43,8 +43,8 @@ const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
-pub const RELAUNCH_DELAY_MS: u64 = 5_000;
-pub const RELAUNCH_COOLDOWN_MS: u64 = 8_000;
+pub const RELAUNCH_DELAY_MS: u64 = 1_000;
+pub const RELAUNCH_COOLDOWN_MS: u64 = 5_000;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -225,12 +225,18 @@ fn lock_held(data_dir: &Path) -> bool {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn data_dir() -> Result<PathBuf, String> {
+    if let Some(custom) = std::env::var_os("PREELOCK_DATA_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join("Library/Application Support/com.preelock.desktop"))
         .ok_or("HOME is unavailable.".into())
 }
 #[cfg(target_os = "windows")]
 pub(crate) fn data_dir() -> Result<PathBuf, String> {
+    if let Some(custom) = std::env::var_os("PREELOCK_DATA_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
     std::env::var_os("APPDATA")
         .map(|appdata| PathBuf::from(appdata).join("com.preelock.desktop"))
         .ok_or("APPDATA is unavailable.".into())
@@ -743,6 +749,14 @@ impl UiRelaunchSupervisor {
             }
             return desktop_alive(data_dir);
         }
+        if let Ok(file) = std::fs::File::open(data_dir.join("gui.lock")) {
+            use fs2::FileExt;
+            if file.try_lock_exclusive().is_ok() {
+                let _ = file.unlock();
+                clear_desktop_heartbeat(data_dir);
+                return false;
+            }
+        }
         desktop_alive(data_dir)
     }
 
@@ -820,10 +834,7 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
     let gui = launch::gui_executable(&exe);
     #[cfg(target_os = "macos")]
     if let Some(bundle) = app_bundle_root(&gui) {
-        // Pass `-n` so LaunchServices launches a fresh GUI window instance even
-        // when the headless `--tray` accessory process is currently running.
         match Command::new("/usr/bin/open")
-            .arg("-n")
             .arg("-a")
             .arg(&bundle)
             .stdin(Stdio::null())
@@ -914,6 +925,10 @@ fn handle_ipc_request(
             clear_desktop_heartbeat(dir);
             let _ = engine.save_checkpoint();
             IpcResponse::success(&true)
+        }
+        IpcRequest::TestNotification { title, body } => {
+            crate::desktop_settings::notify(&title, &body);
+            IpcResponse::success(&serde_json::json!({ "sent": true }))
         }
         IpcRequest::Snapshot => match engine.snapshot() {
             Ok(s) => IpcResponse::success(&s),
@@ -1148,7 +1163,7 @@ pub fn run() -> i32 {
             }
 
             let ui_alive = supervisor.poll_ui_alive(&dir);
-            if !ui_alive && engine.has_active() {
+            if !ui_alive && engine.has_active() && !engine.has_active_strict() {
                 let _ = crate::tray::ensure_running(&dir);
             }
             if supervisor.evaluate(
@@ -1216,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_relaunch_supervisor_only_relaunches_after_5s_during_active_strict() {
+    fn ui_relaunch_supervisor_only_relaunches_after_1s_during_active_strict() {
         let mut sup = UiRelaunchSupervisor::default();
 
         // Idle or non-strict never relaunches regardless of elapsed absence.
@@ -1227,22 +1242,22 @@ mod tests {
         sup.mark_ui_alive(1234);
         assert!(!sup.evaluate(25_000, true, true, false));
 
-        // Cmd+Q / Force Quit -> missing for < 5s does not relaunch early.
+        // Cmd+Q / Force Quit -> missing for < 1s does not relaunch early.
         assert!(!sup.evaluate(30_000, true, false, false));
-        assert!(!sup.evaluate(34_999, true, false, false));
+        assert!(!sup.evaluate(30_999, true, false, false));
 
-        // Reaches ~5s missing -> relaunches once!
-        assert!(sup.evaluate(35_000, true, false, false));
+        // Reaches ~1s missing -> relaunches once!
+        assert!(sup.evaluate(31_000, true, false, false));
         // Cooldown prevents duplicate spawns while GUI is booting.
+        assert!(!sup.evaluate(31_500, true, false, false));
         assert!(!sup.evaluate(35_500, true, false, false));
-        assert!(!sup.evaluate(40_500, true, false, false));
 
         // OS shutdown suppresses relaunch even in active strict.
         assert!(!sup.evaluate(50_000, true, false, true));
 
-        // Strict ends before 5s elapses -> timer cancelled, never relaunches.
+        // Strict ends before 1s elapses -> timer cancelled, never relaunches.
         assert!(!sup.evaluate(60_000, true, false, false));
-        assert!(!sup.evaluate(62_000, false, false, false));
+        assert!(!sup.evaluate(60_500, false, false, false));
         assert!(!sup.evaluate(70_000, false, false, false));
     }
 

@@ -269,6 +269,23 @@ pub fn login(on: bool) -> Result<(), String> {
 pub fn permission() -> bool {
     info().is_ok_and(|i| i["notifications"] == 2)
 }
+pub fn ensure_aumid_registered() {
+    if is_packaged() {
+        return;
+    }
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(r"Software\Classes\AppUserModelId\com.preelock.desktop")
+    {
+        let _ = key.set_value("DisplayName", &"Preelock");
+        let _ = key.set_value("ShowInSettings", &1u32);
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = key.set_value("IconUri", &exe.to_string_lossy().to_string());
+        }
+    }
+}
+pub fn request_authorization() {
+    ensure_aumid_registered();
+}
 /// Whether an OS notification can be shown from this process.
 /// When the GUI handle is installed, notifications use Tauri's plugin;
 /// in `--background`, notifications use Windows ToastNotificationManager
@@ -293,9 +310,10 @@ fn notify_headless_toast(title: &str, body: &str) -> Result<(), String> {
         Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED},
         UI::Notifications::{ToastNotification, ToastNotificationManager},
     };
+    ensure_aumid_registered();
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
     let xml = format!(
-        "<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text><text id=\"2\">{}</text></binding></visual></toast>",
+        "<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text><text id=\"2\">{}</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>",
         escape_toast_xml(title),
         escape_toast_xml(body)
     );

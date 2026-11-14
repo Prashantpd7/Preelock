@@ -11,11 +11,13 @@ static void onMain(dispatch_block_t work) {
     if ([NSThread isMainThread]) {
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
         work();
-    } else {
+    } else if (NSApp != nil && [NSApp isRunning]) {
         dispatch_sync(dispatch_get_main_queue(), ^{
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             work();
         });
+    } else {
+        work();
     }
 }
 static char *json(id object) {
@@ -92,7 +94,19 @@ char *preelock_sample(void) {
             // them. Title is the frontmost window's title (step 4.2).
             NSString *ident = app.bundleIdentifier.length ? app.bundleIdentifier : exe;
             NSString *path = bundlePath.length ? bundlePath : exe;
-            result = json(@{@"id": ident ?: @"", @"name":displayNameForApp(app) ?: @"", @"pid":@(app.processIdentifier), @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000)), @"path":path ?: @"", @"title":frontmostWindowTitle(app.processIdentifier)});
+            boolean_t asleep = CGDisplayIsAsleep(CGMainDisplayID());
+            NSDictionary *sessionDict = CFBridgingRelease(CGSessionCopyCurrentDictionary());
+            BOOL locked = [sessionDict[@"CGSSessionScreenIsLocked"] boolValue];
+            result = json(@{
+                @"id": ident ?: @"",
+                @"name":displayNameForApp(app) ?: @"",
+                @"pid":@(app.processIdentifier),
+                @"idle_ms":@((uint64_t)(CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)*1000)),
+                @"path":path ?: @"",
+                @"title":frontmostWindowTitle(app.processIdentifier),
+                @"display_asleep": (asleep != 0) ? (id)kCFBooleanTrue : (id)kCFBooleanFalse,
+                @"screen_locked": (locked != 0 || [ident isEqualToString:@"com.apple.loginwindow"]) ? (id)kCFBooleanTrue : (id)kCFBooleanFalse
+            });
         });
         return result;
     }
@@ -176,8 +190,64 @@ static BOOL looksLikeAddress(NSString *value) {
     }
     return YES;
 }
+static NSString *safariCurrentURL(void) {
+    NSDictionary *error = nil;
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
+        @"tell application \"Safari\"\n"
+        @"  if (count of windows) > 0 then\n"
+        @"    return URL of current tab of front window\n"
+        @"  end if\n"
+        @"end tell"];
+    NSAppleEventDescriptor *desc = [script executeAndReturnError:&error];
+    if (desc && desc.stringValue) {
+        return desc.stringValue;
+    }
+    return @"";
+}
+void preelock_redirect_safari_blocked(void) {
+    @autoreleasepool {
+        NSDictionary *error = nil;
+        NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
+            @"tell application \"Safari\"\n"
+            @"  if (count of windows) > 0 then\n"
+            @"    set URL of current tab of front window to \"about:blank\"\n"
+            @"  end if\n"
+            @"end tell"];
+        [script executeAndReturnError:&error];
+    }
+}
+void preelock_redirect_browser_blocked(const char *appName) {
+    @autoreleasepool {
+        if (!appName || strlen(appName) == 0) return;
+        NSString *name = [NSString stringWithUTF8String:appName];
+        if ([name containsString:@"Safari"]) {
+            preelock_redirect_safari_blocked();
+            return;
+        }
+        // Maps bundle id or binary names to application name for AppleScript
+        NSString *targetName = name;
+        if ([name containsString:@"chrome"] || [name containsString:@"Chrome"]) {
+            targetName = @"Google Chrome";
+        } else if ([name containsString:@"brave"] || [name containsString:@"Brave"]) {
+            targetName = @"Brave Browser";
+        } else if ([name containsString:@"edge"] || [name containsString:@"Edge"]) {
+            targetName = @"Microsoft Edge";
+        } else if ([name containsString:@"arc"] || [name containsString:@"Arc"]) {
+            targetName = @"Arc";
+        }
+        NSString *source = [NSString stringWithFormat:
+            @"tell application \"%@\"\n"
+            @"  if (count of windows) > 0 then\n"
+            @"    set URL of active tab of front window to \"about:blank\"\n"
+            @"  end if\n"
+            @"end tell", targetName];
+        NSDictionary *error = nil;
+        NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
+        [script executeAndReturnError:&error];
+    }
+}
 static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
-    if (depth > 4 || *budget <= 0) return @"";
+    if (depth > 12 || *budget <= 0) return @"";
     (*budget)--;
     NSString *role = axStringAttr(element, kAXRoleAttribute);
     if ([role isEqualToString:@"AXTextField"] || [role isEqualToString:@"AXComboBox"]) {
@@ -201,15 +271,29 @@ static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
 }
 char *preelock_web_sample(void) {
     @autoreleasepool {
+        __block pid_t pid = 0;
+        __block NSString *bundleId = @"";
+        onMain(^{
+            NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
+            if (app) {
+                pid = app.processIdentifier;
+                bundleId = app.bundleIdentifier ?: @"";
+            }
+        });
+        if (pid <= 0) return strdup("{\"url\":\"\",\"status\":\"no_url\"}");
+
+        // If frontmost application is Safari, query directly via AppleScript.
+        if ([bundleId isEqualToString:@"com.apple.Safari"]) {
+            NSString *sUrl = safariCurrentURL();
+            if (sUrl.length > 0) {
+                return json(@{@"url": sUrl, @"status": @"ok"});
+            }
+        }
+
         if (!AXIsProcessTrusted()) {
             return strdup("{\"url\":\"\",\"status\":\"permission_required\"}");
         }
-        __block pid_t pid = 0;
-        onMain(^{
-            NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
-            if (app) pid = app.processIdentifier;
-        });
-        if (pid <= 0) return strdup("{\"url\":\"\",\"status\":\"no_url\"}");
+
         // The Accessibility query runs off the main thread: it can block
         // while the browser builds its tree, and Preelock's UI must not.
         AXUIElementRef application = AXUIElementCreateApplication(pid);
@@ -220,7 +304,7 @@ char *preelock_web_sample(void) {
             int budget = 600;
             url = axURLFromWebArea((AXUIElementRef)window, 0, &budget);
             if (url.length == 0) {
-                int barBudget = 200;
+                int barBudget = 400;
                 url = axAddressBar((AXUIElementRef)window, 0, &barBudget);
             }
             CFRelease(window);
@@ -353,32 +437,67 @@ int preelock_notification_permission(void) {
     if (!bundled) return 0;
     __block BOOL granted = NO;
     dispatch_semaphore_t wait = dispatch_semaphore_create(0);
-    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed, NSError *error) {
+    UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:options completionHandler:^(BOOL allowed, NSError *error) {
         granted = allowed && !error; dispatch_semaphore_signal(wait);
     }];
     dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 60*NSEC_PER_SEC));
     return granted;
+}
+void preelock_request_notification_authorization(void) {
+    BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
+        [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
+    if (!bundled) return;
+    UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:options completionHandler:^(BOOL allowed, NSError *error) {
+        (void)allowed;
+        if (error) {
+            NSLog(@"Preelock notification authorization error: %@", error.localizedDescription);
+        }
+    }];
 }
 @interface VYAlerts : NSObject <UNUserNotificationCenterDelegate>
 @end
 @implementation VYAlerts
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center; (void)notification;
-    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList);
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
 }
 @end
 void preelock_notify(const char *title, const char *body) {
-    // Skip silently without an .app bundle (dev mode) — the API would crash.
     BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
         [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
-    if (!bundled) return;
+    if (!bundled) {
+        // Fallback for development/unbundled test mode: trigger macOS notification via osascript
+        @autoreleasepool {
+            NSString *nsTitle = [NSString stringWithUTF8String:title ? title : "Preelock"];
+            NSString *nsBody = [NSString stringWithUTF8String:body ? body : ""];
+            NSString *escapedTitle = [nsTitle stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+            NSString *escapedBody = [nsBody stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+            NSString *script = [NSString stringWithFormat:@"display notification \"%@\" with title \"%@\" sound name \"default\"", escapedBody, escapedTitle];
+            NSTask *task = [NSTask new];
+            task.launchPath = @"/usr/bin/osascript";
+            task.arguments = @[@"-e", script];
+            [task launch];
+        }
+        return;
+    }
     static VYAlerts *delegate;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{delegate=[VYAlerts new]; UNUserNotificationCenter.currentNotificationCenter.delegate=delegate;});
+    dispatch_once(&once, ^{
+        delegate = [VYAlerts new];
+        UNUserNotificationCenter.currentNotificationCenter.delegate = delegate;
+    });
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-    content.title = [NSString stringWithUTF8String:title]; content.body = [NSString stringWithUTF8String:body];
+    content.title = [NSString stringWithUTF8String:title ? title : "Preelock"];
+    content.body = [NSString stringWithUTF8String:body ? body : ""];
+    content.sound = [UNNotificationSound defaultSound];
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil];
-    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) { if (error) NSLog(@"Preelock notification unavailable: %@", error.localizedDescription); }];
+    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+        if (error) {
+            NSLog(@"Preelock notification unavailable: %@", error.localizedDescription);
+        }
+    }];
 }
 void preelock_sound(float volume) {
     if (volume <= 0.0f) return;

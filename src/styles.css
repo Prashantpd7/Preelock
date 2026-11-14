@@ -2737,3 +2737,132 @@ button.screen-time-category:focus-visible {
   color: var(--muted);
   white-space: nowrap;
 }
+
+/* Adult Website Block Section */
+.adult-block-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+}
+.adult-block-toggle-meta {
+  flex: 1;
+  min-width: 0;
+}
+.adult-block-toggle-meta strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 3px;
+}
+.adult-block-toggle-meta p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.adult-block-strict-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.adult-block-strict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.adult-block-strict-meta {
+  flex: 1;
+  min-width: 140px;
+}
+.adult-block-strict-meta strong,
+.adult-block-strict-meta .screen-time-lock-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.adult-block-strict-meta p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.adult-block-strict-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.adult-block-compact-chips {
+  display: inline-flex;
+  gap: 6px;
+}
+.adult-block-compact-chips button {
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.adult-block-compact-chips button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.adult-block-compact-chips button[aria-pressed='true'] {
+  background: var(--accent);
+  color: #172213;
+  border-color: transparent;
+  font-weight: 600;
+}
+.adult-block-countdown-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.adult-block-countdown-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.adult-block-countdown-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--amber, #f59e0b);
+  font-weight: 600;
+  font-size: 13px;
+}
+.adult-block-locked-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.adult-block-strict-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.adult-block-strict-note strong {
+  color: var(--text);
+}

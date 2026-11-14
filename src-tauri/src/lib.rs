@@ -1,3 +1,4 @@
+pub mod adult_block;
 mod allowances;
 mod applocks;
 pub mod attention;
@@ -44,6 +45,22 @@ use std::sync::{
 
 #[derive(Default)]
 struct ExitApproved(AtomicBool);
+
+pub struct GuiLock {
+    _file: std::fs::File,
+}
+
+impl GuiLock {
+    pub fn try_acquire(dir: &std::path::Path) -> Option<Self> {
+        use fs2::FileExt;
+        let file = std::fs::File::create(dir.join("gui.lock")).ok()?;
+        if file.try_lock_exclusive().is_ok() {
+            Some(Self { _file: file })
+        } else {
+            None
+        }
+    }
+}
 /// M6: whether the main window was auto-hidden at this launch
 /// (login launch, idle, no user login preference — see
 /// `quit::login_window_action`). While set, the idle tray menu
@@ -449,7 +466,15 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_notification::init());
     let result = builder
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let dir = std::env::var_os("PREELOCK_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| app.path().app_data_dir().unwrap_or_default());
+            let Some(gui_lock) = GuiLock::try_acquire(&dir) else {
+                log::info!("Another Preelock GUI instance is already running; focusing existing window and exiting.");
+                std::process::exit(0);
+            };
+            app.manage(gui_lock);
+            desktop_settings::request_authorization();
             migrate_legacy_data(&dir)?;
             std::fs::create_dir_all(&dir)?;
             background::ensure_running(&dir).map_err(std::io::Error::other)?;
@@ -520,6 +545,8 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
+            } else {
+                show_window(app.handle());
             }
             let app_handle = app.handle();
             let (initial_menu, mut showing_timer) = {

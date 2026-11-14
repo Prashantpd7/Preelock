@@ -415,11 +415,11 @@ pub fn accrue_for_tick(
     in_break: bool,
     usage: &TickUsage<'_>,
 ) -> bool {
-    if in_break || delta_ms == 0 || delta_ms > 3000 {
+    if in_break || delta_ms == 0 || delta_ms > 5000 {
         return false;
     }
     let mut changed = false;
-    if usage.sample_available && !usage.sample_id.is_empty() && usage.sample_idle_ms < 60_000 {
+    if usage.sample_available && !usage.sample_id.is_empty() && usage.sample_idle_ms < 180_000 {
         for allowance in allowances.iter_mut() {
             if allowance.enabled && matches_app(allowance, usage.sample_id) {
                 accrue(allowance, now_ms, delta_ms);
@@ -430,7 +430,7 @@ pub fn accrue_for_tick(
     if !usage.browser_domain.is_empty() && usage.browser_activity_fresh && usage.browser_focused {
         let browser_frontmost = if usage.sample_available {
             !usage.sample_id.is_empty()
-                && usage.sample_idle_ms < 60_000
+                && usage.sample_idle_ms < 180_000
                 && (ids_match(usage.sample_id, usage.browser_client_id)
                     || ids_match(usage.sample_id, usage.session_browser_app))
         } else {
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(used_ms(&list[0], now), 1000);
         // Idle ticks do not (the user is away, not using the site).
         let idle = TickUsage {
-            sample_idle_ms: 60_000,
+            sample_idle_ms: 180_000,
             ..usage
         };
         assert!(!accrue_for_tick(

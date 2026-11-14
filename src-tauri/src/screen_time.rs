@@ -29,6 +29,8 @@ pub struct Attribution<'a> {
     pub browser_focused: bool,
     /// The extension report is newer than the freshness window.
     pub activity_fresh: bool,
+    /// Whether audio/video media is actively playing in the foreground browser tab.
+    pub media_playing: bool,
     /// Native (extension-free) observation of the foreground app's active
     /// page: the browser id the OS adapter sampled for, and the validated
     /// hostname. Both empty when the adapter had nothing verifiable
@@ -36,8 +38,12 @@ pub struct Attribution<'a> {
     /// page, non-browser foreground app).
     pub native_app: &'a str,
     pub native_domain: &'a str,
-    /// Length of the interval in ms (must be <= 3000 to be credited).
+    /// Length of the interval in ms (must be <= 5000 to be credited).
     pub delta: u64,
+    /// Whether the display is sleeping.
+    pub display_asleep: bool,
+    /// Whether the computer screen is locked.
+    pub screen_locked: bool,
 }
 
 /// The core mutual-exclusion accounting rule. Every interval is credited
@@ -56,11 +62,11 @@ pub struct Attribution<'a> {
 /// is never added to it, so an interval can never land in both buckets,
 /// and the extension and native sources can never both be credited.
 /// Returns `None` for intervals that must not be credited at all (idle
-/// over 60 s, an empty foreground id, a zero/gap delta).
+/// beyond active reading/working threshold, an empty foreground id, a zero/gap delta).
 /// The lock screen is never user activity: on macOS the frontmost
 /// app while locked is the login window, on Windows it is LogonUI.
 /// The idle rule below already drops locked intervals once idle
-/// passes 60 s, but the first minute after locking would otherwise
+/// passes the threshold, but the first span after locking would otherwise
 /// be credited to the login window as application usage. Only
 /// these two identities are excluded — every other protected app
 /// (Finder, System Preferences, Preelock itself) is real foreground
@@ -76,11 +82,26 @@ fn is_lock_screen_app(app_id: &str) -> bool {
 
 pub fn attribute_interval(input: &Attribution<'_>) -> Option<ScreenTimeBucket> {
     if input.delta == 0
-        || input.delta > 3000
+        || input.delta > 5000
         || input.app_id.is_empty()
-        || input.idle_ms >= 60_000
+        || input.display_asleep
+        || input.screen_locked
         || is_lock_screen_app(input.app_id)
     {
+        return None;
+    }
+    // Realistic desktop activity tracking threshold:
+    // When media (YouTube, video, audio) is playing in the focused foreground browser,
+    // the user is actively watching/listening without moving the mouse (up to 30m).
+    // For general desktop apps, reading, and coding, 10 minutes (600s) allows normal reading,
+    // reviewing code/docs, and thinking without losing screen time, while still
+    // dropping intervals once the user steps away from their desk (> 10m) or display sleeps.
+    let idle_limit_ms = if input.media_playing {
+        1_800_000
+    } else {
+        600_000
+    };
+    if input.idle_ms >= idle_limit_ms {
         return None;
     }
     // One decision for both sources (see websites::credited): the
@@ -149,9 +170,12 @@ pub fn sample_buckets_with_native(
         active_domain: &browser.active_domain,
         browser_focused: browser.browser_focused,
         activity_fresh: browser.activity_fresh,
+        media_playing: browser.media_playing,
         native_app: native.map(|n| n.app.as_str()).unwrap_or(""),
         native_domain: native.map(|n| n.domain.as_str()).unwrap_or(""),
         delta,
+        display_asleep: sample.display_asleep,
+        screen_locked: sample.screen_locked,
     }) {
         buckets.push(bucket);
     }
@@ -222,6 +246,8 @@ mod tests {
             idle_ms,
             path: String::new(),
             title: String::new(),
+            display_asleep: false,
+            screen_locked: false,
         }
     }
 
@@ -752,11 +778,48 @@ mod tests {
     #[test]
     fn idle_interval_is_never_credited() {
         let b = status("com.google.chrome", "instagram.com", true, true);
-        let idle = sample("com.google.Chrome", "Google Chrome", 60_000);
+        // Exceeded stepped-away threshold (600s / 10m) -> dropped
+        let idle = sample("com.google.Chrome", "Google Chrome", 600_000);
         assert!(sample_buckets(1, 1000, &idle, &b).is_empty());
+        // Normal active reading/working (5m idle) -> credited
+        let reading = sample("com.google.Chrome", "Google Chrome", 300_000);
+        assert_one(
+            &sample_buckets(1, 1000, &reading, &b),
+            "site",
+            "instagram.com",
+            1000,
+        );
+        // Media playing (video/audio) allows watching up to 30m without mouse movements
+        let mut b_media = status("com.google.chrome", "youtube.com", true, true);
+        b_media.media_playing = true;
+        let watching = sample("com.google.Chrome", "Google Chrome", 900_000); // 15 min idle while watching
+        assert_one(
+            &sample_buckets(1, 1000, &watching, &b_media),
+            "site",
+            "youtube.com",
+            1000,
+        );
+        let max_media_idle = sample("com.google.Chrome", "Google Chrome", 1_800_000);
+        assert!(sample_buckets(1, 1000, &max_media_idle, &b_media).is_empty());
+
+        // Display asleep or screen locked drops intervals immediately
+        let mut asleep_sample = sample("com.google.Chrome", "Google Chrome", 0);
+        asleep_sample.display_asleep = true;
+        assert!(sample_buckets(1, 1000, &asleep_sample, &b).is_empty());
+
+        let mut locked_sample = sample("com.google.Chrome", "Google Chrome", 0);
+        locked_sample.screen_locked = true;
+        assert!(sample_buckets(1, 1000, &locked_sample, &b).is_empty());
+
         let active = sample("com.google.Chrome", "Google Chrome", 0);
         assert!(sample_buckets(1, 0, &active, &b).is_empty());
-        assert!(sample_buckets(1, 3001, &active, &b).is_empty());
+        assert!(sample_buckets(1, 5001, &active, &b).is_empty());
+        assert_one(
+            &sample_buckets(1, 4500, &active, &b),
+            "site",
+            "instagram.com",
+            4500,
+        );
     }
 
     #[test]
@@ -801,5 +864,196 @@ mod tests {
             buckets[0].day_ms,
             crate::screen_time::local_day_start_ms(1_800_000_000_000)
         );
+    }
+
+    #[test]
+    fn test_cases_a_through_e_screen_time_attribution() {
+        let day = local_day_start_ms(1_800_000_000_000);
+        let chrome_app = sample("com.google.Chrome", "Google Chrome", 0);
+        let brave_app = sample("com.brave.Browser", "Brave Browser", 0);
+        let safari_app = sample("com.apple.Safari", "Safari", 0);
+
+        // Case A: Blank / New Tab in browser -> counted as browser application usage (website = 0)
+        {
+            let mut totals = Vec::new();
+            let new_tab = status("com.google.chrome", "", true, true);
+            for _ in 0..600 {
+                // 10 minutes = 600 * 1000ms
+                credit(
+                    &mut totals,
+                    sample_buckets(day, 1000, &chrome_app, &new_tab),
+                );
+            }
+            assert_eq!(totals.len(), 1);
+            assert_eq!(totals[0].kind, "app");
+            assert_eq!(totals[0].target, "com.google.Chrome");
+            assert_eq!(totals[0].ms, 10 * 60_000);
+            let site_total: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "site")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(site_total, 0, "website usage must be 0 for blank/new tab");
+        }
+
+        // Case B: Active website in browser -> counted to that website; NOT counted as browser app
+        {
+            let mut totals = Vec::new();
+            let youtube = status("com.google.chrome", "youtube.com", true, true);
+            for _ in 0..480 {
+                // 8 minutes
+                credit(
+                    &mut totals,
+                    sample_buckets(day, 1000, &chrome_app, &youtube),
+                );
+            }
+            assert_eq!(totals.len(), 1);
+            assert_eq!(totals[0].kind, "site");
+            assert_eq!(totals[0].target, "youtube.com");
+            assert_eq!(totals[0].ms, 8 * 60_000);
+            let app_total: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "app")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(
+                app_total, 0,
+                "browser app usage must not double-count during website usage"
+            );
+            assert_eq!(total(&totals), 8 * 60_000);
+        }
+
+        // Case C: Website switching -> attribution strictly follows active sites
+        {
+            let mut totals = Vec::new();
+            let yt = status("com.google.chrome", "youtube.com", true, true);
+            let gh = status("com.google.chrome", "github.com", true, true);
+            let goog = status("com.google.chrome", "google.com", true, true);
+            for _ in 0..300 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &yt));
+            } // 5m
+            for _ in 0..600 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &gh));
+            } // 10m
+            for _ in 0..180 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &goog));
+            } // 3m
+            assert_eq!(total(&totals), 18 * 60_000);
+            let yt_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "youtube.com")
+                .map(|b| b.ms)
+                .sum();
+            let gh_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "github.com")
+                .map(|b| b.ms)
+                .sum();
+            let goog_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "google.com")
+                .map(|b| b.ms)
+                .sum();
+            let app_ms: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "app")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(yt_ms, 5 * 60_000);
+            assert_eq!(gh_ms, 10 * 60_000);
+            assert_eq!(goog_ms, 3 * 60_000);
+            assert_eq!(app_ms, 0);
+        }
+
+        // Case D: Website to blank tab -> site time stops, browser app usage accrues
+        {
+            let mut totals = Vec::new();
+            let yt = status("com.google.chrome", "youtube.com", true, true);
+            let blank = status("com.google.chrome", "", true, true);
+            let gh = status("com.google.chrome", "github.com", true, true);
+            for _ in 0..300 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &yt));
+            } // 5m site
+            for _ in 0..120 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &blank));
+            } // 2m app
+            for _ in 0..240 {
+                credit(&mut totals, sample_buckets(day, 1000, &chrome_app, &gh));
+            } // 4m site
+            assert_eq!(total(&totals), 11 * 60_000);
+            let app_ms: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "app")
+                .map(|b| b.ms)
+                .sum();
+            let site_ms: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "site")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(app_ms, 2 * 60_000);
+            assert_eq!(site_ms, 9 * 60_000);
+        }
+
+        // Case E: Switching between browsers -> foreground browser and active website attributed cleanly
+        {
+            let mut totals = Vec::new();
+            // Chrome with YouTube
+            let chrome_yt = status("com.google.chrome", "youtube.com", true, true);
+            for _ in 0..240 {
+                credit(
+                    &mut totals,
+                    sample_buckets(day, 1000, &chrome_app, &chrome_yt),
+                );
+            } // 4m
+              // Switch to Brave with GitHub
+            let brave_gh = status("com.brave.browser", "github.com", true, true);
+            for _ in 0..360 {
+                credit(
+                    &mut totals,
+                    sample_buckets(day, 1000, &brave_app, &brave_gh),
+                );
+            } // 6m
+              // Switch to Safari (via native observation)
+            let safari_obs = native("com.apple.Safari", "apple.com");
+            let disconnected = status("", "", false, false);
+            for _ in 0..180 {
+                credit(
+                    &mut totals,
+                    sample_buckets_with_native(
+                        day,
+                        1000,
+                        &safari_app,
+                        &disconnected,
+                        Some(&safari_obs),
+                    ),
+                );
+            } // 3m
+            assert_eq!(total(&totals), 13 * 60_000);
+            let yt_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "youtube.com")
+                .map(|b| b.ms)
+                .sum();
+            let gh_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "github.com")
+                .map(|b| b.ms)
+                .sum();
+            let apple_ms: u64 = totals
+                .iter()
+                .filter(|b| b.target == "apple.com")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(yt_ms, 4 * 60_000);
+            assert_eq!(gh_ms, 6 * 60_000);
+            assert_eq!(apple_ms, 3 * 60_000);
+            let app_ms: u64 = totals
+                .iter()
+                .filter(|b| b.kind == "app")
+                .map(|b| b.ms)
+                .sum();
+            assert_eq!(app_ms, 0);
+        }
     }
 }

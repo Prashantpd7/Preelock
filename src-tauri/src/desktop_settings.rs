@@ -8,6 +8,7 @@ mod mac {
         fn preelock_settings_info() -> *mut c_char;
         fn preelock_login(enabled: i32) -> *mut c_char;
         fn preelock_notification_permission() -> i32;
+        fn preelock_request_notification_authorization();
         fn preelock_notify(title: *const c_char, body: *const c_char);
         fn preelock_sound(volume: f32);
         fn preelock_file_panel(save: i32, filename: *const c_char) -> *mut c_char;
@@ -53,6 +54,9 @@ mod mac {
     pub fn permission() -> bool {
         unsafe { preelock_notification_permission() != 0 }
     }
+    pub fn request_authorization() {
+        unsafe { preelock_request_notification_authorization() };
+    }
     /// macOS notifications go through the native `preelock_notify`
     /// call, which needs no app handle: they can be shown from any
     /// process, including the background engine.
@@ -91,6 +95,7 @@ mod other {
     pub fn permission() -> bool {
         false
     }
+    pub fn request_authorization() {}
     /// Stub platform (Linux dev builds): `notify` is a no-op, so
     /// delivery is assumed — this keeps the engine's fire-once
     /// semantics identical to the shipped platforms. Only Windows

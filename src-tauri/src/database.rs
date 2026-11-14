@@ -11,11 +11,35 @@ impl Database {
             .map_err(|e| e.to_string())?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .map_err(|e| e.to_string())?;
+
+        // Integrity check on open: if corrupt, preserve database file for forensics.
+        let check_res: Result<String, _> =
+            conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0));
+        if let Ok(ref status) = check_res {
+            if status != "ok" {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let corrupt_path = path.with_extension(format!("corrupt.{ts}.sqlite"));
+                let _ = std::fs::copy(path, &corrupt_path);
+                return Err(format!(
+                    "Database integrity check failed: {status}. Preserved backup at {corrupt_path:?}"
+                ));
+            }
+        }
+
         let version: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 10 {
+        if version > 12 {
             return Err("Database was created by a newer version of Preelock.".into());
+        }
+
+        // Automatic pre-migration backup before applying schema changes to an existing database
+        if version > 0 && version < 12 {
+            let backup_path = path.with_extension(format!("pre_v12_v{version}.bak"));
+            let _ = std::fs::copy(path, backup_path);
         }
         if version == 0 {
             conn.execute_batch(concat!(
@@ -108,6 +132,24 @@ impl Database {
             ))
             .map_err(|e| e.to_string())?;
         }
+        // Additive only: existing data is untouched; old databases
+        // gain an adult_block table.
+        if version < 11 {
+            conn.execute_batch(concat!(
+                "BEGIN IMMEDIATE;",
+                include_str!("../migrations/011_adult_block.sql"),
+                "COMMIT;"
+            ))
+            .map_err(|e| e.to_string())?;
+        }
+        if version < 12 {
+            conn.execute_batch(concat!(
+                "BEGIN IMMEDIATE;",
+                include_str!("../migrations/012_strict_blocks.sql"),
+                "COMMIT;"
+            ))
+            .map_err(|e| e.to_string())?;
+        }
         // Prune attempts older than 90 days on open; a failure here
         // must never block opening the database, so it is ignored.
         let now_ms = std::time::SystemTime::now()
@@ -141,6 +183,18 @@ impl Database {
             one_shots: self.read("SELECT payload FROM one_shots ORDER BY rowid")?,
             allowances: self.read("SELECT payload FROM allowances ORDER BY rowid")?,
             app_locks: self.read("SELECT payload FROM app_locks ORDER BY rowid")?,
+            strict_apps: self
+                .read("SELECT payload FROM strict_blocks WHERE kind='apps'")?
+                .pop()
+                .unwrap_or_default(),
+            strict_sites: self
+                .read("SELECT payload FROM strict_blocks WHERE kind='sites'")?
+                .pop()
+                .unwrap_or_default(),
+            adult_block: self
+                .read("SELECT payload FROM adult_block WHERE id=1")?
+                .pop()
+                .unwrap_or_default(),
             screen_time_usage: self.load_screen_time_usage()?,
             preferences: self
                 .read("SELECT payload FROM preferences WHERE id=1")?
@@ -281,7 +335,7 @@ impl Database {
     fn write(&mut self, data: &Snapshot, replace: bool) -> Result<(), String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
         if replace {
-            tx.execute_batch("DELETE FROM attention_intervals; DELETE FROM focus_audit; DELETE FROM sessions; DELETE FROM tasks; DELETE FROM schedules; DELETE FROM one_shots; DELETE FROM allowances; DELETE FROM app_locks; DELETE FROM screen_time_usage;").map_err(|e| e.to_string())?;
+            tx.execute_batch("DELETE FROM attention_intervals; DELETE FROM focus_audit; DELETE FROM sessions; DELETE FROM tasks; DELETE FROM schedules; DELETE FROM one_shots; DELETE FROM allowances; DELETE FROM app_locks; DELETE FROM strict_blocks; DELETE FROM adult_block; DELETE FROM screen_time_usage;").map_err(|e| e.to_string())?;
         }
         let ids: Vec<_> = data.sessions.iter().map(|s| &s.id).collect();
         let task_ids: Vec<_> = data.tasks.iter().map(|t| &t.id).collect();
@@ -379,6 +433,9 @@ impl Database {
         for l in &data.app_locks {
             tx.execute("INSERT INTO app_locks(id,payload) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![l.id, serde_json::to_string(l).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
         }
+        tx.execute("INSERT INTO adult_block(id,payload) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", [serde_json::to_string(&data.adult_block).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO strict_blocks(kind,payload) VALUES ('apps',?1) ON CONFLICT(kind) DO UPDATE SET payload=excluded.payload", [serde_json::to_string(&data.strict_apps).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO strict_blocks(kind,payload) VALUES ('sites',?1) ON CONFLICT(kind) DO UPDATE SET payload=excluded.payload", [serde_json::to_string(&data.strict_sites).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO preferences(id,payload) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", [serde_json::to_string(&data.preferences).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
         for bucket in &data.screen_time_usage {
             tx.execute("INSERT INTO screen_time_usage(day_ms,kind,target,name,ms) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(day_ms,kind,target) DO UPDATE SET name=excluded.name,ms=excluded.ms", params![bucket.day_ms,bucket.kind,bucket.target,bucket.name,bucket.ms.min(i64::MAX as u64) as i64]).map_err(|e|e.to_string())?;
@@ -800,5 +857,71 @@ mod tests {
         assert_eq!(db.delete_attempts().unwrap(), 1);
         assert!(db.list_attempts(100).unwrap().is_empty());
         assert_eq!(db.load().unwrap().sessions.len(), 1);
+    }
+
+    #[test]
+    fn older_schema_upgrades_cleanly_and_creates_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("older.sqlite");
+
+        // Create a raw v1 database directly with rusqlite
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+                .unwrap();
+            conn.execute(
+                "INSERT INTO sessions(id, payload) VALUES (?1, ?2)",
+                rusqlite::params![
+                    "v1-session",
+                    "{\"id\":\"v1-session\",\"title\":\"V1 Session\",\"minutes\":25,\"allow_pause\":false,\"status\":\"ended\",\"started_at\":0,\"scheduled_start\":0,\"schedule_id\":null,\"ends_at\":0,\"pause_used\":false,\"paused_at\":null,\"pause_resumes_at\":null,\"pause_accumulated_ms\":0,\"task_ids\":[],\"focus\":{\"apps\":[],\"websites\":[],\"youtube\":false,\"youtube_allow_watch_later\":false,\"youtube_blocked_channels\":[]},\"lock\":{\"mode\":\"none\",\"challenge\":null,\"challenge_proof\":null},\"lock_password_hash\":null,\"grace_until_ms\":null,\"break\":null,\"attention\":{\"camera_enabled\":false,\"intervals\":[]},\"report\":{\"events\":[],\"productive_ms\":0,\"distracted_ms\":0,\"offline_ms\":0}}"
+                ],
+            )
+            .unwrap();
+            let v: u32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 1);
+        }
+
+        // Open with Database::open -> should apply migrations 2..=12 and create backup
+        let db = Database::open(&path).unwrap();
+        let v: u32 =
+            db.0.query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(v, 12);
+
+        // Pre-migration backup file must exist
+        let backup_path = path.with_extension("pre_v12_v1.bak");
+        assert!(backup_path.exists());
+
+        // Existing data from v1 is preserved
+        let loaded = db.load().unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].id, "v1-session");
+        assert_eq!(loaded.sessions[0].title, "V1 Session");
+    }
+
+    #[test]
+    fn corrupt_database_is_detected_and_safely_backed_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupted.sqlite");
+
+        // Write non-sqlite garbage to simulate header/page corruption
+        std::fs::write(
+            &path,
+            b"SQLite format 3\0corrupted_page_data_bytes_here_1234567890",
+        )
+        .unwrap();
+
+        let res = Database::open(&path);
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        // It must either fail quick_check or return an integrity/parse error without panicking
+        assert!(
+            err.contains("integrity")
+                || err.contains("corrupt")
+                || err.contains("malformed")
+                || err.contains("file is not a database")
+        );
     }
 }

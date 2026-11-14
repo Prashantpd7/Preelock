@@ -20,6 +20,12 @@ pub struct Sample {
     /// Serde-default so old native JSON still parses.
     #[serde(default)]
     pub title: String,
+    /// Whether the main display is currently asleep (off/blank).
+    #[serde(default)]
+    pub display_asleep: bool,
+    /// Whether the desktop session is currently locked or in loginwindow.
+    #[serde(default)]
+    pub screen_locked: bool,
 }
 #[cfg(target_os = "macos")]
 mod macos;
@@ -41,8 +47,9 @@ pub struct WebSample {
 #[cfg(target_os = "macos")]
 pub use macos::{
     app_icon, applications, camera_permission, camera_start, camera_status, camera_stop, hide,
-    hide_from_dock, installed_browsers, register_application_restart, request_camera,
-    request_web_permission, sample, web_permission, web_sample,
+    hide_from_dock, installed_browsers, redirect_browser_blocked, redirect_safari_blocked,
+    register_application_restart, request_camera, request_web_permission, sample, web_permission,
+    web_sample,
 };
 #[cfg(target_os = "windows")]
 pub use windows::*;
@@ -93,6 +100,8 @@ mod unsupported {
         "unsupported"
     }
     pub fn request_web_permission() {}
+    pub fn redirect_safari_blocked() {}
+    pub fn redirect_browser_blocked(_: &str) {}
     pub fn register_application_restart(_args: &str) {}
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

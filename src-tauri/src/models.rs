@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Ready,
@@ -8,6 +8,7 @@ pub enum Status {
     Running,
     Paused,
     Completed,
+    #[default]
     Ended,
     Interrupted,
 }
@@ -32,13 +33,21 @@ pub enum SessionKind {
 pub struct Session {
     pub id: String,
     pub title: String,
+    #[serde(default, alias = "minutes")]
     pub duration_minutes: u32,
+    #[serde(default)]
     pub remaining_ms: u64,
+    #[serde(default)]
     pub focused_ms: u64,
+    #[serde(default)]
     pub allow_pause: bool,
+    #[serde(default)]
     pub status: Status,
+    #[serde(default)]
     pub started_at: Option<i64>,
+    #[serde(default)]
     pub ended_at: Option<i64>,
+    #[serde(default)]
     pub deadline_ms: Option<i64>,
     #[serde(default)]
     pub focus: crate::focus::FocusConfig,
@@ -116,6 +125,16 @@ pub struct Session {
     /// the grace itself.
     #[serde(default)]
     pub grace_notified: bool,
+    /// Notification parity: true once the session start notification has fired.
+    /// Persisted so restarts and background/GUI handovers never duplicate or miss it.
+    #[serde(default)]
+    pub start_notified: bool,
+    /// Notification parity: true once the focus complete notification has fired.
+    #[serde(default)]
+    pub complete_notified: bool,
+    /// True when the user has been notified of inactivity during this session.
+    #[serde(default)]
+    pub inactivity_notified: bool,
     /// Durable persistence metadata: intended end wall-clock timestamp,
     /// per-occurrence schedule key (anti-duplicate restart guard),
     /// last durable checkpoint & enforcement confirmation timestamps,
@@ -184,6 +203,9 @@ pub struct Preferences {
     /// range 0..=300, 0 = off. Manual sessions never get grace.
     pub grace_seconds: u32,
     pub saved_setups: Vec<SavedSetup>,
+    /// Date (YYYY-MM-DD) on which the daily focus reminder last fired.
+    #[serde(default)]
+    pub last_reminder_date: String,
     /// Screen Time category corrections, keyed by app bundle id/path
     /// or website domain. The frontend checks these before its
     /// built-in mapping, so a correction re-colors past days too.
@@ -214,6 +236,7 @@ impl Default for Preferences {
             warning_minutes: "2".into(),
             grace_seconds: 60,
             saved_setups: vec![],
+            last_reminder_date: String::new(),
             category_overrides: std::collections::HashMap::new(),
         }
     }
@@ -246,6 +269,15 @@ pub struct Snapshot {
     /// before this feature load as an empty list.
     #[serde(default)]
     pub app_locks: Vec<crate::applocks::AppLock>,
+    /// Strict blocking state for apps.
+    #[serde(default)]
+    pub strict_apps: StrictBlockState,
+    /// Strict blocking state for websites.
+    #[serde(default)]
+    pub strict_sites: StrictBlockState,
+    /// System-wide adult website blocking configuration and strict state.
+    #[serde(default)]
+    pub adult_block: crate::adult_block::AdultBlock,
     /// Locally collected Screen Time totals, bucketed per day and target.
     #[serde(default)]
     pub screen_time_usage: Vec<ScreenTimeBucket>,
@@ -278,6 +310,27 @@ pub struct BlockedAppNotice {
     /// When the notice was set (wall-clock epoch ms); the overlay
     /// sync only shows the page while the notice is fresh.
     pub at_ms: i64,
+}
+
+/// Persistent configuration and state of strict blocking for a category.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrictBlockState {
+    pub enabled: bool,
+    pub strict: bool,
+    #[serde(default)]
+    pub ends_at_ms: Option<i64>,
+    #[serde(default)]
+    pub activating_until_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+/// Target category for strict blocking.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StrictTarget {
+    Apps,
+    Sites,
+    Adult,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -456,6 +509,22 @@ pub enum Action {
     },
     DeleteAppLock {
         id: String,
+    },
+    /// Initiate a 20-second countdown for strict mode on a target category (apps, sites, adult).
+    StartStrictBlock {
+        target: StrictTarget,
+        days: u32,
+    },
+    /// Cancel a pending 20-second countdown for strict mode on a target category.
+    CancelStrictBlock {
+        target: StrictTarget,
+    },
+    /// Set or update system-wide adult website blocking.
+    SetAdultBlock {
+        enabled: bool,
+        strict: bool,
+        #[serde(default)]
+        minutes: Option<u32>,
     },
     CreateTask {
         title: String,

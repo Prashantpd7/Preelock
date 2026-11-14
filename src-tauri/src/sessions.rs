@@ -294,6 +294,9 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                     recovery_status: Some("clean".into()),
                     ..Default::default()
                 },
+                start_notified: false,
+                complete_notified: false,
+                inactivity_notified: false,
             });
         }
         // Reject the old IPC command as well as removing its UI. Keep the
@@ -672,7 +675,102 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 .iter()
                 .position(|l| l.id == id)
                 .ok_or("App lock not found.")?;
+            let lock = &data.app_locks[index];
+            if lock.kind == crate::allowances::TargetKind::App
+                && data.strict_apps.strict
+                && data.strict_apps.ends_at_ms.is_some_and(|e| now < e)
+            {
+                return Err("Strict block is active for apps. App blocks cannot be deleted or bypassed until expiry.".into());
+            }
+            if lock.kind == crate::allowances::TargetKind::Site
+                && data.strict_sites.strict
+                && data.strict_sites.ends_at_ms.is_some_and(|e| now < e)
+            {
+                return Err("Strict block is active for websites. Website blocks cannot be deleted or bypassed until expiry.".into());
+            }
             data.app_locks.remove(index);
+        }
+        Action::StartStrictBlock { target, days } => match target {
+            crate::models::StrictTarget::Adult => {
+                crate::adult_block::start_strict_countdown(
+                    data.adult_block.strict,
+                    &mut data.adult_block.ends_at_ms,
+                    &mut data.adult_block.activating_until_ms,
+                    days,
+                    now,
+                )?;
+                data.adult_block.enabled = true;
+                if data.adult_block.created_at_ms == 0 {
+                    data.adult_block.created_at_ms = now;
+                }
+            }
+            crate::models::StrictTarget::Apps => {
+                crate::adult_block::start_strict_countdown(
+                    data.strict_apps.strict,
+                    &mut data.strict_apps.ends_at_ms,
+                    &mut data.strict_apps.activating_until_ms,
+                    days,
+                    now,
+                )?;
+                data.strict_apps.enabled = true;
+                if data.strict_apps.created_at_ms == 0 {
+                    data.strict_apps.created_at_ms = now;
+                }
+            }
+            crate::models::StrictTarget::Sites => {
+                crate::adult_block::start_strict_countdown(
+                    data.strict_sites.strict,
+                    &mut data.strict_sites.ends_at_ms,
+                    &mut data.strict_sites.activating_until_ms,
+                    days,
+                    now,
+                )?;
+                data.strict_sites.enabled = true;
+                if data.strict_sites.created_at_ms == 0 {
+                    data.strict_sites.created_at_ms = now;
+                }
+            }
+        },
+        Action::CancelStrictBlock { target } => match target {
+            crate::models::StrictTarget::Adult => {
+                crate::adult_block::cancel_strict_countdown(
+                    data.adult_block.strict,
+                    &mut data.adult_block.ends_at_ms,
+                    &mut data.adult_block.activating_until_ms,
+                    now,
+                )?;
+            }
+            crate::models::StrictTarget::Apps => {
+                crate::adult_block::cancel_strict_countdown(
+                    data.strict_apps.strict,
+                    &mut data.strict_apps.ends_at_ms,
+                    &mut data.strict_apps.activating_until_ms,
+                    now,
+                )?;
+                data.strict_apps.enabled = false;
+            }
+            crate::models::StrictTarget::Sites => {
+                crate::adult_block::cancel_strict_countdown(
+                    data.strict_sites.strict,
+                    &mut data.strict_sites.ends_at_ms,
+                    &mut data.strict_sites.activating_until_ms,
+                    now,
+                )?;
+                data.strict_sites.enabled = false;
+            }
+        },
+        Action::SetAdultBlock {
+            enabled,
+            strict,
+            minutes,
+        } => {
+            data.adult_block = crate::adult_block::apply_adult_block_action(
+                &data.adult_block,
+                enabled,
+                strict,
+                minutes,
+                now,
+            )?;
         }
         Action::CreateTask { title: name } => data.tasks.push(Task {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1103,6 +1201,85 @@ mod tests {
         d.sessions[0].focus.attention.enabled = false;
         d
     }
+    #[test]
+    fn strict_block_starts_countdown_and_cancels_before_deadline() {
+        let mut d = Snapshot::default();
+        let now = 1_000_000;
+
+        // Start countdown for Apps (2 days)
+        apply(
+            &mut d,
+            Action::StartStrictBlock {
+                target: crate::models::StrictTarget::Apps,
+                days: 2,
+            },
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(d.strict_apps.activating_until_ms, Some(now + 20_000));
+        assert_eq!(
+            d.strict_apps.ends_at_ms,
+            Some(now + 20_000 + 2 * 86_400_000)
+        );
+        assert!(!d.strict_apps.strict);
+
+        // Cancel during countdown
+        apply(
+            &mut d,
+            Action::CancelStrictBlock {
+                target: crate::models::StrictTarget::Apps,
+            },
+            now + 5000,
+        )
+        .unwrap();
+
+        assert_eq!(d.strict_apps.activating_until_ms, None);
+        assert_eq!(d.strict_apps.ends_at_ms, None);
+        assert!(!d.strict_apps.strict);
+    }
+
+    #[test]
+    fn strict_block_prevents_deleting_app_and_site_locks_when_active() {
+        let mut d = Snapshot::default();
+        let now = 1_000_000;
+
+        // Add app lock
+        apply(
+            &mut d,
+            Action::CreateAppLock {
+                title: "Game".into(),
+                kind: crate::allowances::TargetKind::App,
+                target: "com.example.game".into(),
+                rule: crate::applocks::AppLockRuleInput::Timed { minutes: 60 },
+            },
+            now,
+        )
+        .unwrap();
+        let lock_id = d.app_locks[0].id.clone();
+
+        // Lock strict mode for apps
+        d.strict_apps.strict = true;
+        d.strict_apps.ends_at_ms = Some(now + 86_400_000);
+
+        // Deletion must fail
+        let res = apply(
+            &mut d,
+            Action::DeleteAppLock {
+                id: lock_id.clone(),
+            },
+            now,
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Strict block is active for apps"));
+
+        // Un-strict allows deletion
+        d.strict_apps.strict = false;
+        let res = apply(&mut d, Action::DeleteAppLock { id: lock_id }, now);
+        assert!(res.is_ok());
+        assert!(d.app_locks.is_empty());
+    }
+
     #[test]
     fn flexible_wizard_session_stores_allow_pause_and_pauses() {
         // Item 6 (backend half): the wizard sends allow_pause for a

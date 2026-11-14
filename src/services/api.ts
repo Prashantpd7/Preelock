@@ -13,6 +13,28 @@ export const emptySnapshot: Snapshot = {
   schedules: [],
   one_shots: [],
   allowances: [],
+  app_locks: [],
+  strict_apps: {
+    enabled: false,
+    strict: false,
+    ends_at_ms: null,
+    activating_until_ms: null,
+    created_at_ms: 0,
+  },
+  strict_sites: {
+    enabled: false,
+    strict: false,
+    ends_at_ms: null,
+    activating_until_ms: null,
+    created_at_ms: 0,
+  },
+  adult_block: {
+    enabled: false,
+    strict: false,
+    ends_at_ms: null,
+    activating_until_ms: null,
+    created_at_ms: 0,
+  },
   preferences: { theme: 'dark', default_minutes: 25 },
 };
 export const api = {

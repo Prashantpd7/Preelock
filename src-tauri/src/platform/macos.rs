@@ -15,6 +15,8 @@ unsafe extern "C" {
     fn preelock_web_sample() -> *mut c_char;
     fn preelock_web_permission() -> i32;
     fn preelock_web_request_permission();
+    fn preelock_redirect_safari_blocked();
+    fn preelock_redirect_browser_blocked(app_name: *const c_char);
 }
 fn text(ptr: *mut c_char) -> Result<String, String> {
     if ptr.is_null() {
@@ -101,6 +103,14 @@ pub fn web_permission() -> &'static str {
 /// caller requests at most once per process.
 pub fn request_web_permission() {
     unsafe { preelock_web_request_permission() };
+}
+pub fn redirect_safari_blocked() {
+    unsafe { preelock_redirect_safari_blocked() };
+}
+pub fn redirect_browser_blocked(app_name: &str) {
+    if let Ok(c_str) = std::ffi::CString::new(app_name) {
+        unsafe { preelock_redirect_browser_blocked(c_str.as_ptr()) };
+    }
 }
 /// Browsers installed on this Mac (whether running or not), so the user can
 /// pick their browser without having to open it first.

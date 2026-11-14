@@ -60,6 +60,7 @@ pub enum IpcRequest {
     NoteFrozenOverlayFailure,
     CheckUninstall,
     RefreshBrowserConnection,
+    TestNotification { title: String, body: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -457,6 +458,13 @@ impl IpcClient {
 
     pub fn refresh_browser_connection(&self) -> Result<(), String> {
         self.call_unit(&IpcRequest::RefreshBrowserConnection)
+    }
+
+    pub fn test_notification(&self, title: &str, body: &str) -> Result<(), String> {
+        self.call_unit(&IpcRequest::TestNotification {
+            title: title.to_string(),
+            body: body.to_string(),
+        })
     }
 
     pub fn check_uninstall(&self) -> Result<UninstallCheck, String> {

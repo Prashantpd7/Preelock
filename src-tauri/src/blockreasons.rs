@@ -238,6 +238,9 @@ mod tests {
             grace_until_ms: None,
             grace_notified: false,
             durability: Default::default(),
+            start_notified: false,
+            complete_notified: false,
+            inactivity_notified: false,
         }
     }
 

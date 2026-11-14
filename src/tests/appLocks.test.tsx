@@ -1,11 +1,16 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from '../App';
 import { api, emptySnapshot } from '../services/api';
 import { useAppStore } from '../state/store';
 import { localDayStart } from '../services/screenTimeWeek';
-import type { AppLock, ScreenTimeBucket } from '../types';
+import type {
+  AppLock,
+  AdultBlock,
+  ScreenTimeBucket,
+  StrictBlockState,
+} from '../types';
 
 vi.mock('../services/settings', () => ({
   settingsAction: vi.fn().mockResolvedValue({}),
@@ -50,7 +55,13 @@ function bucket(
   };
 }
 
-function seed(buckets: ScreenTimeBucket[], locks: AppLock[] = []) {
+function seed(
+  buckets: ScreenTimeBucket[],
+  locks: AppLock[] = [],
+  adultBlock?: AdultBlock,
+  strictApps?: StrictBlockState,
+  strictSites?: StrictBlockState,
+) {
   window.location.hash = '#/screen-time';
   useAppStore.setState({
     data: {
@@ -58,6 +69,27 @@ function seed(buckets: ScreenTimeBucket[], locks: AppLock[] = []) {
       preferences: { ...emptySnapshot.preferences },
       screen_time_usage: buckets,
       app_locks: locks,
+      adult_block: adultBlock ?? {
+        enabled: false,
+        strict: false,
+        ends_at_ms: null,
+        activating_until_ms: null,
+        created_at_ms: 0,
+      },
+      strict_apps: strictApps ?? {
+        enabled: false,
+        strict: false,
+        ends_at_ms: null,
+        activating_until_ms: null,
+        created_at_ms: 0,
+      },
+      strict_sites: strictSites ?? {
+        enabled: false,
+        strict: false,
+        ends_at_ms: null,
+        activating_until_ms: null,
+        created_at_ms: 0,
+      },
     },
     loading: false,
     error: null,
@@ -104,6 +136,9 @@ beforeEach(() => {
   localStorage.setItem('preelock-permissions-v2', 'seen');
   vi.clearAllMocks();
   vi.mocked(api.snapshot).mockImplementation(async () =>
+    structuredClone(useAppStore.getState().data),
+  );
+  vi.mocked(api.execute).mockImplementation(async () =>
     structuredClone(useAppStore.getState().data),
   );
   vi.mocked(api.capabilities).mockResolvedValue([]);
@@ -421,4 +456,250 @@ it('remove dispatches delete_app_lock', async () => {
     type: 'delete_app_lock',
     id: 'lock-1',
   });
+});
+
+it('renders Block adult websites option with turn on toggle and dispatches set_adult_block', async () => {
+  seed([]);
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  const adultButton = screen.getByRole('button', {
+    name: 'Block adult websites',
+  });
+  expect(adultButton).toBeInTheDocument();
+  await user.click(adultButton);
+
+  const toggle = screen.getByRole('switch', { name: 'Block adult websites' });
+  expect(toggle).toBeInTheDocument();
+  expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+  await user.click(toggle);
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'set_adult_block',
+    enabled: true,
+    strict: false,
+  });
+});
+
+it('when enabled, renders compact strict row with day presets, and allows 20s countdown cancellation', async () => {
+  const now = Date.now();
+  seed([], [], {
+    enabled: true,
+    strict: false,
+    ends_at_ms: null,
+    activating_until_ms: null,
+    created_at_ms: now,
+  });
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(
+    screen.getByRole('button', { name: 'Block adult websites' }),
+  );
+
+  const mainToggle = screen.getByRole('switch', {
+    name: 'Block adult websites',
+  });
+  expect(mainToggle).toHaveAttribute('aria-checked', 'true');
+
+  const strictToggle = screen.getByRole('switch', { name: 'Strict block' });
+  expect(strictToggle).toBeInTheDocument();
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
+
+  // Day preset chips are present beside the toggle
+  expect(screen.getByRole('button', { name: '1 day' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '3 days' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '7 days' })).toBeInTheDocument();
+
+  // Select 3 days
+  await user.click(screen.getByRole('button', { name: '3 days' }));
+  expect(screen.getByRole('button', { name: '3 days' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+
+  // Turn on strict toggle -> dispatches start_strict_block with days = 3
+  await user.click(strictToggle);
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'start_strict_block',
+    target: 'adult',
+    days: 3,
+  });
+});
+
+it('renders persistent 20s countdown card and cancels via cancel_strict_block', async () => {
+  const now = Date.now();
+  seed([], [], {
+    enabled: true,
+    strict: false,
+    ends_at_ms: now + 20_000 + 3 * 86_400_000,
+    activating_until_ms: now + 20_000,
+    created_at_ms: now,
+  });
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(
+    screen.getByRole('button', { name: 'Block adult websites' }),
+  );
+
+  expect(screen.getByText(/Strict block activating in/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Filters adult websites strictly for 3 days\./),
+  ).toBeInTheDocument();
+
+  const cancelBtn = screen.getByRole('button', { name: 'Turn back off' });
+  await user.click(cancelBtn);
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'cancel_strict_block',
+    target: 'adult',
+  });
+});
+
+it('strict block displays active state with locked notice and disables turning off', async () => {
+  const now = Date.now();
+  seed([], [], {
+    enabled: true,
+    strict: true,
+    ends_at_ms: now + 86400000,
+    activating_until_ms: null,
+    created_at_ms: now,
+  });
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(
+    screen.getByRole('button', { name: 'Block adult websites' }),
+  );
+  expect(
+    screen.getByText('Adult websites blocked system-wide'),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Strict block')).toBeInTheDocument();
+  expect(
+    screen.getByText(/It cannot be canceled or disabled until expired\./),
+  ).toBeInTheDocument();
+
+  const toggle = screen.getByRole('switch', { name: 'Block adult websites' });
+  expect(toggle).toHaveAttribute('aria-checked', 'true');
+  expect(toggle).toBeDisabled();
+});
+
+it('strict block in Block apps starts strict countdown and locks active app locks', async () => {
+  const now = Date.now();
+  const sampleLock: AppLock = {
+    id: 'lock-app-1',
+    title: 'Safari',
+    kind: 'app',
+    target: 'com.apple.Safari',
+    rule: { type: 'timed', expires_at_ms: now + 3600_000 },
+    created_at: now,
+  };
+
+  seed([], [sampleLock]);
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(screen.getByRole('button', { name: 'Block apps' }));
+
+  // Strict block controls are present in Block apps
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for apps' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '5 days' })).toBeInTheDocument();
+
+  // Active lock shows delete button initially
+  expect(
+    screen.getByRole('button', { name: 'Remove block: Safari' }),
+  ).toBeInTheDocument();
+
+  // Select 5 days and toggle strict block
+  await user.click(screen.getByRole('button', { name: '5 days' }));
+  await user.click(
+    screen.getByRole('switch', { name: 'Strict block for apps' }),
+  );
+
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'start_strict_block',
+    target: 'apps',
+    days: 5,
+  });
+
+  // When strict mode becomes active on apps:
+  act(() => {
+    useAppStore.setState((s) => ({
+      data: {
+        ...s.data,
+        strict_apps: {
+          enabled: true,
+          strict: true,
+          ends_at_ms: now + 5 * 86_400_000,
+          activating_until_ms: null,
+          created_at_ms: now,
+        },
+      },
+    }));
+  });
+
+  // Delete button is removed and replaced by Strictly locked tag
+  expect(
+    screen.queryByRole('button', { name: 'Remove block: Safari' }),
+  ).toBeNull();
+  expect(screen.getByText('Strictly locked')).toBeInTheDocument();
+  expect(screen.getByText('Apps blocked strictly')).toBeInTheDocument();
+});
+
+it('strict block in Block websites starts strict countdown and locks active website locks', async () => {
+  const now = Date.now();
+  const sampleLock: AppLock = {
+    id: 'lock-site-1',
+    title: 'youtube.com',
+    kind: 'site',
+    target: 'youtube.com',
+    rule: { type: 'timed', expires_at_ms: now + 3600_000 },
+    created_at: now,
+  };
+
+  seed([], [sampleLock]);
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(screen.getByRole('button', { name: 'Block websites' }));
+
+  // Strict block controls are present in Block websites
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for websites' }),
+  ).toBeInTheDocument();
+
+  // Active lock shows delete button initially
+  expect(
+    screen.getByRole('button', { name: 'Remove block: youtube.com' }),
+  ).toBeInTheDocument();
+
+  // Toggle strict block
+  await user.click(
+    screen.getByRole('switch', { name: 'Strict block for websites' }),
+  );
+
+  expect(api.execute).toHaveBeenCalledWith({
+    type: 'start_strict_block',
+    target: 'sites',
+    days: 1,
+  });
+
+  // When strict mode becomes active on sites:
+  act(() => {
+    useAppStore.setState((s) => ({
+      data: {
+        ...s.data,
+        strict_sites: {
+          enabled: true,
+          strict: true,
+          ends_at_ms: now + 1 * 86_400_000,
+          activating_until_ms: null,
+          created_at_ms: now,
+        },
+      },
+    }));
+  });
+
+  // Delete button is removed and replaced by Strictly locked tag
+  expect(
+    screen.queryByRole('button', { name: 'Remove block: youtube.com' }),
+  ).toBeNull();
+  expect(screen.getByText('Strictly locked')).toBeInTheDocument();
+  expect(screen.getByText('Websites blocked strictly')).toBeInTheDocument();
 });

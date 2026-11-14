@@ -89,6 +89,7 @@ pub enum Command {
     Start(String),
     Stop,
     CheckUninstall,
+    TestNotify(String, String),
 }
 
 /// The flags that switch the binary into CLI mode. Any other first
@@ -108,6 +109,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
                 | "--start"
                 | "--stop"
                 | "--check-uninstall"
+                | "--test-notify"
         )
     )
 }
@@ -124,6 +126,17 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
         },
         Some("--stop") => Ok(Command::Stop),
         Some("--check-uninstall") => Ok(Command::CheckUninstall),
+        Some("--test-notify") => {
+            let title = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| "Preelock Test".into());
+            let body = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "Test notification body".into());
+            Ok(Command::TestNotify(title, body))
+        }
         Some(other) => Err(format!("Unknown command: {other}\n{HELP}")),
         None => Err(HELP.into()),
     }
@@ -132,6 +145,9 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 /// App-data directory for the current platform, matching Tauri's
 /// `app_data_dir` for this identifier.
 pub fn app_data_dir() -> Result<PathBuf, String> {
+    if let Some(custom) = std::env::var_os("PREELOCK_DATA_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").ok_or("HOME is not set.")?;
@@ -513,6 +529,15 @@ fn load_from_connection(conn: &rusqlite::Connection) -> Result<crate::models::Sn
         one_shots: read_snapshot_rows(conn, "SELECT payload FROM one_shots ORDER BY rowid")?,
         allowances: read_snapshot_rows(conn, "SELECT payload FROM allowances ORDER BY rowid")?,
         app_locks: read_snapshot_rows(conn, "SELECT payload FROM app_locks ORDER BY rowid")?,
+        strict_apps: read_snapshot_rows(conn, "SELECT payload FROM strict_blocks WHERE kind='apps'")?
+            .pop()
+            .unwrap_or_default(),
+        strict_sites: read_snapshot_rows(conn, "SELECT payload FROM strict_blocks WHERE kind='sites'")?
+            .pop()
+            .unwrap_or_default(),
+        adult_block: read_snapshot_rows(conn, "SELECT payload FROM adult_block WHERE id=1")?
+            .pop()
+            .unwrap_or_default(),
         screen_time_usage: {
             let mut stmt = conn
                 .prepare("SELECT day_ms, kind, target, name, ms FROM screen_time_usage ORDER BY day_ms, ms DESC")
@@ -588,6 +613,11 @@ pub fn run(args: &[String]) -> i32 {
         }
         Command::Version => {
             println!("Preelock {VERSION}");
+            0
+        }
+        Command::TestNotify(title, body) => {
+            crate::desktop_settings::notify(&title, &body);
+            println!("Test notification dispatched: {title} - {body}");
             0
         }
         Command::Status | Command::ListBlocks => {
@@ -887,6 +917,9 @@ mod tests {
             one_shots: vec![],
             allowances: vec![],
             app_locks: vec![],
+            strict_apps: Default::default(),
+            strict_sites: Default::default(),
+            adult_block: Default::default(),
             screen_time_usage: vec![],
             preferences: Preferences::default(),
             browser: None,
@@ -1060,6 +1093,9 @@ mod tests {
             grace_until_ms: Some(45_000),
             grace_notified: false,
             durability: Default::default(),
+            start_notified: false,
+            complete_notified: false,
+            inactivity_notified: false,
         };
         snapshot.sessions.push(session.clone());
         let text = format_status(&snapshot, 1000);
@@ -1126,6 +1162,9 @@ mod tests {
             grace_until_ms: None,
             grace_notified: false,
             durability: Default::default(),
+            start_notified: false,
+            complete_notified: false,
+            inactivity_notified: false,
         };
         snapshot.sessions.push(session.clone());
         database.save(&snapshot).unwrap();

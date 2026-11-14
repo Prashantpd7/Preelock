@@ -1,37 +1,118 @@
-# Architecture
+# Preelock Architecture & Component Map
 
-React renders the Rust-owned session snapshot through serialized IPC calls and Zustand. Native commands run off the event loop; AppKit calls dispatch to the main thread. The Rust worker runs independently of React once per second. No scripts, shell commands or arbitrary native paths can be executed through IPC.
+This document describes the complete architecture of Preelock, its components, process supervision model, data storage, and security boundaries.
 
-## Session and enforcement lifecycle
+---
 
-A configuration contains mode, selected app identities, domain rules, browser identity, internet policy, activity consent and camera consent. Inputs are validated in Rust. Legacy records deserialize to Standard mode with monitoring off. Mode policy is enforced in Rust, including rejection of ordinary pause/end in committed sessions. Deep Focus starts are rejected until a managed implementation exists.
+## 1. High-Level Architecture Overview
 
-Browser-dependent sessions follow `ready → preparing → running → completed/ended/interrupted`; Standard sessions may pause. Preparation persists intent before publishing rules. The extension installs session rules and acknowledges the session ID before the timer runs. Preparation times out after 45 seconds. Strict sessions only exit early through a typed emergency confirmation or a detected enforcement failure. Restart preserves productive totals without adding offline credit, then revalidates the browser; no active restriction is assumed from an old status. Preparation time itself does not count as focus time.
+Preelock is structured as a local-first, dual-process desktop application built with **Tauri 2.x**, a **Rust backend**, a **React 19 / TypeScript frontend**, an **embedded SQLite database**, and an **MV3 Chromium browser extension**.
 
-The engine uses cloned state plus transactional SQLite writes before publishing a new network policy. Schema v2 adds a separate audit table while retaining the v1 JSON model tables. Activity aggregates checkpoint every five seconds and on user actions/transitions; a crash may lose the last few seconds of samples. The UI retains the most recent 200 events per session; the audit table retains all committed events. No raw video, page URLs, titles, messages or keystrokes are stored. The database is local and unencrypted.
+```mermaid
+flowchart TD
+    subgraph UI ["Thin GUI Client (Tauri / React 19)"]
+        ReactApp["React UI (Dashboard, Screen Time, Sessions)"]
+        ZustandStore["Zustand Global State"]
+        TauriIPC["Tauri IPC Commands (src-tauri/src/ipc.rs)"]
+        ReactApp --> ZustandStore --> TauriIPC
+    end
 
-A persistence failure stops native monitoring/capture and stops publishing restriction leases. The failed process refuses further session mutations until restarted. The database might still contain the last successful active checkpoint: recovery reconciles its timer and requires new browser acknowledgement. There are no persistent OS locks to undo. Logging avoids activity content and pairing secrets.
+    subgraph Daemon ["Authoritative Background Daemon (--background)"]
+        Engine["Engine Loop (1-sec tick, Continuous Monotonic Clock)"]
+        IPCServer["Loopback IPC Server (127.0.0.1:0 + Bearer Token)"]
+        DB["SQLite Database (preelock.sqlite, WAL Mode)"]
+        NativeMac["Native macOS Adapter (macos.m, AppKit, Vision, AX)"]
+        NativeWin["Native Windows Adapter (windows.rs, UI Automation)"]
+        Bridge["Browser Extension Bridge (127.0.0.1:47832)"]
 
-## Timing and activity
+        IPCServer <--> Engine
+        Engine <--> DB
+        Engine --> NativeMac
+        Engine --> NativeWin
+        Engine <--> Bridge
+    end
 
-macOS `mach_continuous_time` and Windows `GetTickCount64` measure sample deltas including sleep. Only the Rust worker can credit productive time; UI polls cannot. Gaps over 3 seconds become RECOVERING with zero credit. Restart records a nonnegative wall-clock gap as unknown elapsed, never productive; clock changes cannot advance the target. Historical elapsed timers remain labeled legacy and active legacy timers stop on upgrade.
+    subgraph OS ["Operating System Supervisors"]
+        LaunchAgent["macOS LaunchAgent (com.preelock.background)"]
+        WinTask["Windows Task Scheduler (PreelockBackground)"]
+    end
 
-`attention.rs` combines approved foreground apps, fresh paired-browser hostname metadata, idle context, optional Vision presence and configured fallback. Two stable seconds precede accepted focus. Grace delays confident distraction/absence labels, but never awards uncertain time. Reading/lecture permit 20 minutes idle; other tasks permit five, unless camera presence supports continued work. This does not establish comprehension or defeat input simulation. Manual policy accepts at most 60 seconds after explicit self-report. Corrections require a note, cannot credit gaps or double-credit intervals, and stay auditable. Migration 3 stores indexed intervals; snapshots keep the latest 300 for review. Writes occur on transitions and five-second checkpoints.
+    subgraph Browsers ["Browser Integrations"]
+        SafariNative["Safari (Direct AppleScript & Accessibility)"]
+        ExtChromium["Chromium Browsers (Chrome, Brave, Edge, Comet, Arc via MV3)"]
+    end
 
-Window close hides the window and preserves the worker. A visible tray/menu provides reopen and quit/release. Normal quit interrupts and saves active sessions; crashes preserve the last checkpoint for conservative recovery. There is no startup agent or hidden persistence.
+    TauriIPC <== "Loopback IPC (JSON-RPC)" ==> IPCServer
+    LaunchAgent -.-> Daemon
+    WinTask -.-> Daemon
+    NativeMac --> SafariNative
+    Bridge <== "HTTP Loopback" ==> ExtChromium
+```
 
-Activity totals count observed one-second samples only; sleep, suspension and process downtime do not invent app activity. Idle means at least 60 seconds without OS input. Timer duration is not proof of attention. Analytics continue to assign focus to the local start date. All app sampling requires per-session consent. The app list is read only during setup/refresh; app contents are never inspected.
+---
 
-## Native adapters
+## 2. Process Separation & Mutex Model
 
-macOS uses AppKit NSWorkspace/NSRunningApplication to enumerate regular running applications, observe the foreground bundle ID and hide a disallowed app. Windows uses EnumWindows, GetForegroundWindow, QueryFullProcessImageNameW, GetLastInputInfo and ShowWindowAsync to minimize a disallowed foreground window. These are cooperative UI controls, not process termination or launch prevention. Recovery applications are exempt. Errors interrupt enforcement visibly. Hidden/minimized windows can be reopened normally; cleanup stops further redirection rather than opening every window automatically.
+### 2.1 The Two Processes
 
-Optional macOS presence capture uses AVFoundation and a local Vision upper-body detection request at approximately one frame per second, confidence threshold 0.6. Thirty seconds without detection reports extended absence. No frame leaves process memory. Capture starts only with OS authorization plus session consent and stops on consent withdrawal, pause, completion, interruption or process exit. A camera error disables capture visibly without pretending attention is verified. Windows presence detection and phone-use detection are unavailable.
+1. **Background Engine (`preelock --background`):**
+   - Single authoritative owner of `Engine`, SQLite persistence, schedules, app locks, adult website blocking, and continuous timer countdowns.
+   - Runs continuously in the background supervised by macOS LaunchAgent (`~/Library/LaunchAgents/com.preelock.background.plist`) or Windows Task Scheduler.
+   - Protected by `engine.lock` (flock).
+2. **Thin Desktop GUI (`preelock`):**
+   - Renders the window, system tray menu, and modals.
+   - Protected by `gui.lock` (single GUI instance). If launched when a GUI is already running, brings the existing window to focus.
+   - Can be closed (`Cmd+W`, `Cmd+Q`, or minimized to tray) at any time without terminating or interrupting background focus sessions or blocking enforcement.
 
-## Browser isolation and recovery
+### 2.2 Force-Quit Recovery & Re-Launch Supervisor
 
-The MV3 extension uses Chromium declarativeNetRequest session rules. It never reads page content. Blocklists use request domains; Strict allows selected domains and their subdomains; browser-offline blocks HTTP(S)/WS(S) except loopback. It cannot revoke cached/offline content or already established streams, filter other profiles/clients, prevent extension removal, or enforce a system-wide network policy.
+- During an active strict focus session or active strict app/website block, if the GUI is terminated (macOS Force Quit or Windows Task Manager), the background daemon detects GUI termination and automatically relaunches Preelock GUI within 1-5 seconds.
+- Outside of strict mode, quitting the GUI leaves the background engine running quietly in the background.
 
-An authenticated loopback bridge accepts bounded POSTs from extension origins with an exact Host header and random 64-character pairing token. No arbitrary OS actions are exposed. One extension installation/client pairs per process; pairing identity is not cryptographic proof that it is the same browser selected in the wizard. The user must select the paired browser/profile. A malicious same-user process with access to app data can spoof the bridge; this is not an adversarial security boundary.
+---
 
-Rules receive leases no longer than 65 seconds, refreshed by Desktop. A browser heartbeat older than 45 seconds interrupts the session. The extension polls while awake and uses 30-second browser alarms as a fallback. Failed bridge fetches clear its rules. Browser sleep/worker scheduling may delay cleanup beyond lease expiry; independent popup recovery, extension disable/uninstall and browser restart remain available. Session rules are cleared by a browser restart. The bridge never changes firewall, DNS, proxy or VPN configuration. See docs/FOCUS_MODE.md for exact bypass limits and setup.
+## 3. Communication & IPC Architecture
+
+### 3.1 Desktop GUI to Background Engine
+
+- **Protocol:** HTTP POST to `/rpc` on `127.0.0.1:{ephemeral_port}`.
+- **Authentication:** 256-bit bearer token written to `bg-ipc.json` with `0600` permissions on startup.
+- **Security:**
+  - Rejects any request with an `Origin` header (prevents browser script CSRF).
+  - Enforces exact `Host` matching (`127.0.0.1:{port}`) to prevent DNS rebinding.
+  - Maximum payload bounded to 32 MB.
+
+### 3.2 Browser Extension to Background Engine
+
+- **Bridge Endpoint:** `127.0.0.1:47832` (`src-tauri/src/browser.rs`).
+- **Origin Verification:** Verifies Chrome Web Store extension origin (`chrome-extension://...`).
+- **Lease Model:** Blocking rules receive leases of 65 seconds refreshed on every heartbeat. If the engine stops, the extension automatically clears rules after lease expiration.
+
+---
+
+## 4. Website & Adult Content Blocking
+
+### 4.1 Safari Direct Integration (macOS)
+
+- Requires no browser extension.
+- Uses native macOS Accessibility APIs (`AXUIElementCopyAttributeValue`) to read active URL and AppleScript to navigate blocked domains to `about:blank`.
+
+### 4.2 Chromium Browsers (Chrome, Brave, Edge, Comet, Arc)
+
+- **Primary Layer:** Declarative Net Request (DNR) session rules in MV3 extension.
+- **Secondary Native Layer:** Native macOS Accessibility / Windows UI Automation monitors foreground address bars and redirects tabs directly if extension is absent or tampered with.
+
+### 4.3 Adult Website Blocking
+
+- Bundles an embedded list of ~50,000 adult domains compiled directly into the binary (`include_str!("../resources/adult-domains.txt")`), requiring no runtime file lookup or internet connection.
+- Operates system-wide across all supported browsers.
+
+---
+
+## 5. Storage & Database Architecture
+
+- **Database Engine:** Embedded SQLite with `rusqlite` bundled.
+- **Path:** `com.preelock.desktop/preelock.sqlite`
+- **Concurrency:** Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), synchronous disk writes (`PRAGMA synchronous=FULL;`), and 5-second busy timeout.
+- **Migrations:** Additive migrations `001_initial.sql` through `012_strict_blocks.sql`.
+- **Reliability:** Automated pre-migration backups and `PRAGMA quick_check(1)` integrity checking on database initialization.

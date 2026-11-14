@@ -189,6 +189,20 @@ export interface ScreenTimeBucket {
   name: string;
   ms: number;
 }
+export interface StrictBlockState {
+  enabled: boolean;
+  strict: boolean;
+  ends_at_ms?: number | null;
+  activating_until_ms?: number | null;
+  created_at_ms: number;
+}
+export interface AdultBlock {
+  enabled: boolean;
+  strict: boolean;
+  ends_at_ms?: number | null;
+  activating_until_ms?: number | null;
+  created_at_ms: number;
+}
 export interface Snapshot {
   sessions: Session[];
   tasks: Task[];
@@ -196,6 +210,9 @@ export interface Snapshot {
   one_shots?: OneShot[];
   allowances?: Allowance[];
   app_locks?: AppLock[];
+  strict_apps?: StrictBlockState;
+  strict_sites?: StrictBlockState;
+  adult_block?: AdultBlock;
   screen_time_usage?: ScreenTimeBucket[];
   preferences: Preferences;
   browser?: BrowserStatus;
@@ -309,6 +326,21 @@ export type Action =
       rule: AppLockRuleInput;
     }
   | { type: 'delete_app_lock'; id: string }
+  | {
+      type: 'start_strict_block';
+      target: 'apps' | 'sites' | 'adult';
+      days: number;
+    }
+  | {
+      type: 'cancel_strict_block';
+      target: 'apps' | 'sites' | 'adult';
+    }
+  | {
+      type: 'set_adult_block';
+      enabled: boolean;
+      strict: boolean;
+      minutes?: number | null;
+    }
   | { type: 'take_reward_break' | 'cancel_delayed_break'; id: string }
   | { type: 'disable_camera' | 'enable_camera'; id: string }
   | { type: 'correct_interval'; id: string; interval_id: string; note: string }

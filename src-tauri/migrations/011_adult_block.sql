@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS adult_block (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);
+PRAGMA user_version=11;

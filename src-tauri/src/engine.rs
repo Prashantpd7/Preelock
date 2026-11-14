@@ -2153,6 +2153,9 @@ impl Engine {
                         last_enforcement_at_ms: Some(now),
                         recovery_status: Some("clean".into()),
                     },
+                    start_notified: false,
+                    complete_notified: false,
+                    inactivity_notified: false,
                 };
                 session.report.event(
                     now,
@@ -2315,6 +2318,9 @@ impl Engine {
                     last_enforcement_at_ms: Some(now),
                     recovery_status: Some("clean".into()),
                 },
+                start_notified: false,
+                complete_notified: false,
+                inactivity_notified: false,
             };
             session.report.event(
                 now,
@@ -2390,7 +2396,7 @@ impl Engine {
         Ok(true)
     }
     fn sample_screen_time(&mut self, now: i64, delta: u64) -> Result<(), String> {
-        if delta == 0 || delta > 3000 || !self.native {
+        if delta == 0 || delta > 5000 || !self.native {
             return Ok(());
         }
         let sample = platform::sample()?;
@@ -2444,7 +2450,7 @@ impl Engine {
             false,
             &usage,
         );
-        if sample.idle_ms < 60_000
+        if sample.idle_ms < 180_000
             && !crate::focus::protected(&sample.id)
             && crate::allowances::app_exhausted(&self.data.allowances, now, &sample.id, "")
         {
@@ -2476,8 +2482,66 @@ impl Engine {
         // browser exemption: the user targeted this app explicitly,
         // and hiding keeps its process and the paired extension
         // alive.
-        let locks_pruned = crate::applocks::prune_expired(&mut self.data.app_locks, now);
-        if sample.idle_ms < 60_000
+        let mut strict_changed = false;
+        if crate::adult_block::check_expiry(&mut self.data.adult_block, now) {
+            strict_changed = true;
+        }
+        if crate::adult_block::check_strict_transition(
+            &mut self.data.strict_apps.enabled,
+            &mut self.data.strict_apps.strict,
+            &mut self.data.strict_apps.ends_at_ms,
+            &mut self.data.strict_apps.activating_until_ms,
+            now,
+        ) {
+            strict_changed = true;
+            if self.data.strict_apps.strict {
+                if let Some(strict_end) = self.data.strict_apps.ends_at_ms {
+                    for lock in &mut self.data.app_locks {
+                        if lock.kind == crate::allowances::TargetKind::App {
+                            if let crate::applocks::LockRule::Timed { ends_at_ms } = &mut lock.rule
+                            {
+                                if *ends_at_ms < strict_end {
+                                    *ends_at_ms = strict_end;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if crate::adult_block::check_strict_transition(
+            &mut self.data.strict_sites.enabled,
+            &mut self.data.strict_sites.strict,
+            &mut self.data.strict_sites.ends_at_ms,
+            &mut self.data.strict_sites.activating_until_ms,
+            now,
+        ) {
+            strict_changed = true;
+            if self.data.strict_sites.strict {
+                if let Some(strict_end) = self.data.strict_sites.ends_at_ms {
+                    for lock in &mut self.data.app_locks {
+                        if lock.kind == crate::allowances::TargetKind::Site {
+                            if let crate::applocks::LockRule::Timed { ends_at_ms } = &mut lock.rule
+                            {
+                                if *ends_at_ms < strict_end {
+                                    *ends_at_ms = strict_end;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if strict_changed {
+            let _ = self.db.save(&self.data);
+        }
+
+        let locks_pruned = if self.data.strict_apps.strict || self.data.strict_sites.strict {
+            false
+        } else {
+            crate::applocks::prune_expired(&mut self.data.app_locks, now)
+        };
+        if sample.idle_ms < 180_000
             && !crate::focus::protected(&sample.id)
             && crate::applocks::app_locked(
                 &self.data.app_locks,
@@ -2516,6 +2580,75 @@ impl Engine {
                 );
             }
         }
+        let domain_to_check = if browser_for_site.activity_fresh
+            && browser_for_site.browser_focused
+            && !browser_for_site.active_domain.is_empty()
+        {
+            Some(browser_for_site.active_domain.as_str())
+        } else {
+            native_site.as_ref().map(|s| s.domain.as_str())
+        };
+        if let Some(domain) = domain_to_check {
+            if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(domain) {
+                platform::redirect_browser_blocked(&sample.name);
+                if crate::focus::safari(&sample.id) {
+                    platform::redirect_safari_blocked();
+                }
+                let cause = crate::blockreasons::BlockCause::adult();
+                self.notify_block_cause(&sample, &cause, now);
+                record_blocked_app_page(
+                    &mut self.data.blocked_app_notice,
+                    &mut self.overlay_last_shown,
+                    &sample,
+                    &cause,
+                    now,
+                );
+                let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
+                    at_ms: now,
+                    kind: crate::stats::AttemptKind::Site,
+                    target: domain.into(),
+                    session_id: None,
+                    reason: "adult_block".into(),
+                });
+            } else if sample.idle_ms < 600_000
+                && crate::applocks::site_locked(
+                    &self.data.app_locks,
+                    &self.data.screen_time_usage,
+                    day_ms,
+                    now,
+                    domain,
+                )
+            {
+                if crate::focus::safari(&sample.id) {
+                    platform::redirect_safari_blocked();
+                }
+                let _ = platform::hide(&sample);
+                if let Some(lock) = crate::applocks::enforced_lock_for_site(
+                    &self.data.app_locks,
+                    &self.data.screen_time_usage,
+                    day_ms,
+                    now,
+                    domain,
+                ) {
+                    let cause = match lock.rule {
+                        crate::applocks::LockRule::Timed { ends_at_ms } => {
+                            crate::blockreasons::BlockCause::timed_lock(&lock.title, ends_at_ms)
+                        }
+                        crate::applocks::LockRule::DailyLimit { .. } => {
+                            crate::blockreasons::BlockCause::daily_limit(&lock.title)
+                        }
+                    };
+                    self.notify_block_cause(&sample, &cause, now);
+                    record_blocked_app_page(
+                        &mut self.data.blocked_app_notice,
+                        &mut self.overlay_last_shown,
+                        &sample,
+                        &cause,
+                        now,
+                    );
+                }
+            }
+        }
         if let Some(bridge) = &self.bridge {
             let mut site_rules =
                 crate::allowances::exhausted_site_rules(&self.data.allowances, now);
@@ -2535,7 +2668,7 @@ impl Engine {
         // 5-second flush checkpoint is otherwise untouched.
         let allowance_due = allowance_changed
             && clock::continuous_ms().saturating_sub(self.allowance_checkpoint) >= 5000;
-        if allowance_due || locks_pruned {
+        if allowance_due || locks_pruned || strict_changed {
             self.db.save(&self.data)?;
             if allowance_due {
                 self.allowance_checkpoint = clock::continuous_ms();
@@ -2546,53 +2679,116 @@ impl Engine {
         }
         Ok(())
     }
-    /// Advance engine state by one tick and emit headless session start/complete
-    /// notifications when no desktop GUI window process is connected.
+    /// Advance engine state by one tick and evaluate durable background notifications.
     pub fn tick(&mut self) -> Result<(), String> {
-        let should_notify = self.native
-            && !crate::background::desktop_alive(&self.data_dir)
-            && crate::desktop_settings::can_notify();
-        let before: Option<std::collections::HashMap<String, (Status, bool)>> =
-            should_notify.then(|| {
-                self.data
-                    .sessions
-                    .iter()
-                    .map(|s| (s.id.clone(), (s.status.clone(), s.grace_until_ms.is_some())))
-                    .collect()
-            });
         let result = self.tick_inner();
-        if result.is_ok() {
-            if let Some(prev) = before {
-                let p = &self.data.preferences;
-                for s in &self.data.sessions {
-                    let tr = crate::settings::session_transition(
-                        &prev,
-                        &s.id,
-                        &s.status,
-                        s.grace_until_ms.is_some(),
+        if result.is_ok() && self.owns_engine_lock() {
+            self.evaluate_notifications();
+        }
+        result
+    }
+
+    fn evaluate_notifications(&mut self) {
+        if !crate::desktop_settings::can_notify() {
+            return;
+        }
+        let now = clock::now();
+        let p = self.data.preferences.clone();
+        let mut session_changed = false;
+
+        for s in &mut self.data.sessions {
+            // 1. Session completed alert
+            if s.status == Status::Completed && !s.complete_notified {
+                if p.notifications_enabled && p.session_alert {
+                    crate::desktop_settings::notify("Focus complete", "You reached your target.");
+                    if p.sound {
+                        crate::desktop_settings::sound(p.volume);
+                    }
+                }
+                s.complete_notified = true;
+                session_changed = true;
+            }
+
+            // 2. Session started alert (only once grace has finished or if no grace)
+            if s.status == Status::Running
+                && !crate::notifications::grace_active(s.grace_until_ms, now)
+                && !s.start_notified
+            {
+                if p.notifications_enabled && p.session_start_alert {
+                    crate::desktop_settings::notify(
+                        "Focus started",
+                        "Your session timer is running.",
                     );
-                    if tr.completed && p.notifications_enabled && p.session_alert {
-                        crate::desktop_settings::notify(
-                            "Focus complete",
-                            "You reached your target.",
-                        );
-                        if p.sound {
-                            crate::desktop_settings::sound(p.volume);
-                        }
+                    if p.session_start_sound {
+                        crate::desktop_settings::sound(p.volume);
                     }
-                    if tr.started && p.notifications_enabled && p.session_start_alert {
-                        crate::desktop_settings::notify(
-                            "Focus started",
-                            "Your session timer is running.",
-                        );
-                        if p.session_start_sound {
-                            crate::desktop_settings::sound(p.volume);
+                }
+                s.start_notified = true;
+                session_changed = true;
+            }
+
+            // 3. Inactivity reminder: absent from desk during an active session
+            if matches!(s.status, Status::Running | Status::Preparing) {
+                if s.attention.state == crate::attention::State::Absent {
+                    if !s.inactivity_notified {
+                        if p.notifications_enabled {
+                            crate::desktop_settings::notify(
+                                "Focus paused",
+                                "No activity detected for 5 minutes. Move your mouse or type to resume.",
+                            );
+                            if p.notifications_sound {
+                                crate::desktop_settings::sound(p.volume);
+                            }
                         }
+                        s.inactivity_notified = true;
+                        session_changed = true;
                     }
+                } else if s.attention.state == crate::attention::State::Focused
+                    && s.inactivity_notified
+                {
+                    s.inactivity_notified = false;
+                    session_changed = true;
                 }
             }
         }
-        result
+
+        if session_changed {
+            let _ = self.db.save(&self.data);
+        }
+
+        // 4. User-configured daily focus reminder
+        self.evaluate_daily_reminders();
+    }
+
+    fn evaluate_daily_reminders(&mut self) {
+        let p = self.data.preferences.clone();
+        if !p.reminder || !p.notifications_enabled || self.has_active() {
+            return;
+        }
+        if let Ok(info) = crate::desktop_settings::info() {
+            let (Some(day), Some(time_str), Some(date_str)) = (
+                info["day"].as_u64(),
+                info["time"].as_str(),
+                info["date"].as_str(),
+            ) else {
+                return;
+            };
+            let key = format!("{}:{}", date_str, p.reminder_time);
+            if time_str == p.reminder_time
+                && p.reminder_days.contains(&(day as u32))
+                && self.data.preferences.last_reminder_date != key
+            {
+                self.data.preferences.last_reminder_date = key;
+                crate::desktop_settings::notify(
+                    "Time to focus",
+                    "Choose a task when you’re ready.",
+                );
+                if p.notifications_sound {
+                    crate::desktop_settings::sound(p.volume);
+                }
+                let _ = self.db.save(&self.data);
+            }
+        }
     }
     fn tick_inner(&mut self) -> Result<(), String> {
         // M1: only the engine holding the cross-process lock may tick.
@@ -2998,6 +3194,24 @@ impl Engine {
                                 now,
                                 &sample.id,
                             );
+                            let native_site_for_session = crate::websites::native_site(&sample.id);
+                            let domain_for_lock = if browser.activity_fresh
+                                && browser.browser_focused
+                                && !browser.active_domain.is_empty()
+                            {
+                                Some(browser.active_domain.as_str())
+                            } else {
+                                native_site_for_session.as_ref().map(|s| s.domain.as_str())
+                            };
+                            let site_lock_blocked = domain_for_lock.is_some_and(|d| {
+                                crate::applocks::site_locked(
+                                    &self.data.app_locks,
+                                    &self.data.screen_time_usage,
+                                    day_ms,
+                                    now,
+                                    d,
+                                )
+                            });
                             let session_rules_blocked = !in_break
                                 && !sample.id.is_empty()
                                 && s.focus
@@ -3015,6 +3229,7 @@ impl Engine {
                             let blocked = session_rules_blocked
                                 || allowance_blocked
                                 || lock_blocked
+                                || site_lock_blocked
                                 || fail_closed_hit;
                             // "Why am I blocked": the true cause,
                             // threaded from the check that fired — never
@@ -3030,6 +3245,16 @@ impl Engine {
                                         now,
                                         &sample.id,
                                     )
+                                } else if site_lock_blocked {
+                                    domain_for_lock.and_then(|d| {
+                                        crate::applocks::enforced_lock_for_site(
+                                            &self.data.app_locks,
+                                            &self.data.screen_time_usage,
+                                            day_ms,
+                                            now,
+                                            d,
+                                        )
+                                    })
                                 } else {
                                     None
                                 };
@@ -3234,6 +3459,10 @@ impl Engine {
                             // but hiding the app's own window strands the user
                             // with no way to stop the session).
                             if blocked && !crate::focus::protected(&sample.id) {
+                                platform::redirect_browser_blocked(&sample.name);
+                                if crate::focus::safari(&sample.id) {
+                                    platform::redirect_safari_blocked();
+                                }
                                 // Best effort: the OS can refuse a hide request (for
                                 // example while the app is still launching). Never
                                 // end the session over it; the next sample retries,
@@ -5219,6 +5448,9 @@ mod tests {
             grace_until_ms: None,
             grace_notified: false,
             durability: Default::default(),
+            start_notified: false,
+            complete_notified: false,
+            inactivity_notified: false,
         }
     }
 
@@ -5889,6 +6121,8 @@ mod tests {
             idle_ms: 0,
             path: String::new(),
             title: String::new(),
+            display_asleep: false,
+            screen_locked: false,
         }
     }
 

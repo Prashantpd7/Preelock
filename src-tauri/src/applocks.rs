@@ -260,6 +260,42 @@ pub fn enforced_lock_for_app<'a>(
     })
 }
 
+/// Whether this site (domain/URL) is app-locked right now.
+pub fn site_locked(
+    locks: &[AppLock],
+    buckets: &[ScreenTimeBucket],
+    day_ms: i64,
+    now_ms: i64,
+    domain: &str,
+) -> bool {
+    if domain.is_empty() {
+        return false;
+    }
+    locks.iter().any(|l| {
+        l.kind == TargetKind::Site
+            && rule_matches(&l.target, domain, "")
+            && is_enforced(l, buckets, day_ms, now_ms)
+    })
+}
+
+/// The enforced lock matching this site, if any.
+pub fn enforced_lock_for_site<'a>(
+    locks: &'a [AppLock],
+    buckets: &[ScreenTimeBucket],
+    day_ms: i64,
+    now_ms: i64,
+    domain: &str,
+) -> Option<&'a AppLock> {
+    if domain.is_empty() {
+        return None;
+    }
+    locks.iter().find(|l| {
+        l.kind == TargetKind::Site
+            && rule_matches(&l.target, domain, "")
+            && is_enforced(l, buckets, day_ms, now_ms)
+    })
+}
+
 /// Targets of enforced site-kind locks, sorted and deduped, for
 /// the published policy's `extra_blocked` list (the same overlay
 /// step 8 uses — no extension change).
@@ -696,5 +732,47 @@ mod tests {
         let back: AppLock = serde_json::from_str(&json).unwrap();
         assert_eq!(back.target, "youtube.com");
         assert!(matches!(back.kind, TargetKind::Site));
+    }
+
+    #[test]
+    fn site_locked_and_enforced_lock_for_site_matches_domains_and_wildcards() {
+        let now = 1_800_000_000_000;
+        let day = 1_799_990_400_000;
+        let timed = lock(
+            TargetKind::Site,
+            "youtube.com",
+            LockRule::Timed {
+                ends_at_ms: now + 30 * 60_000,
+            },
+            now,
+        );
+        let wildcard = lock(
+            TargetKind::Site,
+            "*.reddit.com",
+            LockRule::Timed {
+                ends_at_ms: now + 30 * 60_000,
+            },
+            now,
+        );
+        let locks = vec![timed, wildcard];
+        let buckets = vec![];
+
+        // Exact match
+        assert!(site_locked(&locks, &buckets, day, now, "youtube.com"));
+        // Subdomain of plain host matches rule_matches
+        assert!(site_locked(&locks, &buckets, day, now, "www.youtube.com"));
+        assert!(site_locked(&locks, &buckets, day, now, "m.youtube.com"));
+        // Wildcard match
+        assert!(site_locked(&locks, &buckets, day, now, "old.reddit.com"));
+        assert!(site_locked(&locks, &buckets, day, now, "www.reddit.com"));
+        // Non-matching sites
+        assert!(!site_locked(&locks, &buckets, day, now, "github.com"));
+        assert!(!site_locked(&locks, &buckets, day, now, "notyoutube.com"));
+        assert!(!site_locked(&locks, &buckets, day, now, ""));
+
+        // Enforced lock retrieval
+        let found = enforced_lock_for_site(&locks, &buckets, day, now, "youtube.com");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().target, "youtube.com");
     }
 }

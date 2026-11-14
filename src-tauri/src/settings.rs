@@ -241,8 +241,6 @@ pub struct Runtime {
     previous: Option<HashMap<String, (Status, bool)>>,
     pub break_end: u64,
     pub offered: String,
-    reminder_key: String,
-    next_reminder: u64,
     tray_title: String,
 }
 impl Runtime {
@@ -264,22 +262,8 @@ impl Runtime {
             for s in &data.sessions {
                 let transition =
                     session_transition(previous, &s.id, &s.status, s.grace_until_ms.is_some());
-                if transition.completed {
-                    if p.notifications_enabled && p.session_alert {
-                        native::notify("Focus complete", "You reached your target.");
-                        if p.sound {
-                            native::sound(p.volume);
-                        }
-                    }
-                    if p.offer_break {
-                        self.offered = s.id.clone();
-                    }
-                }
-                if transition.started && p.notifications_enabled && p.session_start_alert {
-                    native::notify("Focus started", "Your session timer is running.");
-                    if p.session_start_sound {
-                        native::sound(p.volume);
-                    }
+                if transition.completed && p.offer_break {
+                    self.offered = s.id.clone();
                 }
             }
         }
@@ -334,26 +318,6 @@ impl Runtime {
                 });
             }
             self.tray_title = title;
-        }
-        if p.reminder && now >= self.next_reminder {
-            self.next_reminder = now + 15_000;
-            if let Ok(info) = native::info() {
-                let key = format!("{}:{}", info["date"], p.reminder_time);
-                if info["time"].as_str() == Some(&p.reminder_time)
-                    && info["day"]
-                        .as_u64()
-                        .is_some_and(|d| p.reminder_days.contains(&(d as u32)))
-                    && self.reminder_key != key
-                {
-                    self.reminder_key = key;
-                    if active.is_none() && self.break_end == 0 && p.notifications_enabled {
-                        native::notify("Time to focus", "Choose a task when you’re ready.");
-                        if p.notifications_sound {
-                            native::sound(p.volume);
-                        }
-                    }
-                }
-            }
         }
     }
 }

@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
-import { ChevronRight, Globe, LayoutGrid, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronRight,
+  Globe,
+  LayoutGrid,
+  ShieldAlert,
+  X,
+} from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { Dropdown } from './Dropdown';
 import { RowIcon } from './AppIcon';
+import { Toggle } from './SettingsControls';
 import { localDayStart } from '../services/screenTimeWeek';
 import {
   LIMIT_MAX_MINUTES,
@@ -14,9 +22,15 @@ import {
   recentApps,
   validateAppLockForm,
 } from '../services/appLocks';
-import type { Action, AppLock, ScreenTimeBucket } from '../types';
+import type {
+  Action,
+  AdultBlock,
+  AppLock,
+  ScreenTimeBucket,
+  StrictBlockState,
+} from '../types';
 
-type PanelKind = 'apps' | 'sites';
+type PanelKind = 'apps' | 'sites' | 'adult';
 type LockMode = 'timed' | 'daily';
 
 type Execute = (action: Action) => Promise<boolean>;
@@ -29,30 +43,22 @@ function normalizeMinutesInput(raw: string): string {
 }
 
 /** App lock section of the Screen Time page: expandable "Block apps" /
- *  "Block websites" panels, each with a timed-block and a daily-limit
- *  form plus its Active blocks list. Enforcement lives in the Rust
- *  engine (no session required); this is the UI over
- *  `data.app_locks`, refreshed through the same snapshot as the usage
- *  list above it. */
+ *  "Block websites" / "Block adult websites" panels, each with
+ *  independent background enforcement. */
 export function AppLockPanel() {
   const { data, execute, busy } = useAppStore();
   const locks = data.app_locks ?? [];
+  const adultBlock = data.adult_block;
   const buckets = data.screen_time_usage ?? [];
   // Accordion: opening one panel closes the other, keeping the page
   // short while a form is open.
   const [openPanel, setOpenPanel] = useState<PanelKind | null>(null);
 
-  // Live countdown for timed locks. The clock lives in an effect,
-  // never in render (the same purity rule as the Dashboard's grace
-  // timer), and only ticks while a timed lock exists — daily-limit
-  // status follows the snapshot refresh on its own.
-  const hasTimedLock = locks.some((lock) => lock.rule.type === 'timed');
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (!hasTimedLock) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [hasTimedLock]);
+  }, []);
 
   const todayMs = localDayStart(new Date());
 
@@ -64,6 +70,7 @@ export function AppLockPanel() {
     <AppLockPanelBody
       kind={kind}
       locks={locks}
+      strictState={kind === 'app' ? data.strict_apps : data.strict_sites}
       buckets={buckets}
       todayMs={todayMs}
       nowMs={nowMs}
@@ -98,6 +105,24 @@ export function AppLockPanel() {
           <ChevronRight size={18} aria-hidden="true" />
         </button>
         {openPanel === 'sites' && body('site')}
+        <button
+          type="button"
+          className="screen-time-lock-option"
+          aria-expanded={openPanel === 'adult'}
+          onClick={() => toggle('adult')}
+        >
+          <ShieldAlert size={20} aria-hidden="true" />
+          <span>Block adult websites</span>
+          <ChevronRight size={18} aria-hidden="true" />
+        </button>
+        {openPanel === 'adult' && (
+          <AdultBlockPanelBody
+            adultBlock={adultBlock}
+            nowMs={nowMs}
+            busy={busy}
+            execute={execute}
+          />
+        )}
       </div>
     </section>
   );
@@ -106,6 +131,7 @@ export function AppLockPanel() {
 function AppLockPanelBody({
   kind,
   locks,
+  strictState,
   buckets,
   todayMs,
   nowMs,
@@ -114,6 +140,7 @@ function AppLockPanelBody({
 }: {
   kind: 'app' | 'site';
   locks: AppLock[];
+  strictState?: StrictBlockState;
   buckets: ScreenTimeBucket[];
   todayMs: number;
   nowMs: number;
@@ -121,8 +148,18 @@ function AppLockPanelBody({
   execute: Execute;
 }) {
   const [mode, setMode] = useState<LockMode | null>(null);
+  const target = kind === 'app' ? 'apps' : 'sites';
+  const label = kind === 'app' ? 'apps' : 'websites';
   return (
     <div className="screen-time-lock-panel">
+      <StrictBlockSection
+        description={`Lock ${label} blocking for the chosen duration. Active ${label} blocks cannot be deleted or bypassed until expired.`}
+        strictState={strictState}
+        target={target}
+        nowMs={nowMs}
+        busy={busy}
+        execute={execute}
+      />
       <div
         className="screen-time-lock-modes"
         role="group"
@@ -161,6 +198,7 @@ function AppLockPanelBody({
       <AppLockList
         kind={kind}
         locks={locks}
+        strictState={strictState}
         buckets={buckets}
         todayMs={todayMs}
         nowMs={nowMs}
@@ -339,6 +377,7 @@ function AppLockForm({
 function AppLockList({
   kind,
   locks,
+  strictState,
   buckets,
   todayMs,
   nowMs,
@@ -347,6 +386,7 @@ function AppLockList({
 }: {
   kind: 'app' | 'site';
   locks: AppLock[];
+  strictState?: StrictBlockState;
   buckets: ScreenTimeBucket[];
   todayMs: number;
   nowMs: number;
@@ -357,6 +397,13 @@ function AppLockList({
   const panelLocks = locks
     .filter((lock) => lock.kind === kind)
     .sort((a, b) => b.created_at - a.created_at);
+
+  const isStrictLocked = Boolean(
+    strictState?.strict &&
+    strictState?.ends_at_ms &&
+    nowMs < strictState.ends_at_ms,
+  );
+
   return (
     <div>
       <h3 className="screen-time-lock-subhead">Active blocks</h3>
@@ -380,17 +427,31 @@ function AppLockList({
                     {status.text}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  className="icon-button danger"
-                  aria-label={`Remove block: ${lock.title}`}
-                  disabled={busy}
-                  onClick={async () => {
-                    await execute({ type: 'delete_app_lock', id: lock.id });
-                  }}
-                >
-                  <X size={16} aria-hidden="true" />
-                </button>
+                {isStrictLocked ? (
+                  <span
+                    className="screen-time-lock-tag"
+                    style={{
+                      borderColor: 'var(--amber, #f59e0b)',
+                      color: 'var(--amber, #f59e0b)',
+                      fontSize: '11px',
+                      padding: '2px 8px',
+                    }}
+                  >
+                    Strictly locked
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="icon-button danger"
+                    aria-label={`Remove block: ${lock.title}`}
+                    disabled={busy}
+                    onClick={async () => {
+                      await execute({ type: 'delete_app_lock', id: lock.id });
+                    }}
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                )}
               </li>
             );
           })}
@@ -401,6 +462,393 @@ function AppLockList({
             ? 'No active app blocks.'
             : 'No active website blocks.'}
         </p>
+      )}
+    </div>
+  );
+}
+
+const STRICT_DAY_PRESETS = [1, 2, 3, 5, 7];
+
+function formatStrictRemaining(ms: number): string {
+  const mins = Math.max(0, Math.floor(ms / 60_000));
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const remainingMins = mins % 60;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h left` : `${days}d left`;
+  if (hours > 0)
+    return remainingMins > 0
+      ? `${hours}h ${remainingMins}m left`
+      : `${hours}h left`;
+  return `${remainingMins}m left`;
+}
+
+function formatStrictDateTime(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function StrictBlockSection({
+  description,
+  strictState,
+  target,
+  nowMs,
+  busy,
+  execute,
+}: {
+  description: string;
+  strictState?: StrictBlockState;
+  target: 'apps' | 'sites';
+  nowMs: number;
+  busy: boolean;
+  execute: Execute;
+}) {
+  const [selectedDays, setSelectedDays] = useState(1);
+
+  const isEnabled = Boolean(strictState?.enabled);
+  const isStrict = Boolean(strictState?.strict);
+  const endsAt = strictState?.ends_at_ms ?? null;
+  const isExpired = endsAt != null && endsAt <= nowMs;
+  const isStrictActive = isEnabled && isStrict && !isExpired;
+
+  const activatingUntil = strictState?.activating_until_ms ?? null;
+  const isActivating = activatingUntil != null && nowMs < activatingUntil;
+  const countdownSec = isActivating
+    ? Math.max(1, Math.ceil((activatingUntil - nowMs) / 1000))
+    : 0;
+
+  const displayDays =
+    endsAt && activatingUntil
+      ? Math.max(1, Math.round((endsAt - activatingUntil) / 86_400_000))
+      : selectedDays;
+
+  const label = target === 'apps' ? 'apps' : 'websites';
+
+  if (isStrictActive && endsAt) {
+    return (
+      <div className="adult-block-locked-card" style={{ marginBottom: '12px' }}>
+        <div className="screen-time-lock-row">
+          {target === 'apps' ? (
+            <LayoutGrid size={20} aria-hidden="true" />
+          ) : (
+            <Globe size={20} aria-hidden="true" />
+          )}
+          <div className="screen-time-lock-row-meta">
+            <strong>
+              {target === 'apps'
+                ? 'Apps blocked strictly'
+                : 'Websites blocked strictly'}
+            </strong>
+            <span className="screen-time-lock-status muted small">
+              <span
+                className="screen-time-lock-tag"
+                style={{
+                  borderColor: 'var(--amber, #f59e0b)',
+                  color: 'var(--amber, #f59e0b)',
+                }}
+              >
+                Strict block
+              </span>
+              {formatStrictRemaining(endsAt - nowMs)}
+            </span>
+          </div>
+        </div>
+        <p className="adult-block-strict-note">
+          Strict block is active until{' '}
+          <strong>{formatStrictDateTime(endsAt)}</strong> (
+          {formatStrictRemaining(endsAt - nowMs)}). Active {label} blocks cannot
+          be deleted or disabled until expired.
+        </p>
+      </div>
+    );
+  }
+
+  if (isActivating) {
+    return (
+      <div
+        className="adult-block-countdown-card"
+        style={{ marginBottom: '12px' }}
+      >
+        <div className="adult-block-countdown-info">
+          <div className="adult-block-countdown-header">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>Strict block activating in {countdownSec}s...</span>
+          </div>
+          <p
+            className="muted small"
+            style={{ fontSize: '11px', margin: '2px 0 0' }}
+          >
+            Locks {label} strictly for {displayDays}{' '}
+            {displayDays === 1 ? 'day' : 'days'}. Turn back off now to cancel.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="secondary"
+          style={{
+            padding: '6px 12px',
+            fontSize: '12px',
+            whiteSpace: 'nowrap',
+          }}
+          disabled={busy}
+          onClick={async () => {
+            await execute({ type: 'cancel_strict_block', target });
+          }}
+        >
+          Turn back off
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="adult-block-strict-section"
+      style={{ marginBottom: '12px' }}
+    >
+      <div className="adult-block-strict-row">
+        <div className="adult-block-strict-meta">
+          <span className="screen-time-lock-label">Strict block</span>
+          <p
+            className="muted small"
+            style={{ margin: '2px 0 0', fontSize: '12px' }}
+          >
+            {description}
+          </p>
+        </div>
+        <div className="adult-block-strict-controls">
+          <div
+            className="adult-block-compact-chips"
+            role="group"
+            aria-label={`Strict duration days for ${label}`}
+          >
+            {STRICT_DAY_PRESETS.map((d) => (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={selectedDays === d}
+                onClick={() => setSelectedDays(d)}
+              >
+                {d} {d === 1 ? 'day' : 'days'}
+              </button>
+            ))}
+          </div>
+          <Toggle
+            label={`Strict block for ${label}`}
+            checked={false}
+            disabled={busy}
+            onChange={async (checked) => {
+              if (checked) {
+                await execute({
+                  type: 'start_strict_block',
+                  target,
+                  days: selectedDays,
+                });
+              }
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdultBlockPanelBody({
+  adultBlock,
+  nowMs,
+  busy,
+  execute,
+}: {
+  adultBlock?: AdultBlock;
+  nowMs: number;
+  busy: boolean;
+  execute: Execute;
+}) {
+  const [selectedDays, setSelectedDays] = useState(1);
+
+  const isEnabled = Boolean(adultBlock?.enabled);
+  const isStrict = Boolean(adultBlock?.strict);
+  const endsAt = adultBlock?.ends_at_ms ?? null;
+  const isExpired = endsAt != null && endsAt <= nowMs;
+  const isStrictActive = isEnabled && isStrict && !isExpired;
+
+  const activatingUntil = adultBlock?.activating_until_ms ?? null;
+  const isActivating = activatingUntil != null && nowMs < activatingUntil;
+  const countdownSec = isActivating
+    ? Math.max(1, Math.ceil((activatingUntil - nowMs) / 1000))
+    : 0;
+
+  const isNormalActive = isEnabled && !isStrict && !isExpired && !isActivating;
+
+  const displayDays =
+    endsAt && activatingUntil
+      ? Math.max(1, Math.round((endsAt - activatingUntil) / 86_400_000))
+      : selectedDays;
+
+  async function handleToggleMain(turnOn: boolean) {
+    if (isActivating) {
+      await execute({ type: 'cancel_strict_block', target: 'adult' });
+    }
+    if (turnOn) {
+      await execute({
+        type: 'set_adult_block',
+        enabled: true,
+        strict: false,
+      });
+    } else {
+      await execute({
+        type: 'set_adult_block',
+        enabled: false,
+        strict: false,
+      });
+    }
+  }
+
+  return (
+    <div className="screen-time-lock-panel">
+      {/* 1. Turn on / Turn off Toggle row */}
+      <div className="adult-block-toggle-row">
+        <div className="adult-block-toggle-meta">
+          <strong>Block adult websites</strong>
+          <p className="muted small">
+            {isStrictActive
+              ? 'Strict block is active system-wide across all browsers.'
+              : isActivating
+                ? 'Strict block is activating system-wide...'
+                : isNormalActive
+                  ? 'Adult websites blocked system-wide across all browsers.'
+                  : 'Turn on to block adult websites across Safari, Chrome, Brave, Comet, Edge, and Arc.'}
+          </p>
+        </div>
+        <Toggle
+          label="Block adult websites"
+          checked={isStrictActive || isNormalActive || isActivating}
+          disabled={busy || isStrictActive}
+          onChange={handleToggleMain}
+        />
+      </div>
+
+      {/* 2. When Strict block is locked and active */}
+      {isStrictActive && endsAt && (
+        <div className="adult-block-locked-card">
+          <div className="screen-time-lock-row">
+            <ShieldAlert size={20} aria-hidden="true" />
+            <div className="screen-time-lock-row-meta">
+              <strong>Adult websites blocked system-wide</strong>
+              <span className="screen-time-lock-status muted small">
+                <span
+                  className="screen-time-lock-tag"
+                  style={{
+                    borderColor: 'var(--amber, #f59e0b)',
+                    color: 'var(--amber, #f59e0b)',
+                  }}
+                >
+                  Strict block
+                </span>
+                {formatStrictRemaining(endsAt - nowMs)}
+              </span>
+            </div>
+          </div>
+          <p className="adult-block-strict-note">
+            Strict block is active until{' '}
+            <strong>{formatStrictDateTime(endsAt)}</strong> (
+            {formatStrictRemaining(endsAt - nowMs)}). It cannot be canceled or
+            disabled until expired.
+          </p>
+        </div>
+      )}
+
+      {/* 3. When filtering is turned on (Normal mode or countdown running) */}
+      {(isNormalActive || isActivating) && !isStrictActive && (
+        <>
+          {isActivating ? (
+            <div className="adult-block-countdown-card">
+              <div className="adult-block-countdown-info">
+                <div className="adult-block-countdown-header">
+                  <AlertTriangle size={16} aria-hidden="true" />
+                  <span>Strict block activating in {countdownSec}s...</span>
+                </div>
+                <p
+                  className="muted small"
+                  style={{ fontSize: '11px', margin: '2px 0 0' }}
+                >
+                  Filters adult websites strictly for {displayDays}{' '}
+                  {displayDays === 1 ? 'day' : 'days'}. Turn back off now to
+                  cancel.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="secondary"
+                style={{
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  whiteSpace: 'nowrap',
+                }}
+                disabled={busy}
+                onClick={async () => {
+                  await execute({
+                    type: 'cancel_strict_block',
+                    target: 'adult',
+                  });
+                }}
+              >
+                Turn back off
+              </button>
+            </div>
+          ) : (
+            <div className="adult-block-strict-section">
+              <div className="adult-block-strict-row">
+                <div className="adult-block-strict-meta">
+                  <span className="screen-time-lock-label">Strict block</span>
+                  <p
+                    className="muted small"
+                    style={{ margin: '2px 0 0', fontSize: '12px' }}
+                  >
+                    Lock filtering for the chosen duration. Cannot be canceled
+                    or disabled until expired.
+                  </p>
+                </div>
+                <div className="adult-block-strict-controls">
+                  <div
+                    className="adult-block-compact-chips"
+                    role="group"
+                    aria-label="Strict duration days"
+                  >
+                    {STRICT_DAY_PRESETS.map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        aria-pressed={selectedDays === d}
+                        onClick={() => setSelectedDays(d)}
+                      >
+                        {d} {d === 1 ? 'day' : 'days'}
+                      </button>
+                    ))}
+                  </div>
+                  <Toggle
+                    label="Strict block"
+                    checked={false}
+                    disabled={busy}
+                    onChange={async (checked) => {
+                      if (checked) {
+                        await execute({
+                          type: 'start_strict_block',
+                          target: 'adult',
+                          days: selectedDays,
+                        });
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
