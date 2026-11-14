@@ -76,19 +76,33 @@ def stop_bundle_processes():
 
 
 def launch():
-    process = subprocess.Popen([str(app / "Contents/MacOS/preelock")])
+    process = subprocess.Popen(
+        [str(app / "Contents/MacOS/preelock")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        for _ in range(30):
-            assert process.poll() is None, "Installed app exited during startup"
+        for _ in range(45):
+            ret = process.poll()
+            if ret is not None:
+                stdout, stderr = process.communicate(timeout=2)
+                raise AssertionError(f"Installed app exited during startup with code {ret}.\nStdout: {stdout}\nStderr: {stderr}")
             if database.exists():
-                with sqlite3.connect(database) as conn:
-                    if conn.execute("PRAGMA user_version").fetchone()[0] == 10:
-                        break
+                try:
+                    with sqlite3.connect(database) as conn:
+                        if conn.execute("PRAGMA user_version").fetchone()[0] == 12:
+                            break
+                except Exception:
+                    pass
             time.sleep(1)
         else:
-            raise AssertionError("Installed app did not initialize its database")
+            raise AssertionError("Installed app did not initialize its database within 45 seconds")
         time.sleep(5)
-        assert process.poll() is None, "Installed app crashed after initialization"
+        ret = process.poll()
+        if ret is not None:
+            stdout, stderr = process.communicate(timeout=2)
+            raise AssertionError(f"Installed app crashed after initialization with code {ret}.\nStdout: {stdout}\nStderr: {stderr}")
     finally:
         process.terminate()
         try:
@@ -99,6 +113,7 @@ def launch():
         stop_bundle_processes()
 
 
+stop_bundle_processes()
 launch()
 with sqlite3.connect(database) as conn:
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

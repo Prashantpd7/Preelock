@@ -97,7 +97,7 @@ try {
         }
         try {
             $ver = python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('pragma user_version').fetchone()[0])" $database 2>$null
-            if ($ver -and [int]$ver -eq 10) {
+            if ($ver -and [int]$ver -eq 12) {
                 break
             }
         } catch {}
@@ -114,7 +114,7 @@ try {
     Stop-InstalledProcesses
 }
 $token = Join-Path (Split-Path $database -Parent) "browser-token"
-python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==10; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
+python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute('pragma integrity_check').fetchone()[0]=='ok'; assert c.execute('pragma user_version').fetchone()[0]==12; assert c.execute('select count(*) from tasks').fetchone()[0]==0; assert c.execute('select count(*) from sessions').fetchone()[0]==0" $database
 if ($LASTEXITCODE -ne 0) { throw "Database validation failed" }
 python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); assert json.loads(c.execute('select payload from preferences where id=1').fetchone()[0])['theme']=='light'" $database
 if ($LASTEXITCODE -ne 0) { throw "Upgrade lost the saved preference" }
