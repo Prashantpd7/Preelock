@@ -9,7 +9,7 @@ const res = spawnSync(command, ['tauri', 'build', ...args], {
 });
 
 if (res.error) {
-  console.error('Desktop build error:', res.error);
+  process.stderr.write(`Desktop build error: ${res.error.message}\n`);
   process.exit(1);
 }
 
