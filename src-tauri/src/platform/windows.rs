@@ -300,6 +300,10 @@ pub fn sample() -> Result<Sample, String> {
             name = hosted_name;
         }
     }
+    let screen_locked = {
+        let lower = id.to_ascii_lowercase();
+        lower.contains("lockapp.exe") || lower.contains("logonui.exe")
+    };
     Ok(Sample {
         id,
         name,
@@ -307,6 +311,8 @@ pub fn sample() -> Result<Sample, String> {
         idle_ms,
         path,
         title: window_title(hwnd),
+        display_asleep: false,
+        screen_locked,
     })
 }
 pub fn hide(sample: &Sample) -> bool {
