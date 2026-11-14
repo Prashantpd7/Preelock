@@ -29,6 +29,7 @@ tiny_http = "0.12"
 # own dependency list, with no new crate versions.
 sha2 = "0.10"
 fs2 = "0.4"
+socket2 = "0.6"
 # M6: Unix signal handling for the --background process (SIGTERM on
 # macOS logout/shutdown, SIGINT). Already in Cargo.lock (0.2.191) via
 # transitive dependencies; this only adds it to Preelock's own list.
@@ -38,7 +39,7 @@ libc = "0.2"
 winreg = "0.56"
 tauri-plugin-notification = "2"
 rfd = "0.15"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_System_Registry", "Win32_System_Recovery", "Win32_Storage_FileSystem", "Win32_Media_Audio"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_System_Registry", "Win32_System_Recovery", "Win32_Storage_FileSystem", "Win32_Media_Audio", "Win32_System_Diagnostics_ToolHelp"] }
 # `windows` is already in the lockfile through Tauri; the ApplicationModel
 # feature provides the MSIX startupTask state/consent API.
 windows = { version = "0.62", features = [

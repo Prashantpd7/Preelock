@@ -729,6 +729,45 @@ td:first-child {
 .active-session {
   border-color: #99bc7250;
 }
+.unconnected-browser-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  background: rgba(131, 78, 70, 0.22);
+  border: 1px solid #834e46;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.unconnected-browser-banner .banner-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.unconnected-browser-banner .banner-icon {
+  color: #f87171;
+  flex-shrink: 0;
+}
+.unconnected-browser-banner .banner-connect-button {
+  background: #dc2626;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.unconnected-browser-banner .banner-connect-button:hover {
+  background: #b91c1c;
+}
 .active-session-banner {
   border-color: #99bc7250;
   margin-bottom: 24px;

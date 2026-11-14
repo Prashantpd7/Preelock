@@ -12,7 +12,7 @@
     "prebuild": "node browser-extension/make-icons.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "tauri dev",
-    "desktop:build": "tauri build",
+    "desktop:build": "node scripts/desktop-build.mjs",
     "tauri": "tauri",
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings 0",

@@ -46,10 +46,11 @@ pub struct WebSample {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    app_icon, applications, camera_permission, camera_start, camera_status, camera_stop, hide,
-    hide_from_dock, installed_browsers, redirect_browser_blocked, redirect_safari_blocked,
-    register_application_restart, request_camera, request_web_permission, sample, web_permission,
-    web_sample,
+    activate_existing_instance, app_icon, applications, approve_quit, camera_permission,
+    camera_start, camera_status, camera_stop, hide, hide_from_dock,
+    install_background_apple_events, installed_browsers, pump_runloop, redirect_browser_blocked,
+    redirect_safari_blocked, register_application_restart, request_camera, request_web_permission,
+    sample, set_activation_policy_prohibited, web_permission, web_sample,
 };
 #[cfg(target_os = "windows")]
 pub use windows::*;
@@ -107,8 +108,8 @@ mod unsupported {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use unsupported::*;
 
-#[cfg(any(target_os = "windows", test))]
-mod browser_paths;
+pub mod browser_paths;
+pub use browser_paths::browser_display_name;
 pub mod packaging;
 #[cfg(target_os = "windows")]
 pub mod settings_windows;
@@ -133,5 +134,20 @@ pub fn enable_background_startup() -> Result<(), String> {
 /// M2: hide the tray-only process from the Dock / Cmd-Tab. macOS
 /// provides this via `macos::hide_from_dock`; on Windows and Linux
 /// a windowless process shows no taskbar entry, so this is a no-op.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn activate_existing_instance() {}
+
 #[cfg(not(target_os = "macos"))]
 pub fn hide_from_dock() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_activation_policy_prohibited() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn approve_quit() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_background_apple_events(_cb: extern "C" fn()) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pump_runloop(_seconds: f64) {}

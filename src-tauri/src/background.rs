@@ -43,7 +43,7 @@ const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
-pub const RELAUNCH_DELAY_MS: u64 = 1_000;
+pub const RELAUNCH_DELAY_MS: u64 = 5_000;
 pub const RELAUNCH_COOLDOWN_MS: u64 = 5_000;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -491,12 +491,33 @@ pub fn ensure_running_headless(data_dir: &Path) -> Result<(), String> {
     ensure_running_inner(data_dir)
 }
 
-fn terminate_process(pid: u32) {
+fn terminate_process(pid: u32, data_dir: &Path) {
     if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    let gui_held = std::fs::read_to_string(data_dir.join("gui.lock"))
+        .ok()
+        .and_then(|content| content.trim().parse::<u32>().ok())
+        .is_some_and(|gui_pid| gui_pid == pid);
+    if gui_held {
+        log::warn!("Refusing to terminate PID {pid}: currently holding gui.lock");
         return;
     }
     #[cfg(unix)]
     unsafe {
+        let is_preelock = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+            .ok()
+            .is_some_and(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .to_lowercase()
+                    .contains("preelock")
+            });
+        if !is_preelock {
+            log::warn!("Refusing to terminate PID {pid}: process is not preelock");
+            return;
+        }
         let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
         for _ in 0..20 {
             if !process_alive(pid) {
@@ -514,11 +535,39 @@ fn terminate_process(pid: u32) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .creation_flags(0x08000000)
-            .output();
+        unsafe {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            };
+            let handle = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid,
+            );
+            if !handle.is_null() {
+                let mut buffer = vec![0u16; 32768];
+                let mut size = buffer.len() as u32;
+                let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size);
+                let is_preelock = if ok != 0 {
+                    let image_path =
+                        String::from_utf16_lossy(&buffer[..size as usize]).to_lowercase();
+                    image_path.ends_with("preelock.exe") || image_path.ends_with("preelock")
+                } else {
+                    false
+                };
+
+                if is_preelock {
+                    let _ = TerminateProcess(handle, 1);
+                } else {
+                    log::warn!(
+                        "Refusing to terminate PID {pid}: process image is not preelock.exe"
+                    );
+                }
+                CloseHandle(handle);
+            }
+        }
         for _ in 0..20 {
             if !process_alive(pid) {
                 return;
@@ -558,7 +607,57 @@ fn find_preelock_lock_holder(lock_path: &Path) -> Option<u32> {
     None
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn find_preelock_lock_holder(lock_path: &Path) -> Option<u32> {
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let self_pid = std::process::id();
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut candidate = None;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32ProcessID != self_pid && entry.th32ProcessID != 0 {
+                    let len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+                    if exe_name == "preelock.exe" {
+                        // Check if this process holds the GUI lock. If so, it's the active GUI, not a background process.
+                        let gui_held = lock_path
+                            .parent()
+                            .map(|d| d.join("gui.lock"))
+                            .and_then(|p| std::fs::read_to_string(p).ok())
+                            .and_then(|content| content.trim().parse::<u32>().ok())
+                            .is_some_and(|p| p == entry.th32ProcessID);
+                        if !gui_held {
+                            candidate = Some(entry.th32ProcessID);
+                            break;
+                        }
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        candidate
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn find_preelock_lock_holder(_lock_path: &Path) -> Option<u32> {
     None
 }
@@ -581,7 +680,7 @@ fn stop_stale_background(data_dir: &Path) {
     for pid in candidate_pids {
         if process_alive(pid) {
             log::warn!("Stopping stale or non-IPC background process PID {pid}");
-            terminate_process(pid);
+            terminate_process(pid, data_dir);
         }
     }
     clear_stale_runtime_files(data_dir);
@@ -747,7 +846,8 @@ impl UiRelaunchSupervisor {
                 // Process still shutting down cleanly; wait for PID exit.
                 return true;
             }
-            return desktop_alive(data_dir);
+            // If the process is alive at OS level, consider it alive.
+            return true;
         }
         desktop_alive(data_dir)
     }
@@ -824,28 +924,6 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
         return;
     };
     let gui = launch::gui_executable(&exe);
-    #[cfg(target_os = "macos")]
-    if let Some(bundle) = app_bundle_root(&gui) {
-        match Command::new("/usr/bin/open")
-            .arg("-a")
-            .arg(&bundle)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => {
-                *spawned = Some(child);
-            }
-            Err(error) => {
-                log::warn!(
-                    "Could not relaunch Preelock bundle {}: {error}",
-                    bundle.display()
-                );
-            }
-        }
-        return;
-    }
 
     // In development debug builds, Tauri loads the UI from the Vite dev server (127.0.0.1:1420).
     // If Vite is not running, launching the raw debug binary results in a blank white window.
@@ -869,6 +947,11 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 | 0x00000200);
+    }
     match cmd.spawn() {
         Ok(child) => {
             *spawned = Some(child);
@@ -1003,9 +1086,37 @@ fn handle_ipc_request(
     }
 }
 
+#[cfg(target_os = "macos")]
+extern "C" fn on_macos_open_app_request() {
+    log::info!("macOS OpenApplication AppleEvent received; ensuring GUI window is displayed");
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let gui = launch::gui_executable(&exe);
+    let Ok(dir) = data_dir() else {
+        return;
+    };
+    let gui_held = std::fs::read_to_string(dir.join("gui.lock"))
+        .ok()
+        .and_then(|c| c.trim().parse::<u32>().ok())
+        .is_some_and(process_alive);
+    if gui_held {
+        crate::platform::activate_existing_instance();
+    } else {
+        let _ = Command::new(&gui)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
 pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     install_shutdown_handler();
+    crate::platform::set_activation_policy_prohibited();
+    #[cfg(target_os = "macos")]
+    crate::platform::install_background_apple_events(on_macos_open_app_request);
     #[cfg(target_os = "windows")]
     if let Ok(exe) = std::env::current_exe() {
         if crate::launch::launch_mode(
@@ -1104,10 +1215,13 @@ pub fn run() -> i32 {
             return 0;
         }
 
+        #[cfg(target_os = "macos")]
+        crate::platform::pump_runloop(0.02);
+
         let now = std::time::Instant::now();
         let wait = next_tick
             .saturating_duration_since(now)
-            .min(Duration::from_millis(250));
+            .min(Duration::from_millis(100));
         if let Ok((req, reply)) = ipc_rx.recv_timeout(wait) {
             let resp = handle_ipc_request(&mut engine, &dir, &mut supervisor, req);
             let _ = reply.send(resp);
@@ -1223,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_relaunch_supervisor_only_relaunches_after_1s_during_active_strict() {
+    fn ui_relaunch_supervisor_only_relaunches_after_5s_during_active_strict() {
         let mut sup = UiRelaunchSupervisor::default();
 
         // Idle or non-strict never relaunches regardless of elapsed absence.
@@ -1234,22 +1348,22 @@ mod tests {
         sup.mark_ui_alive(1234);
         assert!(!sup.evaluate(25_000, true, true, false));
 
-        // Cmd+Q / Force Quit -> missing for < 1s does not relaunch early.
+        // Cmd+Q / Force Quit -> missing for < 5s does not relaunch early.
         assert!(!sup.evaluate(30_000, true, false, false));
-        assert!(!sup.evaluate(30_999, true, false, false));
+        assert!(!sup.evaluate(34_999, true, false, false));
 
-        // Reaches ~1s missing -> relaunches once!
-        assert!(sup.evaluate(31_000, true, false, false));
+        // Reaches 5s missing -> relaunches once!
+        assert!(sup.evaluate(35_000, true, false, false));
         // Cooldown prevents duplicate spawns while GUI is booting.
-        assert!(!sup.evaluate(31_500, true, false, false));
         assert!(!sup.evaluate(35_500, true, false, false));
+        assert!(!sup.evaluate(39_999, true, false, false));
 
         // OS shutdown suppresses relaunch even in active strict.
         assert!(!sup.evaluate(50_000, true, false, true));
 
-        // Strict ends before 1s elapses -> timer cancelled, never relaunches.
+        // Strict ends before 5s elapses -> timer cancelled, never relaunches.
         assert!(!sup.evaluate(60_000, true, false, false));
-        assert!(!sup.evaluate(60_500, false, false, false));
+        assert!(!sup.evaluate(62_500, false, false, false));
         assert!(!sup.evaluate(70_000, false, false, false));
     }
 

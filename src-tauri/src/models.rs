@@ -284,6 +284,10 @@ pub struct Snapshot {
     pub preferences: Preferences,
     #[serde(default)]
     pub browser: Option<crate::browser::BrowserStatus>,
+    /// Global warning when the user is actively using an unconnected supported browser.
+    /// Never persisted; updated per-tick by the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unconnected_browser: Option<UnconnectedBrowserWarning>,
     /// "Why am I blocked" app page: the last blocked app + its true
     /// reason, shown in the fullscreen `blocked-app` overlay window
     /// instead of the app just silently hiding. Set by the engine at
@@ -292,6 +296,13 @@ pub struct Snapshot {
     /// reaches the DB, and old saves load with no notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_app_notice: Option<BlockedAppNotice>,
+}
+
+/// Active unconnected browser warning for global banner and notifications.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnconnectedBrowserWarning {
+    pub browser_id: String,
+    pub browser_name: String,
 }
 
 /// One blocked-app page notice: which app was hidden and why, in

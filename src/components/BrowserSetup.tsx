@@ -14,6 +14,9 @@ export function isSupportedBrowser(id: string): boolean {
     'com.vivaldi.vivaldi',
     'org.chromium.chromium',
     'ai.perplexity.comet',
+    'company.thebrowser.browser',
+    'com.operasoftware.opera',
+    'com.operasoftware.operagx',
   ];
   if (known.includes(lower)) return true;
   return [
@@ -23,6 +26,8 @@ export function isSupportedBrowser(id: string): boolean {
     'vivaldi.exe',
     'chromium.exe',
     'comet.exe',
+    'arc.exe',
+    'opera.exe',
   ].some((name) => lower.endsWith(`\\${name}`) || lower === name);
 }
 
@@ -38,6 +43,9 @@ export function getBrowserDisplayName(browser: {
   if (id.includes('vivaldi')) return 'Vivaldi';
   if (id.includes('chromium')) return 'Chromium';
   if (id.includes('chrome')) return 'Google Chrome';
+  if (id.includes('arc') || id.includes('thebrowser')) return 'Arc';
+  if (id.includes('operagx')) return 'Opera GX';
+  if (id.includes('opera')) return 'Opera';
   return browser.id;
 }
 
@@ -50,6 +58,8 @@ export function getInstallButtonText(name: string): string {
   if (lower.includes('comet')) return 'Add to Comet';
   if (lower.includes('vivaldi')) return 'Add to Vivaldi';
   if (lower.includes('chromium')) return 'Add to Chromium';
+  if (lower.includes('arc')) return 'Add to Arc';
+  if (lower.includes('opera')) return 'Add to Opera';
   return `Add to ${name}`;
 }
 

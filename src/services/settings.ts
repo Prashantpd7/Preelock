@@ -49,6 +49,7 @@ export interface SettingsInfo {
   login?: number;
   login_user_pref?: boolean;
   notifications?: number;
+  accessibility?: number;
   version?: string;
   break_remaining?: number;
   break_offer?: string;

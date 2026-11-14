@@ -82,6 +82,8 @@ pub fn enable_background_startup() -> Result<(), String> {
         Err("Windows did not enable the Preelock background startup task.".into())
     }
 }
+pub fn approve_quit() {}
+
 pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     if let Err(error) = migrate_login_label() {
@@ -231,6 +233,7 @@ pub fn info() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "login": login,
         "notifications": if notifications {2} else {1},
+        "accessibility": 1,
         "day": time.wDayOfWeek,
         "date": format!("{}-{}-{}", time.wYear,time.wMonth,time.wDay),
         "time": format!("{:02}:{:02}",time.wHour,time.wMinute)

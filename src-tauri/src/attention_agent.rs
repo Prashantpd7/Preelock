@@ -72,12 +72,17 @@ pub fn ensure_running(dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Command::new(exe)
-        .arg(ARG)
+    let mut cmd = Command::new(exe);
+    cmd.arg(ARG)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("Could not start attention agent: {e}"))
 }
@@ -192,6 +197,7 @@ fn handle(mut stream: TcpStream, expected: &str, capture: &mut Capture) {
 
 pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    crate::platform::set_activation_policy_prohibited();
     let dir = match data_dir() {
         Ok(dir) => dir,
         Err(_) => return 1,

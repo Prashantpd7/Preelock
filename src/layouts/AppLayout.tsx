@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { FirstRunPermissions } from '../components/PermissionsGuide';
 import { ActiveSessionBanner } from '../components/ActiveSessionBanner';
+import { UnconnectedBrowserBanner } from '../components/UnconnectedBrowserBanner';
 import { BreakBar } from '../components/BreakBar';
 import { PreSessionWarning } from '../components/PreSessionWarning';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -69,6 +70,7 @@ export function AppLayout() {
       </aside>
       <div className="main-shell">
         <main>
+          <UnconnectedBrowserBanner />
           <ActiveSessionBanner />
           <BreakBar />
           <PreSessionWarning />

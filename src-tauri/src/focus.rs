@@ -488,6 +488,9 @@ pub fn supported_browser(id: &str) -> bool {
         "com.vivaldi.vivaldi",
         "org.chromium.chromium",
         "ai.perplexity.comet",
+        "company.thebrowser.browser",
+        "com.operasoftware.opera",
+        "com.operasoftware.operagx",
     ]
     .contains(&id.as_str())
         || [
@@ -497,9 +500,11 @@ pub fn supported_browser(id: &str) -> bool {
             "vivaldi.exe",
             "chromium.exe",
             "comet.exe",
+            "arc.exe",
+            "opera.exe",
         ]
         .iter()
-        .any(|name| id.ends_with(&format!("\\{name}")))
+        .any(|name| id.ends_with(&format!("\\{name}")) || id == *name)
 }
 /// Safari is a known browser with no Preelock extension. It stays a normal
 /// application everywhere (screen time, app blocking, normal use); this is

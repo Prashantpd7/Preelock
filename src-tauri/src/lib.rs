@@ -56,9 +56,21 @@ impl GuiLock {
         let _ = std::fs::create_dir_all(dir);
         let lock_path = dir.join("gui.lock");
         for _ in 0..3 {
-            if let Ok(file) = std::fs::File::create(&lock_path) {
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+            {
                 if file.try_lock_exclusive().is_ok() {
-                    return Some(Self { _file: file });
+                    use std::io::{Seek, SeekFrom, Write};
+                    let mut f = file;
+                    let _ = f.set_len(0);
+                    let _ = f.seek(SeekFrom::Start(0));
+                    let _ = writeln!(f, "{}", std::process::id());
+                    let _ = f.flush();
+                    return Some(Self { _file: f });
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -188,7 +200,13 @@ async fn focus_setup(
                 browsers.push(installed);
             }
         }
-        let extension_directory = setup::extension_dir(&app)?;
+        let extension_directory = if cfg!(debug_assertions) {
+            setup::extension_dir(&app)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         let default_browser = setup::default_browser_id();
         // Default to the first known browser, matching the wizard's dropdown.
         let browser_id = browser_id
@@ -202,6 +220,7 @@ async fn focus_setup(
             "applications":applications,
             "browsers":browsers,
             "camera_permission":platform::camera_permission(),
+            "accessibility_permission":platform::web_permission(),
             "browser":setup_info.browser,
             "connected_browsers":setup_info.connected_browsers,
             "pairing_token":setup_info.pairing_token,
@@ -330,8 +349,14 @@ fn quit(app: &tauri::AppHandle) {
     });
 }
 fn disconnect_ui(app: &tauri::AppHandle) {
+    desktop_settings::approve_quit();
     app.state::<ExitApproved>().0.store(true, Ordering::Release);
     app.exit(0);
+    // Hard exit fallback: if webviews or OS AppKit event loop hangs on exit, terminate cleanly after 1s
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::process::exit(0);
+    });
 }
 /// Step 12 Frozen Turkey overlay sync, run on every 1-second tick
 /// from the tray thread (see `run`). The overlay is a fullscreen,
@@ -466,19 +491,30 @@ fn copy_directory(source: &std::path::Path, destination: &std::path::Path) -> st
 
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let dir = std::env::var_os("PREELOCK_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| background::data_dir().unwrap_or_default());
+    let _ = std::fs::create_dir_all(&dir);
+
+    // Single-instance enforcement BEFORE initializing Tauri / AppKit.
+    // If another GUI instance is already running, activate it and exit without
+    // initializing a second NSApplication / Dock icon or leaving ghost processes.
+    let gui_lock = match GuiLock::try_acquire(&dir) {
+        Some(lock) => lock,
+        None => {
+            log::info!("Another Preelock GUI instance is already running; activating existing window and exiting.");
+            platform::activate_existing_instance();
+            std::process::exit(0);
+        }
+    };
+    let setup_dir = dir.clone();
+
     let builder = tauri::Builder::default();
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_notification::init());
     let result = builder
-        .setup(|app| {
-            let dir = std::env::var_os("PREELOCK_DATA_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| app.path().app_data_dir().unwrap_or_default());
-            std::fs::create_dir_all(&dir)?;
-            let Some(gui_lock) = GuiLock::try_acquire(&dir) else {
-                log::info!("Another Preelock GUI instance is already running; focusing existing window and exiting.");
-                std::process::exit(0);
-            };
+        .setup(move |app| {
+            let dir = setup_dir;
             app.manage(gui_lock);
             desktop_settings::request_authorization();
             migrate_legacy_data(&dir)?;
@@ -666,6 +702,7 @@ pub fn run() {
     match result {
         Ok(app) => app.run(|app, event| match event {
             tauri::RunEvent::ExitRequested { .. } if lifecycle::ending() => {
+                desktop_settings::approve_quit();
                 // Background engine handles OS shutdown checkpointing cleanly.
             }
             tauri::RunEvent::ExitRequested { api, .. }
@@ -674,6 +711,9 @@ pub fn run() {
             {
                 api.prevent_exit();
                 quit(app);
+            }
+            tauri::RunEvent::ExitRequested { .. } => {
+                desktop_settings::approve_quit();
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_window(app),
@@ -684,5 +724,42 @@ pub fn run() {
             eprintln!("Preelock could not start: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gui_lock_single_instance_acquisition_and_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock1 = GuiLock::try_acquire(dir.path());
+        assert!(lock1.is_some(), "First GUI lock acquisition must succeed");
+
+        // Concurrent attempt in the same data directory must fail.
+        let lock2 = GuiLock::try_acquire(dir.path());
+        assert!(
+            lock2.is_none(),
+            "Concurrent GUI lock acquisition must be rejected"
+        );
+
+        // Dropping first lock must release flock immediately.
+        drop(lock1);
+        let lock3 = GuiLock::try_acquire(dir.path());
+        assert!(
+            lock3.is_some(),
+            "Re-acquisition after drop must succeed cleanly"
+        );
+    }
+
+    #[test]
+    fn gui_lock_different_directories_are_independent() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let lock1 = GuiLock::try_acquire(dir1.path());
+        let lock2 = GuiLock::try_acquire(dir2.path());
+        assert!(lock1.is_some());
+        assert!(lock2.is_some());
     }
 }

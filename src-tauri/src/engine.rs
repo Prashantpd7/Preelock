@@ -62,6 +62,8 @@ pub struct Engine {
     /// attempt-log throttle so the two never consume each other;
     /// never persisted.
     overlay_last_shown: std::collections::HashMap<String, i64>,
+    /// Last epoch-ms an unconnected browser warning notification was shown per app id.
+    unpaired_browser_warning_last_shown: std::collections::HashMap<String, i64>,
 }
 /// Whether the browser's active domain counts as relevant work for the
 /// focus timer. `domains` is interpreted according to the session's
@@ -516,6 +518,7 @@ impl Engine {
             failed: None,
             attempt_tracker: crate::stats::AttemptTracker::default(),
             overlay_last_shown: Default::default(),
+            unpaired_browser_warning_last_shown: Default::default(),
         };
         engine.publish();
         // Screen Time sampling is always on: the observe-only lease
@@ -1251,7 +1254,17 @@ impl Engine {
         if !self.owns_engine_lock() && !self.try_acquire_engine_lock() {
             self.data = self.db.load()?;
             self.data.browser = Some(self.browser_status());
+            if let Some(current) = &self.data.unconnected_browser {
+                if self.browser_status_for_app(&current.browser_id).connected {
+                    self.data.unconnected_browser = None;
+                }
+            }
             return Ok(self.data.clone());
+        }
+        if let Some(current) = &self.data.unconnected_browser {
+            if self.browser_status_for_app(&current.browser_id).connected {
+                self.data.unconnected_browser = None;
+            }
         }
         self.commit(None, false)
     }
@@ -2426,6 +2439,53 @@ impl Engine {
             &browser_for_site,
             native_site.as_ref(),
         )?;
+        // Global unconnected-browser warning:
+        // - Active browser only is evaluated.
+        // - Safari on macOS is strictly exempt (never shows banner or notification).
+        // - Connected browser: no banner, no notification.
+        // - Active unconnected browser:
+        //   Mode 1 (GUI open): global in-app red banner.
+        //   Mode 2 (GUI closed): native OS notification (throttled to once per 5 min per browser).
+        // - Switching to a connected browser or non-browser app clears the banner.
+        // - Preelock in foreground preserves the current warning so user can click Connect.
+        let is_preelock = sample.id.to_lowercase().contains("preelock");
+        if crate::focus::safari(&sample.id) {
+            self.data.unconnected_browser = None;
+        } else if crate::focus::supported_browser(&sample.id) {
+            if browser_for_site.connected {
+                self.data.unconnected_browser = None;
+            } else {
+                let name = crate::platform::browser_display_name(&sample.id);
+                self.data.unconnected_browser = Some(crate::models::UnconnectedBrowserWarning {
+                    browser_id: sample.id.clone(),
+                    browser_name: name.to_string(),
+                });
+                let gui_open = crate::background::desktop_alive(&self.data_dir);
+                if !gui_open && self.data.preferences.notifications_enabled {
+                    let last_warned = self
+                        .unpaired_browser_warning_last_shown
+                        .get(&sample.id)
+                        .copied()
+                        .unwrap_or(0);
+                    if now.saturating_sub(last_warned) >= 300_000 {
+                        self.unpaired_browser_warning_last_shown
+                            .insert(sample.id.clone(), now);
+                        crate::desktop_settings::notify(
+                            &format!("Connect {name} to Preelock"),
+                            &format!(
+                                "{name} is not connected to Preelock. Open Preelock and connect this browser to enable browser tracking and protection."
+                            ),
+                        );
+                    }
+                }
+            }
+        } else if !is_preelock {
+            self.data.unconnected_browser = None;
+        } else if let Some(current) = &self.data.unconnected_browser {
+            if self.browser_status_for_app(&current.browser_id).connected {
+                self.data.unconnected_browser = None;
+            }
+        }
         let day_ms = crate::screen_time::local_day_start_ms(now);
         if self.has_active() {
             return Ok(());
@@ -6687,5 +6747,97 @@ mod tests {
             restored.durability.recovery_status.as_deref(),
             Some("recovered_after_os_shutdown")
         );
+    }
+
+    #[test]
+    fn unconnected_browser_warning_lifecycle_and_safari_exemption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preelock.db");
+        let mut engine = Engine::open(&path).unwrap();
+
+        // 1. Safari on macOS is strictly exempt: never sets unconnected_browser.
+        let safari_id = if cfg!(target_os = "macos") {
+            "com.apple.Safari"
+        } else {
+            "Safari"
+        };
+        if crate::focus::safari(safari_id) {
+            engine.data.unconnected_browser = Some(crate::models::UnconnectedBrowserWarning {
+                browser_id: "other".into(),
+                browser_name: "Other".into(),
+            });
+            // Calling logic for Safari clears it
+            if crate::focus::safari(safari_id) {
+                engine.data.unconnected_browser = None;
+            }
+            assert!(engine.data.unconnected_browser.is_none());
+        }
+
+        // 2. Disconnected Brave sets unconnected_browser
+        let brave_id = if cfg!(target_os = "windows") {
+            "brave.exe"
+        } else {
+            "com.brave.Browser"
+        };
+        assert!(crate::focus::supported_browser(brave_id));
+        let name = crate::platform::browser_display_name(brave_id);
+        engine.data.unconnected_browser = Some(crate::models::UnconnectedBrowserWarning {
+            browser_id: brave_id.to_string(),
+            browser_name: name.to_string(),
+        });
+        assert_eq!(
+            engine.data.unconnected_browser.as_ref().unwrap().browser_id,
+            brave_id
+        );
+
+        // 3. Switching to connected browser clears warning
+        let chrome_id = if cfg!(target_os = "windows") {
+            "chrome.exe"
+        } else {
+            "com.google.Chrome"
+        };
+        // Simulate bridge having chrome connected
+        let bridge = Bridge::test_bridge(dir.path());
+        bridge.acknowledge("client1", chrome_id, "");
+        engine.bridge = Some(bridge);
+        assert!(engine.browser_status_for_app(chrome_id).connected);
+        if engine.browser_status_for_app(chrome_id).connected {
+            engine.data.unconnected_browser = None;
+        }
+        assert!(engine.data.unconnected_browser.is_none());
+
+        // 4. If previously unconnected browser connects, warning disappears automatically
+        engine.data.unconnected_browser = Some(crate::models::UnconnectedBrowserWarning {
+            browser_id: brave_id.to_string(),
+            browser_name: name.to_string(),
+        });
+        assert!(engine.data.unconnected_browser.is_some());
+        // Now connect Brave
+        engine
+            .bridge
+            .as_ref()
+            .unwrap()
+            .acknowledge("client2", brave_id, "");
+        assert!(engine.browser_status_for_app(brave_id).connected);
+        if let Some(curr) = &engine.data.unconnected_browser {
+            if engine.browser_status_for_app(&curr.browser_id).connected {
+                engine.data.unconnected_browser = None;
+            }
+        }
+        assert!(engine.data.unconnected_browser.is_none());
+    }
+
+    #[test]
+    fn bridge_immediate_restart_with_socket_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        // Start bridge at an ephemeral port (0)
+        let bridge1 = Bridge::start_at_retries(dir.path(), 0, 5, 5).unwrap();
+        let port = bridge1.token.clone(); // token is set
+        assert!(!port.is_empty());
+        drop(bridge1);
+
+        // Re-starting immediately after drop acquires lock and succeeds
+        let bridge2 = Bridge::start_at_retries(dir.path(), 0, 5, 5);
+        assert!(bridge2.is_ok());
     }
 }

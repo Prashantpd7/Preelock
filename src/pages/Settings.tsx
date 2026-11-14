@@ -380,6 +380,34 @@ export function Settings({
           {tab === 'Alerts' && (
             <section className="settings-section">
               <h2>Alerts</h2>
+              {info.notifications === 1 && (
+                <div
+                  className="error small"
+                  style={{
+                    padding: '0.75rem 1rem',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '0.75rem',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                  }}
+                >
+                  <span>
+                    System notifications are disabled in OS Settings. Preelock
+                    cannot show focus alerts until allowed.
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary small"
+                    onClick={() => void api.openSetup('notification_settings')}
+                  >
+                    Open OS Settings
+                  </button>
+                </div>
+              )}
               {alertRow(
                 'Notifications',
                 'notifications_enabled',

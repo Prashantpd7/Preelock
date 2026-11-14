@@ -17,7 +17,7 @@
 //! extension paths can never both be credited for the same interval.
 use crate::browser::same_browser;
 use crate::platform;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Longest hostname accepted, matching the extension heartbeat's limit.
 pub const MAX_HOST: usize = 253;
@@ -246,9 +246,6 @@ pub fn domain_from_url(raw: &str) -> Option<String> {
     valid_host(url.host_str()?)
 }
 
-/// Permission requests are issued at most once per process: a background
-/// engine must never re-prompt on every tick.
-static PERMISSION_ASKED: AtomicBool = AtomicBool::new(false);
 /// Last logged capability, so a transition is logged once (255 = none).
 static LAST_CAPABILITY: AtomicU8 = AtomicU8::new(255);
 
@@ -283,13 +280,6 @@ pub fn native_site(app_id: &str) -> Option<NativeSite> {
     let sample = platform::web_sample();
     let domain = domain_from_url(&sample.url);
     let capability = capability_for(app_id, &sample.status, domain.is_some());
-    if capability == Capability::PermissionRequired
-        && !PERMISSION_ASKED.swap(true, Ordering::Relaxed)
-    {
-        // One system prompt per process; a denial is handled by falling
-        // back to browser application usage, never by retrying in a loop.
-        platform::request_web_permission();
-    }
     report(app_id, capability);
     domain.map(|domain| NativeSite {
         app: app_id.to_string(),

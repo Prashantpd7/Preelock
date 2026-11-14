@@ -152,6 +152,9 @@ it('collapses back to the top 4 when the selected day changes', async () => {
   expect(screen.getByText('Foxtrot App')).toBeInTheDocument();
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
+  if (new Date().getDay() === 0) {
+    await user.click(screen.getByRole('button', { name: 'Previous week' }));
+  }
   await user.click(
     screen.getByRole('button', {
       name: formatDayLabel(localDayStart(yesterday)),

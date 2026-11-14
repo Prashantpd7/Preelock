@@ -12,6 +12,11 @@ unsafe extern "C" {
     fn preelock_camera_status() -> *mut c_char;
     fn preelock_app_icon(identity: *const c_char) -> *mut c_char;
     fn preelock_hide_from_dock();
+    fn preelock_set_activation_policy_prohibited();
+    fn preelock_install_background_apple_events(cb: extern "C" fn());
+    fn preelock_pump_runloop(seconds: f64);
+    fn preelock_activate_existing_gui();
+    fn preelock_approve_quit();
     fn preelock_web_sample() -> *mut c_char;
     fn preelock_web_permission() -> i32;
     fn preelock_web_request_permission();
@@ -76,6 +81,26 @@ pub fn app_icon(identity: &str) -> Option<String> {
 pub fn hide_from_dock() {
     unsafe { preelock_hide_from_dock() };
 }
+/// Set activation policy to prohibited for background engine and attention agent.
+pub fn set_activation_policy_prohibited() {
+    unsafe { preelock_set_activation_policy_prohibited() };
+}
+/// Install AppleEvent handlers so background engine responds to macOS LaunchServices open events.
+pub fn install_background_apple_events(cb: extern "C" fn()) {
+    unsafe { preelock_install_background_apple_events(cb) };
+}
+/// Pump the macOS CFRunLoop on the main thread for the given duration.
+pub fn pump_runloop(seconds: f64) {
+    unsafe { preelock_pump_runloop(seconds) };
+}
+/// Activate existing GUI application instance.
+pub fn activate_existing_instance() {
+    unsafe { preelock_activate_existing_gui() };
+}
+/// Approve quit request so AppKit termination is not cancelled.
+pub fn approve_quit() {
+    unsafe { preelock_approve_quit() };
+}
 /// Native website identification: the frontmost browser window's page
 /// URL through the Accessibility API. Returns `permission_required`
 /// until the user grants Accessibility permission, and `no_url` for
@@ -126,6 +151,9 @@ pub fn installed_browsers() -> Vec<Application> {
         ("com.vivaldi.Vivaldi", "Vivaldi", "Vivaldi.app"),
         ("org.chromium.Chromium", "Chromium", "Chromium.app"),
         ("ai.perplexity.comet", "Comet", "Comet.app"),
+        ("company.thebrowser.Browser", "Arc", "Arc.app"),
+        ("com.operasoftware.Opera", "Opera", "Opera.app"),
+        ("com.operasoftware.OperaGX", "Opera GX", "Opera GX.app"),
     ];
     let user_apps = std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join("Applications"))

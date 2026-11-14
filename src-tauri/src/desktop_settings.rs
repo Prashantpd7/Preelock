@@ -28,6 +28,9 @@ mod mac {
             crate::quit(app);
         }
     }
+    pub fn approve_quit() {
+        crate::platform::approve_quit();
+    }
     pub fn install_quit_guard(app: &tauri::AppHandle) -> Result<(), String> {
         QUIT_APP
             .set(app.clone())
@@ -83,6 +86,7 @@ mod mac {
 pub use mac::*;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod other {
+    pub fn approve_quit() {}
     pub fn install_quit_guard(_: &tauri::AppHandle) -> Result<(), String> {
         Ok(())
     }

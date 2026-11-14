@@ -216,7 +216,12 @@ export interface Snapshot {
   screen_time_usage?: ScreenTimeBucket[];
   preferences: Preferences;
   browser?: BrowserStatus;
+  unconnected_browser?: UnconnectedBrowserWarning | null;
   blocked_app_notice?: BlockedAppNotice | null;
+}
+export interface UnconnectedBrowserWarning {
+  browser_id: string;
+  browser_name: string;
 }
 /** "Why am I blocked" app page: the last blocked app + its true
  *  reason, shown in the fullscreen `blocked-app` overlay window. */
@@ -621,6 +626,7 @@ export interface FocusSetup {
   native_available: boolean;
   applications: { id: string; name: string }[];
   camera_permission: string;
+  accessibility_permission?: string;
   browser: BrowserStatus;
   pairing_token: string;
   default_browser?: string;

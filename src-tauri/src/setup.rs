@@ -36,20 +36,17 @@ pub fn default_browser_id() -> Option<String> {
 /// https URL association in the registry.
 #[cfg(target_os = "windows")]
 pub fn default_browser_id() -> Option<String> {
-    let output = std::process::Command::new("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
-            "/v",
-            "ProgId",
-        ])
-        .output()
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let subkey = hkcu
+        .open_subkey(
+            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+        )
         .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let prog_id = text
-        .lines()
-        .find_map(|l| l.split_whitespace().last())?
-        .to_ascii_lowercase();
+    let prog_id: String = subkey.get_value("ProgId").ok()?;
+    let prog_id = prog_id.to_ascii_lowercase();
     // Map common Chromium ProgIds to their executables.
     let exe = if prog_id.contains("chrome") {
         "chrome.exe"
@@ -61,6 +58,10 @@ pub fn default_browser_id() -> Option<String> {
         "vivaldi.exe"
     } else if prog_id.contains("comet") {
         "comet.exe"
+    } else if prog_id.contains("opera") {
+        "opera.exe"
+    } else if prog_id.contains("arc") {
+        "arc.exe"
     } else {
         return None;
     };
@@ -192,6 +193,12 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
             "privacy_settings" => {
                 cmd.arg("x-apple.systempreferences:com.apple.preference.security?Privacy");
             }
+            "accessibility_settings" => {
+                crate::platform::request_web_permission();
+                cmd.arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                );
+            }
             // Official download page for a supported browser the user does
             // not have yet (session browser compatibility). Only the
             // allowlisted official URLs; Preelock never installs anything.
@@ -237,8 +244,16 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
     {
         match target {
             "extension_folder" => {
-                cmd = std::process::Command::new("explorer.exe");
-                cmd.arg(extension_dir(app)?);
+                #[cfg(debug_assertions)]
+                {
+                    cmd = std::process::Command::new("explorer.exe");
+                    cmd.arg(extension_dir(app)?);
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    let _ = (app, browser_id);
+                    return Err("Extension files are installed via the Chrome Web Store.".into());
+                }
             }
             "install_extension" | "extensions" => {
                 // Empty id = use the user's default browser.
@@ -294,11 +309,15 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
                 let exe = launch_target(browser_id)?;
                 cmd = std::process::Command::new(exe);
             }
-            "camera_settings" | "notification_settings" | "privacy_settings" => {
+            "camera_settings"
+            | "notification_settings"
+            | "privacy_settings"
+            | "accessibility_settings" => {
                 cmd = std::process::Command::new("explorer.exe");
                 cmd.arg(match target {
                     "camera_settings" => "ms-settings:privacy-webcam",
                     "notification_settings" => "ms-settings:notifications",
+                    "accessibility_settings" => "ms-settings:easeofaccess",
                     _ => "ms-settings:privacy",
                 });
             }
@@ -312,6 +331,11 @@ pub fn open(app: &tauri::AppHandle, target: &str, browser_id: &str) -> Result<()
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
         cmd.spawn().map_err(|e| e.to_string())?;
         Ok(())
     }

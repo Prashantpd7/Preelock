@@ -519,6 +519,7 @@ fn read_snapshot_rows<T: serde::de::DeserializeOwned>(
 fn load_from_connection(conn: &rusqlite::Connection) -> Result<crate::models::Snapshot, String> {
     Ok(crate::models::Snapshot {
         browser: None,
+        unconnected_browser: None,
         blocked_app_notice: None,
         sessions: read_snapshot_rows(
             conn,
@@ -923,6 +924,7 @@ mod tests {
             screen_time_usage: vec![],
             preferences: Preferences::default(),
             browser: None,
+            unconnected_browser: None,
             blocked_app_notice: None,
         }
     }

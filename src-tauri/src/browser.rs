@@ -531,7 +531,28 @@ impl Bridge {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
         self.server.unblock();
     }
-    fn start_at_retries(
+}
+
+fn bind_bridge_server(
+    port: u16,
+) -> Result<tiny_http::Server, Box<dyn std::error::Error + Send + Sync>> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(false)?;
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+    let listener: std::net::TcpListener = socket.into();
+    tiny_http::Server::from_listener(listener, None)
+}
+
+impl Bridge {
+    pub(crate) fn start_at_retries(
         dir: &Path,
         port: u16,
         lock_attempts: u32,
@@ -563,18 +584,16 @@ impl Bridge {
         let token = read_or_create_token(dir)?;
         let mut last_error = String::new();
         let server = (0..bind_attempts)
-            .find_map(
-                |attempt| match tiny_http::Server::http(("127.0.0.1", port)) {
-                    Ok(server) => Some(server),
-                    Err(error) => {
-                        last_error = error.to_string();
-                        if attempt + 1 < bind_attempts {
-                            std::thread::sleep(Duration::from_millis(100));
-                        }
-                        None
+            .find_map(|attempt| match bind_bridge_server(port) {
+                Ok(server) => Some(server),
+                Err(error) => {
+                    last_error = error.to_string();
+                    if attempt + 1 < bind_attempts {
+                        std::thread::sleep(Duration::from_millis(100));
                     }
-                },
-            )
+                    None
+                }
+            })
             .map(Arc::new)
             .ok_or_else(|| format!("Browser bridge unavailable: {last_error}"))?;
         let port = server

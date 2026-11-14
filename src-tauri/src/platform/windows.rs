@@ -562,6 +562,19 @@ pub fn web_permission() -> &'static str {
     "granted"
 }
 pub fn request_web_permission() {}
+pub fn activate_existing_instance() {
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+        let title: Vec<u16> = "Preelock\0".encode_utf16().collect();
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
 pub fn redirect_safari_blocked() {}
 pub fn redirect_browser_blocked(_: &str) {}
 pub fn installed_browsers() -> Vec<super::Application> {

@@ -36,6 +36,7 @@ export const emptySnapshot: Snapshot = {
     created_at_ms: 0,
   },
   preferences: { theme: 'dark', default_minutes: 25 },
+  unconnected_browser: null,
 };
 export const api = {
   openSetup: (
@@ -46,6 +47,7 @@ export const api = {
       | 'camera_settings'
       | 'notification_settings'
       | 'privacy_settings'
+      | 'accessibility_settings'
       | 'browser_download'
       | 'browser',
     browserId = '',

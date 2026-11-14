@@ -176,6 +176,7 @@ impl Database {
     pub fn load(&self) -> Result<Snapshot, String> {
         Ok(Snapshot {
             browser: None,
+            unconnected_browser: None,
             blocked_app_notice: None,
             sessions: self.read("SELECT payload FROM sessions WHERE id NOT IN (SELECT id FROM deleted_sessions) ORDER BY rowid")?,
             tasks: self.read("SELECT payload FROM tasks ORDER BY rowid")?,

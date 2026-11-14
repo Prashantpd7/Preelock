@@ -123,12 +123,17 @@ pub fn ensure_running(data_dir: &Path) -> Result<(), String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = crate::launch::gui_executable(&exe);
-    Command::new(&exe)
-        .arg(ARG)
+    let mut cmd = Command::new(&exe);
+    cmd.arg(ARG)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 | 0x00000200);
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("Could not start tray process: {e}"))
 }
@@ -248,7 +253,6 @@ fn show_gui() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     if let Some(bundle) = crate::background::app_bundle_root(&exe) {
         return Command::new("/usr/bin/open")
-            .arg("-n")
             .arg("-a")
             .arg(&bundle)
             .stdin(Stdio::null())
@@ -258,11 +262,16 @@ fn show_gui() -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| format!("Could not reopen Preelock bundle: {e}"));
     }
-    Command::new(&exe)
-        .stdin(Stdio::null())
+    let mut cmd = Command::new(&exe);
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 | 0x00000200);
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("Could not reopen Preelock: {e}"))
 }
@@ -281,6 +290,8 @@ pub fn run() -> i32 {
         return 0;
     };
     let setup_dir = dir.clone();
+    // Menu-bar only: set accessory activation policy before Tauri / AppKit initializes windows.
+    crate::platform::hide_from_dock();
     let result = tauri::Builder::default()
         .setup(move |app| {
             // Menu-bar only: no Dock tile / Cmd-Tab entry on macOS.

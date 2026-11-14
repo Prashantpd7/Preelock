@@ -315,6 +315,7 @@ char *preelock_web_sample(void) {
 }
 int preelock_web_permission(void) { return AXIsProcessTrusted() ? 1 : 0; }
 void preelock_web_request_permission(void) {
+    if (AXIsProcessTrusted()) return;
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
     AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
@@ -403,7 +404,14 @@ char *preelock_settings_info(void) {
             if (@available(macOS 13.0, *)) login = SMAppService.mainAppService.status;
         }
         NSDateComponents *parts = [NSCalendar.currentCalendar components:(NSCalendarUnitYear|NSCalendarUnitMonth|NSCalendarUnitDay|NSCalendarUnitWeekday|NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:NSDate.date];
-        return json(@{@"notifications":@(auth), @"login":@(login), @"day":@((parts.weekday+6)%7), @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day], @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]});
+        return json(@{
+            @"notifications":@(auth),
+            @"login":@(login),
+            @"accessibility":@(AXIsProcessTrusted() ? 1 : 0),
+            @"day":@((parts.weekday+6)%7),
+            @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day],
+            @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]
+        });
     }
 }
 char *preelock_login(int enabled) {
@@ -430,19 +438,33 @@ char *preelock_login(int enabled) {
         return strdup(message.UTF8String);
     }
 }
+void preelock_activate_existing_gui(void);
+
 int preelock_notification_permission(void) {
     // UNUserNotificationCenter crashes without an .app bundle (dev mode).
     BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
         [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
-    if (!bundled) return 0;
-    __block BOOL granted = NO;
+    if (!bundled) return 1;
+    __block int status = 0;
     dispatch_semaphore_t wait = dispatch_semaphore_create(0);
-    UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:options completionHandler:^(BOOL allowed, NSError *error) {
-        granted = allowed && !error; dispatch_semaphore_signal(wait);
+    [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+            settings.authorizationStatus == UNAuthorizationStatusProvisional) {
+            status = 1;
+            dispatch_semaphore_signal(wait);
+        } else if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
+            status = 0;
+            dispatch_semaphore_signal(wait);
+        } else {
+            UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+            [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:options completionHandler:^(BOOL allowed, NSError *error) {
+                status = (allowed && !error) ? 1 : 0;
+                dispatch_semaphore_signal(wait);
+            }];
+        }
     }];
-    dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 60*NSEC_PER_SEC));
-    return granted;
+    dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 15*NSEC_PER_SEC));
+    return status;
 }
 void preelock_request_notification_authorization(void) {
     BOOL bundled = NSBundle.mainBundle.bundleIdentifier != nil &&
@@ -462,6 +484,13 @@ void preelock_request_notification_authorization(void) {
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center; (void)notification;
     completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
+}
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler {
+    (void)center; (void)response;
+    preelock_activate_existing_gui();
+    if (completionHandler) {
+        completionHandler();
+    }
 }
 @end
 void preelock_notify(const char *title, const char *body) {
@@ -543,8 +572,18 @@ char *preelock_file_panel(int save, const char *filename) {
 // AppKit's terminate: path bypasses Tauri's ExitRequested on macOS.
 static void (*vyQuitRequest)(void);
 static void (*vySystemShutdown)(void);
+static volatile int vyTerminationApproved = 0;
+
+void preelock_approve_quit(void) {
+    vyTerminationApproved = 1;
+}
+
 static NSApplicationTerminateReply vyShouldTerminate(id self, SEL selector, NSApplication *sender) {
     (void)self; (void)selector; (void)sender;
+    // If termination was approved by the authoritative quit handler, exit immediately.
+    if (vyTerminationApproved) {
+        return NSTerminateNow;
+    }
     // Let macOS shut down/log out. SQLite checkpoints retain unfinished work.
     NSAppleEventDescriptor *event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
     OSType reason = [[event attributeDescriptorForKeyword:kAEQuitReason] typeCodeValue];
@@ -570,10 +609,67 @@ int preelock_install_quit_guard(void (*callback)(void), void (*shutdown)(void)) 
 
 // M2: a tray-only process (Preelock --tray) must not show in the Dock
 // or Cmd-Tab — it is a menu-bar icon only. Accessory policy keeps the
-// NSStatusItem working while removing the Dock tile. Called on the
-// main thread from the tray process setup, after NSApp exists.
+// NSStatusItem working while removing the Dock tile.
 void preelock_hide_from_dock(void) {
-    onMain(^{ [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]; });
+    onMain(^{
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    });
+}
+
+// Background engine and attention agent: accessory/prohibited activation policy
+// ensures they are strictly headless background processes that never allocate
+// Dock tiles or block LaunchServices from launching the foreground GUI.
+void preelock_set_activation_policy_prohibited(void) {
+    onMain(^{
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    });
+}
+
+static void (*vyBackgroundOpenCallback)(void) = NULL;
+
+static OSErr handleBackgroundAppleEvent(const AppleEvent *event, AppleEvent *reply, SRefCon refcon) {
+    (void)event;
+    (void)reply;
+    (void)refcon;
+    if (vyBackgroundOpenCallback) {
+        vyBackgroundOpenCallback();
+    }
+    return noErr;
+}
+
+void preelock_install_background_apple_events(void (*callback)(void)) {
+    onMain(^{
+        vyBackgroundOpenCallback = callback;
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+        AEEventHandlerUPP upp = NewAEEventHandlerUPP(handleBackgroundAppleEvent);
+        AEInstallEventHandler(kCoreEventClass, kAEOpenApplication, upp, 0, false);
+        AEInstallEventHandler(kCoreEventClass, kAEReopenApplication, upp, 0, false);
+    });
+}
+
+void preelock_pump_runloop(double seconds) {
+    @autoreleasepool {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, false);
+    }
+}
+
+// Activate the existing GUI window when a second GUI process attempts to launch.
+void preelock_activate_existing_gui(void) {
+    onMain(^{
+        for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
+            if ([app.bundleIdentifier isEqualToString:@"com.preelock.desktop"] && app.processIdentifier != getpid()) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+#pragma clang diagnostic pop
+                return;
+            }
+        }
+    });
 }
 
 // Screen Time row icons: the app's real icon as a base64 PNG string

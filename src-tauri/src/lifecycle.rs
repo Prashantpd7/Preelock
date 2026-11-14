@@ -206,34 +206,23 @@ fn boot_id() -> Option<String> {
 }
 #[cfg(target_os = "windows")]
 fn boot_id() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    // A stable OS boot timestamp, not wall-clock-minus-uptime (which changes
-    // when the user adjusts the clock). Fast Startup is covered by WM_ENDSESSION.
-    let mut child = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks",
-        ])
-        .creation_flags(0x08000000)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let start = std::time::Instant::now();
-    while child.try_wait().ok()?.is_none() {
-        if start.elapsed() > std::time::Duration::from_secs(5) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    let output = child.wait_with_output().ok()?;
-    let id = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (output.status.success() && id.len() >= 16 && id.chars().all(|c| c.is_ascii_digit()))
-        .then_some(id)
+    use std::sync::OnceLock;
+    static CACHED_BOOT: OnceLock<Option<String>> = OnceLock::new();
+    CACHED_BOOT
+        .get_or_init(|| {
+            let tick_count_ms =
+                unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+            let uptime = std::time::Duration::from_millis(tick_count_ms);
+            let boot_time = std::time::SystemTime::now().checked_sub(uptime)?;
+            let secs = boot_time
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            // Bucket into 30-second windows so minor clock/NTP adjustments do not
+            // falsely trigger an OS reboot recovery while real reboots are detected.
+            Some((secs / 30).to_string())
+        })
+        .clone()
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn boot_id() -> Option<String> {

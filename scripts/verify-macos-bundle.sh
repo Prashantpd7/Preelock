@@ -16,6 +16,8 @@ version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Co
 /usr/libexec/PlistBuddy -c 'Print NSCameraUsageDescription' "$app/Contents/Info.plist"
 entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
 [[ "$entitlements" == *"com.apple.security.device.camera"* ]]
+dr="$(codesign -d -r- "$app" 2>&1)"
+[[ "$dr" == *"designated => identifier \"com.preelock.desktop\""* ]]
 node --input-type=module - "$app" <<'JS'
 import fs from 'node:fs';
 import path from 'node:path';

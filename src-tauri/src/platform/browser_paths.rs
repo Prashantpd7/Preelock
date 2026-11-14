@@ -21,7 +21,32 @@ pub fn name(path: &str) -> &'static str {
         "brave.exe" => "Brave",
         "vivaldi.exe" => "Vivaldi",
         "chromium.exe" => "Chromium",
+        "arc.exe" => "Arc",
+        "opera.exe" => "Opera",
         _ => "Google Chrome",
+    }
+}
+
+pub fn browser_display_name(id: &str) -> &'static str {
+    let lower = id.to_ascii_lowercase();
+    if lower.contains("comet") {
+        "Comet"
+    } else if lower.contains("msedge") || lower.contains("edgemac") {
+        "Microsoft Edge"
+    } else if lower.contains("brave") {
+        "Brave"
+    } else if lower.contains("vivaldi") {
+        "Vivaldi"
+    } else if lower.contains("chromium") {
+        "Chromium"
+    } else if lower.contains("arc") || lower.contains("thebrowser") {
+        "Arc"
+    } else if lower.contains("operagx") {
+        "Opera GX"
+    } else if lower.contains("opera") {
+        "Opera"
+    } else {
+        "Google Chrome"
     }
 }
 #[cfg(test)]

@@ -14,15 +14,21 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   const [browserGuide, setBrowserGuide] = useState(false);
   const mac = setup?.platform === 'macos';
   const browserConnected = !!setup?.browser.connected && !setup?.browser.error;
-  // While the guide is open, keep checking so it detects the connection
-  // on its own once the user connects in the browser.
+  const accessibilityGranted =
+    setup?.accessibility_permission === 'granted' || info.accessibility === 1;
+
+  // While the guide is open, keep checking so it detects changes
+  // (browser connection, accessibility, notifications, camera)
+  // on its own once the user toggles them in System Settings.
   useEffect(() => {
-    if (!browserGuide || browserConnected) return;
     const timer = setInterval(() => {
       void refresh();
-    }, 3000);
+      void settingsAction({ type: 'info' })
+        .then((v) => setInfo(v))
+        .catch(() => {});
+    }, 2000);
     return () => clearInterval(timer);
-  }, [browserGuide, browserConnected, refresh]);
+  }, [refresh]);
   async function check() {
     await refresh();
     try {
@@ -33,7 +39,8 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   }
   useEffect(() => {
     let active = true;
-    const read = () =>
+    const read = () => {
+      void refresh();
       void settingsAction({ type: 'info' })
         .then((v) => {
           if (active) setInfo(v);
@@ -41,13 +48,14 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
         .catch((e) => {
           if (active) setError(String(e));
         });
+    };
     read();
     window.addEventListener('focus', read);
     return () => {
       active = false;
       window.removeEventListener('focus', read);
     };
-  }, []);
+  }, [refresh]);
   async function act(action: () => Promise<unknown>) {
     setBusy(true);
     setError('');
@@ -138,14 +146,18 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
             <SettingRow
               title="Notifications"
               hint={
-                mac
-                  ? 'System Settings → Notifications → Preelock → Allow notifications.'
-                  : 'Settings → System → Notifications → turn on Preelock. Install the app first; Do not disturb may silence alerts.'
+                info.notifications === 1
+                  ? mac
+                    ? 'Notifications are turned off in System Settings → Notifications → Preelock.'
+                    : 'Notifications are turned off in Settings → System → Notifications → Preelock.'
+                  : mac
+                    ? 'System Settings → Notifications → Preelock → Allow notifications.'
+                    : 'Settings → System → Notifications → turn on Preelock. Install the app first; Do not disturb may silence alerts.'
               }
             >
               <button
                 className="secondary"
-                disabled={busy}
+                disabled={busy || info.notifications === 2}
                 onClick={() =>
                   void act(() =>
                     mac && info.notifications === 0
@@ -156,11 +168,33 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
               >
                 {info.notifications === 1
                   ? 'Denied · Open settings'
-                  : mac && info.notifications === 0
-                    ? 'Allow notifications'
-                    : 'Open settings'}
+                  : info.notifications === 2
+                    ? 'Allowed'
+                    : mac && info.notifications === 0
+                      ? 'Allow notifications'
+                      : 'Open settings'}
               </button>
             </SettingRow>
+            {mac && (
+              <SettingRow
+                title="Accessibility"
+                hint={
+                  accessibilityGranted
+                    ? 'Screen Time activity tracking and distraction blocking are active.'
+                    : 'Required for Screen Time activity tracking and distraction blocking. Toggle on in System Settings.'
+                }
+              >
+                <button
+                  className="secondary"
+                  disabled={busy || accessibilityGranted}
+                  onClick={() =>
+                    void act(() => api.openSetup('accessibility_settings'))
+                  }
+                >
+                  {accessibilityGranted ? 'Allowed' : 'Open settings'}
+                </button>
+              </SettingRow>
+            )}
             <SettingRow
               title="Browser extension"
               hint="Connect your browser so Preelock can block distracting sites during sessions."
