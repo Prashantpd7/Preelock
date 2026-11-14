@@ -749,14 +749,6 @@ impl UiRelaunchSupervisor {
             }
             return desktop_alive(data_dir);
         }
-        if let Ok(file) = std::fs::File::open(data_dir.join("gui.lock")) {
-            use fs2::FileExt;
-            if file.try_lock_exclusive().is_ok() {
-                let _ = file.unlock();
-                clear_desktop_heartbeat(data_dir);
-                return false;
-            }
-        }
         desktop_alive(data_dir)
     }
 

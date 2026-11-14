@@ -53,12 +53,17 @@ pub struct GuiLock {
 impl GuiLock {
     pub fn try_acquire(dir: &std::path::Path) -> Option<Self> {
         use fs2::FileExt;
-        let file = std::fs::File::create(dir.join("gui.lock")).ok()?;
-        if file.try_lock_exclusive().is_ok() {
-            Some(Self { _file: file })
-        } else {
-            None
+        let _ = std::fs::create_dir_all(dir);
+        let lock_path = dir.join("gui.lock");
+        for _ in 0..3 {
+            if let Ok(file) = std::fs::File::create(&lock_path) {
+                if file.try_lock_exclusive().is_ok() {
+                    return Some(Self { _file: file });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        None
     }
 }
 /// M6: whether the main window was auto-hidden at this launch
@@ -469,6 +474,7 @@ pub fn run() {
             let dir = std::env::var_os("PREELOCK_DATA_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| app.path().app_data_dir().unwrap_or_default());
+            std::fs::create_dir_all(&dir)?;
             let Some(gui_lock) = GuiLock::try_acquire(&dir) else {
                 log::info!("Another Preelock GUI instance is already running; focusing existing window and exiting.");
                 std::process::exit(0);
@@ -476,7 +482,6 @@ pub fn run() {
             app.manage(gui_lock);
             desktop_settings::request_authorization();
             migrate_legacy_data(&dir)?;
-            std::fs::create_dir_all(&dir)?;
             background::ensure_running(&dir).map_err(std::io::Error::other)?;
             background::touch_desktop(&dir);
             // Open-at-login is strictly session/schedule-conditional: the
