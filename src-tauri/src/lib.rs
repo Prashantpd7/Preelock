@@ -785,8 +785,11 @@ mod tests {
         let lock_path = dir.path().join("gui.lock");
         let lock = GuiLock::try_acquire(dir.path()).expect("acquire");
         assert!(lock_path.exists());
-        let pid_str = std::fs::read_to_string(&lock_path).unwrap();
-        assert_eq!(pid_str.trim(), std::process::id().to_string());
+        #[cfg(unix)]
+        {
+            let pid_str = std::fs::read_to_string(&lock_path).unwrap();
+            assert_eq!(pid_str.trim(), std::process::id().to_string());
+        }
         drop(lock);
         assert!(!lock_path.exists(), "gui.lock must be removed on drop");
     }

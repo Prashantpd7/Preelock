@@ -1432,11 +1432,19 @@ mod tests {
         #[cfg(unix)]
         let test_pid = unsafe { libc::getppid() as u32 };
         #[cfg(windows)]
-        let test_pid = std::process::id();
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+            .spawn()
+            .expect("spawn test process");
+        #[cfg(windows)]
+        let test_pid = child.id();
 
         std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
         assert!(sup.poll_ui_alive(dir.path()));
         assert_eq!(sup.known_ui_pid(), Some(test_pid));
+
+        #[cfg(windows)]
+        let _ = child.kill();
     }
 
     #[test]
