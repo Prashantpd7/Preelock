@@ -8,9 +8,9 @@ use crate::{
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{atomic::AtomicU64, Arc, Mutex},
     time::Duration,
 };
@@ -293,6 +293,7 @@ struct State {
     /// request is refused, and only while the flag is set.
     connection_locked: bool,
     adult_block_enabled: bool,
+    paired_browsers: HashSet<String>,
 }
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BrowserStatus {
@@ -379,6 +380,7 @@ pub struct Bridge {
     /// Browser ids known to this machine, captured once at startup. Used to
     /// disambiguate extension reports (Comet looks exactly like Chrome).
     installed: Vec<String>,
+    _dir: PathBuf,
 }
 /// M4: read-only bridge probes. Neither sends HTTP nor touches auth:
 /// `lock_held` tries the bridge flock and releases it at once, and
@@ -602,7 +604,20 @@ impl Bridge {
             .to_ip()
             .ok_or("Missing bridge socket.")?
             .port();
-        let state = Arc::new(Mutex::new(State::default()));
+        let paired_file = dir.join("paired-browsers.json");
+        let initial_paired: HashSet<String> =
+            if let Ok(data) = std::fs::read_to_string(&paired_file) {
+                serde_json::from_str(&data).unwrap_or_default()
+            } else {
+                HashSet::new()
+            };
+        let initial_state = State {
+            paired_browsers: initial_paired,
+            ..Default::default()
+        };
+        let state = Arc::new(Mutex::new(initial_state));
+        let dir_buf = dir.to_path_buf();
+        let dir_thread = dir_buf.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let auth_key = Arc::new(Mutex::new(token.clone()));
         let last_loop = Arc::new(AtomicU64::new(clock::continuous_ms()));
@@ -705,6 +720,12 @@ impl Bridge {
                     // connected instead of waiting out the heartbeat window.
                     // Other paired browsers are untouched.
                     state.clients.remove(&heartbeat.client);
+                    let resolved = resolve_browser(&heartbeat.browser, &thread_browsers);
+                    state.paired_browsers.remove(&resolved);
+                    let list: Vec<String> = state.paired_browsers.iter().cloned().collect();
+                    if let Ok(json) = serde_json::to_string(&list) {
+                        let _ = std::fs::write(dir_thread.join("paired-browsers.json"), json);
+                    }
                     let _ = req.respond(tiny_http::Response::empty(200));
                     continue;
                 }
@@ -736,6 +757,12 @@ impl Bridge {
                         .tracking_policy
                         .as_ref()
                         .is_some_and(|p| p.applies_to(&resolved_browser));
+                if state.paired_browsers.insert(resolved_browser.clone()) {
+                    let list: Vec<String> = state.paired_browsers.iter().cloned().collect();
+                    if let Ok(json) = serde_json::to_string(&list) {
+                        let _ = std::fs::write(dir_thread.join("paired-browsers.json"), json);
+                    }
+                }
                 let client = state.clients.entry(heartbeat.client).or_default();
                 client.browser = heartbeat.browser;
                 client.ext_v = heartbeat.v;
@@ -806,6 +833,7 @@ impl Bridge {
             _ownership: ownership,
             last_loop,
             installed,
+            _dir: dir_buf,
         })
     }
     pub fn request_test(&self) -> Result<(), String> {
@@ -844,6 +872,7 @@ impl Bridge {
         *self.auth_key.lock().map_err(|_| "Pairing unavailable.")? = token.clone();
         self.token = token;
         *self.state.lock().map_err(|_| "Pairing unavailable.")? = State::default();
+        let _ = std::fs::remove_file(dir.join("paired-browsers.json"));
         Ok(())
     }
     #[cfg(test)]
@@ -1104,10 +1133,13 @@ impl Bridge {
         }
     }
     /// Resolved browser ids with a live connection, for the Settings panel.
+    /// Also includes previously paired browsers when they are closed/not running,
+    /// so closed browsers are never falsely reported as unconnected.
     pub fn connected_browsers(&self) -> Vec<String> {
         match self.state.lock() {
             Ok(s) => {
                 let now = clock::continuous_ms();
+                let running = platform::applications().unwrap_or_default();
                 let mut ids: Vec<String> = s
                     .clients
                     .values()
@@ -1116,6 +1148,16 @@ impl Bridge {
                     })
                     .map(|c| resolve_browser(&c.browser, &self.installed))
                     .collect();
+
+                for paired in &s.paired_browsers {
+                    let is_running = running.iter().any(|app| {
+                        same_browser(&app.id, paired) || app.id.eq_ignore_ascii_case(paired)
+                    });
+                    if !is_running {
+                        ids.push(paired.clone());
+                    }
+                }
+
                 ids.sort();
                 ids.dedup();
                 ids

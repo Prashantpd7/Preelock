@@ -2512,7 +2512,11 @@ impl Engine {
         } else if !is_preelock {
             self.data.unconnected_browser = None;
         } else if let Some(current) = &self.data.unconnected_browser {
-            if self.browser_status_for_app(&current.browser_id).connected {
+            let is_running = crate::platform::applications()
+                .unwrap_or_default()
+                .iter()
+                .any(|a| crate::browser::same_browser(&a.id, &current.browser_id));
+            if !is_running || self.browser_status_for_app(&current.browser_id).connected {
                 self.data.unconnected_browser = None;
             }
         }

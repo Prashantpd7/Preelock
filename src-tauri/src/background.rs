@@ -1434,12 +1434,9 @@ mod tests {
         #[cfg(windows)]
         let test_pid = std::process::id();
 
-        #[cfg(unix)]
-        {
-            std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
-            assert!(sup.poll_ui_alive(dir.path()));
-            assert_eq!(sup.known_ui_pid(), Some(test_pid));
-        }
+        std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
+        assert!(sup.poll_ui_alive(dir.path()));
+        assert_eq!(sup.known_ui_pid(), Some(test_pid));
     }
 
     #[test]

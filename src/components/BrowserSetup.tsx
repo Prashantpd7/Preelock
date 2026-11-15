@@ -51,6 +51,51 @@ export function getCanonicalBrowserKey(id: string): string {
   return lower;
 }
 
+export function isBrowserOpen(
+  browserId: string,
+  setup: FocusSetup | null,
+): boolean {
+  if (!setup?.applications) return false;
+  const key = getCanonicalBrowserKey(browserId);
+  return setup.applications.some(
+    (app) =>
+      sameBrowser(app.id, browserId) ||
+      getCanonicalBrowserKey(app.id) === key ||
+      (app.name && getCanonicalBrowserKey(app.name) === key),
+  );
+}
+
+export function markBrowserConnected(browserId: string): void {
+  try {
+    const key = getCanonicalBrowserKey(browserId);
+    const raw = localStorage.getItem('preelock-known-connected-browsers');
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    if (!list.includes(key)) {
+      list.push(key);
+      localStorage.setItem(
+        'preelock-known-connected-browsers',
+        JSON.stringify(list),
+      );
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function getKnownConnectedBrowsers(): string[] {
+  try {
+    const raw = localStorage.getItem('preelock-known-connected-browsers');
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function isBrowserKnownConnected(browserId: string): boolean {
+  const key = getCanonicalBrowserKey(browserId);
+  return getKnownConnectedBrowsers().includes(key);
+}
+
 export function isBrowserConnected(
   browserId: string,
   setup: FocusSetup | null,
@@ -63,6 +108,7 @@ export function isBrowserConnected(
       (c) => sameBrowser(c, browserId) || getCanonicalBrowserKey(c) === key,
     )
   ) {
+    markBrowserConnected(browserId);
     return true;
   }
   if (
@@ -74,8 +120,14 @@ export function isBrowserConnected(
       sameBrowser(setup.browser.client_browser, browserId) ||
       getCanonicalBrowserKey(setup.browser.client_browser) === key
     ) {
+      markBrowserConnected(browserId);
       return true;
     }
+  }
+  // When a browser is closed (not running), if it was previously connected / paired,
+  // it is considered connected because a closed browser cannot ping and is not an active gap.
+  if (!isBrowserOpen(browserId, setup) && isBrowserKnownConnected(browserId)) {
+    return true;
   }
   return false;
 }
@@ -111,6 +163,20 @@ export function getUnconnectedInstalledBrowsers(
   if (!setup) return [];
   const installed = getInstalledSupportedBrowsers(setup);
   return installed.filter((b) => !isBrowserConnected(b.id, setup));
+}
+
+export function getOpenSupportedBrowsers(
+  setup: FocusSetup | null,
+): { id: string; name: string }[] {
+  const installed = getInstalledSupportedBrowsers(setup);
+  return installed.filter((b) => isBrowserOpen(b.id, setup));
+}
+
+export function getUnconnectedOpenBrowsers(
+  setup: FocusSetup | null,
+): { id: string; name: string }[] {
+  const openBrowsers = getOpenSupportedBrowsers(setup);
+  return openBrowsers.filter((b) => !isBrowserConnected(b.id, setup));
 }
 
 export function areAllInstalledBrowsersConnected(

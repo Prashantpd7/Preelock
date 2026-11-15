@@ -1,7 +1,8 @@
-# Preelock 0.5.7 — Free public beta
+# Preelock 0.5.8 — Free public beta
 
-Preelock 0.5.7 delivers critical production stability, lifecycle hardening, and cross-platform bug fixes:
+Preelock 0.5.8 delivers critical production stability, lifecycle hardening, and cross-platform bug fixes:
 
+- Connected browser state persistence & running-only requirement: Preelock now only warns or requires connection for browsers that are actively open and running in the OS. Closed browsers (e.g. Brave quit with Cmd+Q) never trigger disconnection warnings or modal blocks. Paired browser states persist on disk across app restarts.
 - Single-instance desktop lifecycle: robust lock-file singleton guards on macOS and Windows prevent ghost Dock icons, unresponsive windows, and duplicate application processes. Subsequent launch attempts immediately activate and unhide the primary running window and exit without creating secondary Dock icons.
 - Robust Accessibility permission management: centralized cached permission checks with TTL and proactive OS authorization polling eliminate recurring, spurious accessibility prompts on macOS and Windows while protecting active focus sessions.
 - Strict-session GUI recovery: instant ~1-second background supervisor relaunch upon GUI force-quit during active strict focus sessions, fully restoring original session parameters and countdown timer.
@@ -10,7 +11,7 @@ Preelock 0.5.7 delivers critical production stability, lifecycle hardening, and 
 
 Existing database paths, backup format, browser pairing and Microsoft Store
 registration identity are retained. Database migration is additive and backward-compatible.
-The Store package is version 1.5.7.0, with the existing identity and publisher.
+The Store package is version 1.5.8.0, with the existing identity and publisher.
 It is supplied for owner upload and is not claimed to be Store-certified.
 
 Mac builds are ad-hoc signed, not notarized. Windows direct installers are unsigned.

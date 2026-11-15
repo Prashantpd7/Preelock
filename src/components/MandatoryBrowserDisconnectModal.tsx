@@ -3,7 +3,7 @@ import { useAppStore } from '../state/store';
 import { desktop } from '../services/api';
 import {
   areAllInstalledBrowsersConnected,
-  getUnconnectedInstalledBrowsers,
+  getUnconnectedOpenBrowsers,
   BrowserSetup,
 } from './BrowserSetup';
 import { Modal } from './SettingsControls';
@@ -59,7 +59,15 @@ export function MandatoryBrowserDisconnectModal() {
     return null;
   }
 
-  const unconnected = getUnconnectedInstalledBrowsers(setup);
+  // A browser that is not open in the system cannot be browsed with,
+  // and its connection status cannot be probed while closed.
+  // The warning must only show if a browser is open and that open browser is not connected (except Safari).
+  // If a browser is not open, it must never show the warning.
+  const unconnected = getUnconnectedOpenBrowsers(setup);
+
+  if (unconnected.length === 0) {
+    return null;
+  }
 
   return (
     <Modal title="Browser connection required" hideClose={true}>
@@ -72,7 +80,7 @@ export function MandatoryBrowserDisconnectModal() {
           {unconnected.length === 1
             ? `${unconnected[0].name} is not connected.`
             : `The following browsers are not connected: ${unconnected.map((b) => b.name).join(', ')}.`}{' '}
-          Connect all installed browsers to continue using Preelock.
+          Connect all running browsers to continue using Preelock.
         </p>
         <BrowserSetup setup={setup} refresh={refresh} allowAdd={false} />
       </div>

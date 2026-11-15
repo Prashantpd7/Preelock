@@ -187,12 +187,19 @@ describe('Mandatory Browser Connection Requirements', () => {
     expect(installButtons).toHaveLength(2);
   });
 
-  it('shows persistent mandatory modal without close button when a browser disconnects in the future', async () => {
-    vi.mocked(api.focusSetup).mockResolvedValue(multiBrowserSetup);
+  it('shows persistent mandatory modal without close button when an open browser disconnects in the future', async () => {
+    const openDisconnectedSetup: FocusSetup = {
+      ...multiBrowserSetup,
+      applications: [
+        { id: 'com.google.chrome', name: 'Google Chrome' },
+        { id: 'ai.perplexity.comet', name: 'Comet' },
+      ],
+    };
+    vi.mocked(api.focusSetup).mockResolvedValue(openDisconnectedSetup);
     localStorage.setItem('preelock-permissions-v10', 'seen');
     localStorage.setItem('preelock-all-browsers-connected', 'true');
 
-    // multiBrowserSetup has disconnected browsers (Chrome and Comet)
+    // openDisconnectedSetup has open disconnected browsers (Chrome and Comet)
     const { unmount } = render(<MandatoryBrowserDisconnectModal />);
 
     // The modal appears
@@ -205,13 +212,13 @@ describe('Mandatory Browser Connection Requirements', () => {
     // It has NO close button
     expect(screen.queryByLabelText('Close dialog')).not.toBeInTheDocument();
 
-    // It warns about disconnected browsers
+    // It warns about disconnected running browsers
     expect(screen.getByText(/Google Chrome, Comet/i)).toBeInTheDocument();
     unmount();
 
     // Once reconnected, the modal automatically closes
     const allConnectedSetup: FocusSetup = {
-      ...multiBrowserSetup,
+      ...openDisconnectedSetup,
       connected_browsers: [
         'com.google.chrome',
         'com.brave.Browser',
@@ -219,6 +226,22 @@ describe('Mandatory Browser Connection Requirements', () => {
       ],
     };
     vi.mocked(api.focusSetup).mockResolvedValue(allConnectedSetup);
+
+    render(<MandatoryBrowserDisconnectModal />);
+    expect(
+      screen.queryByRole('dialog', { name: 'Browser connection required' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does NOT show mandatory modal when unconnected browsers are closed/not open', async () => {
+    // Chrome and Comet are disconnected, BUT closed (not in applications)
+    const closedDisconnectedSetup: FocusSetup = {
+      ...multiBrowserSetup,
+      applications: [],
+    };
+    vi.mocked(api.focusSetup).mockResolvedValue(closedDisconnectedSetup);
+    localStorage.setItem('preelock-permissions-v10', 'seen');
+    localStorage.setItem('preelock-all-browsers-connected', 'true');
 
     render(<MandatoryBrowserDisconnectModal />);
     expect(
