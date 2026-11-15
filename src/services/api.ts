@@ -35,7 +35,7 @@ export const emptySnapshot: Snapshot = {
     activating_until_ms: null,
     created_at_ms: 0,
   },
-  preferences: { theme: 'dark', default_minutes: 25 },
+  preferences: { theme: 'dark', default_minutes: 25, paused: false },
   unconnected_browser: null,
 };
 export const api = {

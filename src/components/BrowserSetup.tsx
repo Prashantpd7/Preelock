@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { hasLiveStrictSession } from '../services/activitySection';
 import { useAppStore } from '../state/store';
-import type { FocusSetup } from '../types';
+import { sameBrowser, type FocusSetup } from '../types';
 import { Modal } from './SettingsControls';
 
 export function isSupportedBrowser(id: string): boolean {
   const lower = id.toLowerCase();
+  if (lower.includes('safari') || lower === 'com.apple.safari') return false;
   const known = [
     'com.google.chrome',
     'com.microsoft.edgemac',
@@ -29,6 +30,99 @@ export function isSupportedBrowser(id: string): boolean {
     'arc.exe',
     'opera.exe',
   ].some((name) => lower.endsWith(`\\${name}`) || lower === name);
+}
+
+export function getCanonicalBrowserKey(id: string): string {
+  const lower = id.toLowerCase();
+  if (lower.includes('chrome') && !lower.includes('chromium')) return 'chrome';
+  if (lower.includes('brave')) return 'brave';
+  if (
+    lower.includes('edgemac') ||
+    lower.includes('msedge') ||
+    lower.includes('edge')
+  )
+    return 'edge';
+  if (lower.includes('comet')) return 'comet';
+  if (lower.includes('vivaldi')) return 'vivaldi';
+  if (lower.includes('chromium')) return 'chromium';
+  if (lower.includes('arc') || lower.includes('thebrowser')) return 'arc';
+  if (lower.includes('operagx')) return 'operagx';
+  if (lower.includes('opera')) return 'opera';
+  return lower;
+}
+
+export function isBrowserConnected(
+  browserId: string,
+  setup: FocusSetup | null,
+): boolean {
+  if (!setup) return false;
+  const key = getCanonicalBrowserKey(browserId);
+  const connectedList = setup.connected_browsers ?? [];
+  if (
+    connectedList.some(
+      (c) => sameBrowser(c, browserId) || getCanonicalBrowserKey(c) === key,
+    )
+  ) {
+    return true;
+  }
+  if (
+    setup.browser?.connected &&
+    !setup.browser?.error &&
+    setup.browser?.client_browser
+  ) {
+    if (
+      sameBrowser(setup.browser.client_browser, browserId) ||
+      getCanonicalBrowserKey(setup.browser.client_browser) === key
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getInstalledSupportedBrowsers(
+  setup: FocusSetup | null,
+): { id: string; name: string }[] {
+  if (!setup) return [];
+  const mac = setup.platform === 'macos';
+  const raw = (setup.browsers ?? []).filter(
+    (b) =>
+      isSupportedBrowser(b.id) &&
+      !(
+        mac &&
+        (b.id.toLowerCase().includes('safari') || b.id === 'com.apple.Safari')
+      ),
+  );
+  const seen = new Set<string>();
+  const installed: { id: string; name: string }[] = [];
+  for (const b of raw) {
+    const key = getCanonicalBrowserKey(b.id);
+    if (!seen.has(key)) {
+      seen.add(key);
+      installed.push({ id: b.id, name: getBrowserDisplayName(b) });
+    }
+  }
+  return installed;
+}
+
+export function getUnconnectedInstalledBrowsers(
+  setup: FocusSetup | null,
+): { id: string; name: string }[] {
+  if (!setup) return [];
+  const installed = getInstalledSupportedBrowsers(setup);
+  return installed.filter((b) => !isBrowserConnected(b.id, setup));
+}
+
+export function areAllInstalledBrowsersConnected(
+  setup: FocusSetup | null,
+): boolean {
+  if (!setup) return false;
+  const installed = getInstalledSupportedBrowsers(setup);
+  if (installed.length === 0) {
+    return !!setup.browser.connected && !setup.browser.error;
+  }
+  const unconnected = getUnconnectedInstalledBrowsers(setup);
+  return unconnected.length === 0;
 }
 
 export function getBrowserDisplayName(browser: {
@@ -85,7 +179,10 @@ export function BrowserSetup({
   );
 
   const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
-  const connected = !!setup?.browser.connected && !setup?.browser.error;
+  const installedBrowsers = getInstalledSupportedBrowsers(setup);
+  const unconnectedBrowsers = getUnconnectedInstalledBrowsers(setup);
+  const allConnected = areAllInstalledBrowsersConnected(setup);
+  const connected = allConnected;
 
   // Filter only browsers actually installed on the user's computer and supported
   const supportedBrowsers = (setup?.browsers ?? [])
@@ -138,12 +235,12 @@ export function BrowserSetup({
 
   // Keep checking while open so it flips to Connected on its own once paired
   useEffect(() => {
-    if (connected && !allowAdd) return;
+    if (allConnected && !allowAdd) return;
     const timer = setInterval(() => {
       void refresh();
     }, 2000);
     return () => clearInterval(timer);
-  }, [connected, allowAdd, refresh]);
+  }, [allConnected, allowAdd, refresh]);
 
   const newlyConnected =
     allowAdd &&
@@ -158,17 +255,21 @@ export function BrowserSetup({
     ? getInstallButtonText(selectedBrowser.name)
     : 'Add to Chrome';
 
-  async function handleInstallExtension() {
+  async function handleInstallBrowser(id: string) {
     setNotice('');
     setLaunching(true);
     try {
-      const targetBrowser = selectedBrowser?.id ?? activeBrowserId;
-      await api.openSetup('install_extension', targetBrowser);
+      await api.openSetup('install_extension', id);
     } catch (e) {
       setNotice(String(e));
     } finally {
       setLaunching(false);
     }
+  }
+
+  async function handleInstallExtension() {
+    const targetBrowser = selectedBrowser?.id ?? activeBrowserId;
+    await handleInstallBrowser(targetBrowser);
   }
 
   async function copyCode() {
@@ -189,10 +290,10 @@ export function BrowserSetup({
   if (connected && !allowAdd) {
     return (
       <div className="setup-guide">
-        <p className="ready-box">Connected</p>
+        <p className="ready-box">All browsers connected</p>
         <p className="muted small">
-          The browser extension is paired and reporting. You can start the
-          session.
+          All installed browsers are paired and reporting. Close this window and
+          click Done to continue.
         </p>
         <p className="muted small">
           Wrong browser?{' '}
@@ -286,14 +387,8 @@ export function BrowserSetup({
         </div>
       )}
 
-      {!allowAdd && (
-        <p role="status" className="connect-warn">
-          Browser is not connected.
-        </p>
-      )}
-
       {!allowAdd ? (
-        <div style={{ marginTop: '1rem', marginBottom: '1.25rem' }}>
+        <div style={{ marginTop: '0.5rem', marginBottom: '1.25rem' }}>
           <strong
             className="step-title"
             style={{
@@ -310,47 +405,66 @@ export function BrowserSetup({
               Brave, Microsoft Edge, or Comet.
             </p>
           ) : (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.625rem',
-                flexWrap: 'wrap',
-              }}
-            >
-              <select
-                aria-label="Select browser"
-                value={selectedBrowser?.id ?? activeBrowserId}
-                onChange={(e) => setExplicitBrowserId(e.target.value)}
+            installedBrowsers.length > 0 && (
+              <div
                 style={{
-                  minWidth: '140px',
-                  maxWidth: '280px',
-                  width: 'auto',
-                  height: '38px',
-                  padding: '6px 32px 6px 12px',
-                  background: 'var(--bg)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  color: 'var(--text)',
-                  fontSize: '13px',
-                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
                 }}
               >
-                {supportedBrowsers.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="secondary"
-                disabled={launching || supportedBrowsers.length === 0}
-                onClick={() => void handleInstallExtension()}
-              >
-                {installButtonText}
-              </button>
-            </div>
+                <span className="small muted" style={{ fontWeight: 600 }}>
+                  Installed browsers (
+                  {installedBrowsers.length - unconnectedBrowsers.length}/
+                  {installedBrowsers.length} connected):
+                </span>
+                {installedBrowsers.map((b) => {
+                  const isConn = isBrowserConnected(b.id, setup);
+                  return (
+                    <div
+                      key={b.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '7px 12px',
+                        borderRadius: '6px',
+                        background: 'var(--panel)',
+                        border: isConn
+                          ? '1px solid rgba(34, 197, 94, 0.3)'
+                          : '1px solid var(--border)',
+                      }}
+                    >
+                      <span style={{ fontSize: '13px', fontWeight: 500 }}>
+                        {b.name}
+                      </span>
+                      {isConn ? (
+                        <span
+                          style={{
+                            fontSize: '12px',
+                            color: '#4ade80',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ✓ Connected
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="secondary"
+                          style={{ padding: '3px 8px', fontSize: '12px' }}
+                          disabled={launching}
+                          aria-label={getInstallButtonText(b.name)}
+                          onClick={() => void handleInstallBrowser(b.id)}
+                        >
+                          Install
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )
           )}
         </div>
       ) : (

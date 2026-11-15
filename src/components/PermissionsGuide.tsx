@@ -2,10 +2,22 @@ import { useEffect, useState } from 'react';
 import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
 import { useFocusSetup } from '../hooks/useFocusSetup';
+import { useAppStore } from '../state/store';
 import { Modal, SettingRow, Toggle } from './SettingsControls';
-import { BrowserSetup } from './BrowserSetup';
+import {
+  BrowserSetup,
+  areAllInstalledBrowsersConnected,
+  getInstalledSupportedBrowsers,
+  getUnconnectedInstalledBrowsers,
+} from './BrowserSetup';
 
-export function PermissionsGuide({ onClose }: { onClose: () => void }) {
+export function PermissionsGuide({
+  onClose,
+  isFirstRun = false,
+}: {
+  onClose: () => void;
+  isFirstRun?: boolean;
+}) {
   const { setup, refresh } = useFocusSetup();
   const [info, setInfo] = useState<SettingsInfo>({});
   const [error, setError] = useState('');
@@ -13,9 +25,14 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [browserGuide, setBrowserGuide] = useState(false);
   const mac = setup?.platform === 'macos';
-  const browserConnected = !!setup?.browser.connected && !setup?.browser.error;
+  const installedBrowsers = getInstalledSupportedBrowsers(setup);
+  const unconnectedBrowsers = getUnconnectedInstalledBrowsers(setup);
+  const allBrowsersConnected = areAllInstalledBrowsersConnected(setup);
+  const browserConnected = allBrowsersConnected;
   const accessibilityGranted =
-    setup?.accessibility_permission === 'granted' || info.accessibility === 1;
+    setup?.accessibility_permission === 'granted' ||
+    info.accessibility === 1 ||
+    info.accessibility_permission === 'granted';
 
   // While the guide is open, keep checking so it detects changes
   // (browser connection, accessibility, notifications, camera)
@@ -23,30 +40,44 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const timer = setInterval(() => {
       void refresh();
-      void settingsAction({ type: 'info' })
+      void settingsAction({ type: 'recheck_permissions' })
         .then((v) => setInfo(v))
-        .catch(() => {});
+        .catch(() => {
+          void settingsAction({ type: 'info' })
+            .then((v) => setInfo(v))
+            .catch(() => {});
+        });
     }, 2000);
     return () => clearInterval(timer);
   }, [refresh]);
   async function check() {
     await refresh();
     try {
-      setInfo(await settingsAction({ type: 'info' }));
-    } catch (e) {
-      setError(String(e));
+      setInfo(await settingsAction({ type: 'recheck_permissions' }));
+    } catch {
+      try {
+        setInfo(await settingsAction({ type: 'info' }));
+      } catch (e) {
+        setError(String(e));
+      }
     }
   }
   useEffect(() => {
     let active = true;
     const read = () => {
       void refresh();
-      void settingsAction({ type: 'info' })
+      void settingsAction({ type: 'recheck_permissions' })
         .then((v) => {
           if (active) setInfo(v);
         })
-        .catch((e) => {
-          if (active) setError(String(e));
+        .catch(() => {
+          void settingsAction({ type: 'info' })
+            .then((v) => {
+              if (active) setInfo(v);
+            })
+            .catch((e) => {
+              if (active) setError(String(e));
+            });
         });
     };
     read();
@@ -76,7 +107,11 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
   );
   return (
     <>
-      <Modal title="Permissions & setup" onClose={onClose}>
+      <Modal
+        title="Permissions & setup"
+        onClose={onClose}
+        hideClose={isFirstRun && !browserConnected}
+      >
         {!setup ? (
           <p>Checking your system…</p>
         ) : (
@@ -197,7 +232,13 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
             )}
             <SettingRow
               title="Browser extension"
-              hint="Connect your browser so Preelock can block distracting sites during sessions."
+              hint={
+                browserConnected
+                  ? 'All installed browsers are connected to Preelock.'
+                  : installedBrowsers.length > 0
+                    ? `Connect all installed browsers: ${unconnectedBrowsers.map((b) => b.name).join(', ')} (${installedBrowsers.length - unconnectedBrowsers.length}/${installedBrowsers.length} connected). Required to continue.`
+                    : 'Connect your browser so Preelock can block distracting sites during sessions.'
+              }
             >
               <button
                 className="secondary"
@@ -220,10 +261,12 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
           </p>
         )}
         <div className="dialog-footer">
-          <button onClick={onClose}>Done</button>
+          <button disabled={!browserConnected} onClick={onClose}>
+            Done
+          </button>
         </div>
       </Modal>
-      {browserGuide && !browserConnected && (
+      {browserGuide && (
         <Modal
           title="Browser connection"
           onClose={() => setBrowserGuide(false)}
@@ -238,6 +281,8 @@ export function PermissionsGuide({ onClose }: { onClose: () => void }) {
 }
 
 export function FirstRunPermissions() {
+  const data = useAppStore((s) => s.data);
+  const { setup } = useFocusSetup();
   const [open, setOpen] = useState(() => {
     try {
       return (
@@ -250,15 +295,67 @@ export function FirstRunPermissions() {
       return desktop;
     }
   });
-  if (!open) return null;
+
+  // Never show onboarding if backend database confirms it is already completed
+  const onboardingDone = Boolean(data?.preferences?.onboarding_completed);
+
+  // Never interrupt an active running or preparing session (Requirement 1 & 6)
+  const hasActiveSession = data?.sessions?.some(
+    (s) =>
+      s.status === 'running' ||
+      s.status === 'preparing' ||
+      s.status === 'paused',
+  );
+
+  // Requirement 5.3: On fresh installation, if capabilities are already granted, continue without displaying prompt
+  const mac = setup?.platform === 'macos';
+  const accessibilityOk = !mac || setup?.accessibility_permission === 'granted';
+  const allBrowsersOk = areAllInstalledBrowsersConnected(setup);
+  const alreadyGrantedOnFirstRun = Boolean(
+    open && setup && accessibilityOk && allBrowsersOk,
+  );
+
+  useEffect(() => {
+    if (alreadyGrantedOnFirstRun) {
+      try {
+        localStorage.setItem('preelock-permissions-v10', 'seen');
+        localStorage.setItem('preelock-all-browsers-connected', 'true');
+      } catch {
+        // ignore
+      }
+      if (data?.preferences && !data.preferences.onboarding_completed) {
+        void api
+          .execute({
+            type: 'update_preferences',
+            preferences: { ...data.preferences, onboarding_completed: true },
+          })
+          .catch(() => {});
+      }
+    }
+  }, [alreadyGrantedOnFirstRun, data?.preferences]);
+
+  if (!open || onboardingDone || hasActiveSession || alreadyGrantedOnFirstRun) {
+    return null;
+  }
+
   return (
     <PermissionsGuide
+      isFirstRun={true}
       onClose={() => {
         try {
           localStorage.setItem('preelock-permissions-v2', 'seen');
           localStorage.setItem('preelock-permissions-v10', 'seen');
+          localStorage.setItem('preelock-all-browsers-connected', 'true');
         } catch {
           /* Still dismiss for this run. */
+        }
+        if (data?.preferences) {
+          void api
+            .execute({
+              type: 'update_preferences',
+              preferences: { ...data.preferences, onboarding_completed: true },
+            })
+            .catch(() => {});
         }
         setOpen(false);
       }}

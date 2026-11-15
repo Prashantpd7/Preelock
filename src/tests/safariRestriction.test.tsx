@@ -163,7 +163,7 @@ describe('Safari is refused for session website blocking', () => {
     ).not.toBeInTheDocument();
     // The unchanged connection flow: same guide, same pairing code.
     expect(
-      await screen.findByText(/Browser is not connected/),
+      await screen.findByText(/Step 1: Select and install a browser extension/),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Add to Brave/ }),
@@ -330,7 +330,7 @@ describe('choosing a browser opens it and keeps it manageable', () => {
     expect(await screen.findByLabelText('Brave')).toBeChecked();
     // …and its extension connection is still what decides the guide.
     expect(
-      await screen.findByText(/Browser is not connected/),
+      await screen.findByText(/Step 1: Select and install a browser extension/),
     ).toBeInTheDocument();
   });
 
@@ -348,7 +348,7 @@ describe('choosing a browser opens it and keeps it manageable', () => {
     expect(screen.getByLabelText('Google Chrome')).toBeChecked();
     // A connected browser needs no setup guide even though it was opened.
     expect(
-      screen.queryByText(/Browser is not connected/),
+      screen.queryByText(/Step 1: Select and install a browser extension/),
     ).not.toBeInTheDocument();
   });
 

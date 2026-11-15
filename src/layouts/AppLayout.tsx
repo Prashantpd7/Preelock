@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { FirstRunPermissions } from '../components/PermissionsGuide';
+import { MandatoryBrowserDisconnectModal } from '../components/MandatoryBrowserDisconnectModal';
 import { ActiveSessionBanner } from '../components/ActiveSessionBanner';
 import { UnconnectedBrowserBanner } from '../components/UnconnectedBrowserBanner';
 import { BreakBar } from '../components/BreakBar';
@@ -13,6 +14,7 @@ import {
   Clock3,
   Settings,
   X,
+  Power,
 } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { desktop } from '../services/api';
@@ -46,6 +48,12 @@ export function AppLayout() {
   const activePath = pagePaths.includes(pathname) ? pathname : '/';
   const error = useAppStore((s) => s.error);
   const loading = useAppStore((s) => s.loading);
+  const isPaused = useAppStore((s) => Boolean(s.data?.preferences?.paused));
+
+  const handleTogglePower = () => {
+    void useAppStore.getState().execute({ type: 'toggle_power' });
+  };
+
   // Pages stay mounted in hidden divs, so the window scroll position
   // otherwise persists across navigation and a newly opened page can
   // land mid-scroll with a heading half-cut at the viewport top.
@@ -53,22 +61,36 @@ export function AppLayout() {
     window.scrollTo(0, 0);
   }, [activePath]);
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isPaused ? 'preelock-powered-off' : ''}`}>
       <aside className="sidebar">
-        <NavLink to="/" className="brand">
-          <img className="brand-icon" src={logo} alt="" />
-          Preelock
-        </NavLink>
-        <nav aria-label="Main navigation">
-          {navigation.map(([to, label, Icon]) => (
-            <NavLink key={to} to={to} end={to === '/'}>
-              <Icon size={18} />
-              <span>{label}</span>
-            </NavLink>
-          ))}
-        </nav>
+        <div className="sidebar-top" inert={isPaused ? true : undefined}>
+          <NavLink to="/" className="brand">
+            <img className="brand-icon" src={logo} alt="" />
+            Preelock
+          </NavLink>
+          <nav aria-label="Main navigation">
+            {navigation.map(([to, label, Icon]) => (
+              <NavLink key={to} to={to} end={to === '/'}>
+                <Icon size={18} />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </nav>
+        </div>
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className={`power-button ${isPaused ? 'is-off' : 'is-on'}`}
+            onClick={handleTogglePower}
+            aria-label={isPaused ? 'Turn Preelock On' : 'Turn Preelock Off'}
+            aria-pressed={!isPaused}
+          >
+            <Power size={18} />
+            <span>{isPaused ? 'Preelock Off' : 'Preelock On'}</span>
+          </button>
+        </div>
       </aside>
-      <div className="main-shell">
+      <div className="main-shell" inert={isPaused ? true : undefined}>
         <main>
           <UnconnectedBrowserBanner />
           <ActiveSessionBanner />
@@ -97,6 +119,7 @@ export function AppLayout() {
           ) : (
             <>
               <FirstRunPermissions />
+              <MandatoryBrowserDisconnectModal />
               <div hidden={activePath !== '/'}>
                 <Dashboard />
               </div>

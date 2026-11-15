@@ -341,17 +341,29 @@ pub enum SettingsAction {
     Restore { confirmation: String },
     DeleteHistory { confirmation: String },
     ResetPreferences,
+    RecheckPermissions,
 }
 pub fn run(app: &tauri::AppHandle, action: SettingsAction) -> Result<Value, String> {
     let client = app.state::<IpcClient>();
     let runtime = app.state::<Mutex<Runtime>>();
     match action {
+        SettingsAction::RecheckPermissions => {
+            platform::mark_accessibility_recheck_required();
+            let status = platform::accessibility_status(true);
+            let mut info = native::info().unwrap_or_else(|_| json!({}));
+            info["accessibility"] = json!(if status.is_granted() { 1 } else { 0 });
+            info["accessibility_permission"] = json!(status.as_str());
+            Ok(info)
+        }
         SettingsAction::Info | SettingsAction::Status => {
             let mut info = if matches!(action, SettingsAction::Info) {
                 native::info()?
             } else {
                 json!({})
             };
+            let status = platform::accessibility_status(false);
+            info["accessibility"] = json!(if status.is_granted() { 1 } else { 0 });
+            info["accessibility_permission"] = json!(status.as_str());
             info["browser_test"] = json!(client.browser_test_result()?);
             let runtime = runtime.lock().map_err(|_| "Settings unavailable.")?;
             info["break_remaining"] =

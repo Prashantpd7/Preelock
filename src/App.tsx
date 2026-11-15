@@ -6,6 +6,41 @@ import {
   BlockedAppOverlayWindow,
 } from './components/BlockedAppOverlay';
 import { AppLayout } from './layouts/AppLayout';
+function getInitialOverlay(): 'app' | 'frozen' | 'blocked-app' {
+  if (
+    typeof window !== 'undefined' &&
+    window.location.hash.includes('blocked-app')
+  ) {
+    return 'blocked-app';
+  }
+  if (
+    typeof window !== 'undefined' &&
+    window.location.hash.includes('frozen')
+  ) {
+    return 'frozen';
+  }
+  try {
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__?: {
+          metadata?: {
+            currentWindow?: { label?: string };
+            currentWebview?: { label?: string };
+          };
+        };
+      }
+    )?.__TAURI_INTERNALS__;
+    const label =
+      internals?.metadata?.currentWindow?.label ||
+      internals?.metadata?.currentWebview?.label;
+    if (label === 'frozen') return 'frozen';
+    if (label === 'blocked-app') return 'blocked-app';
+  } catch {
+    // Ignore in non-Tauri environments
+  }
+  return 'app';
+}
+
 export function App() {
   // Step 12: the frozen overlay window loads this same frontend.
   // It renders the overlay (not the app shell) when its own Tauri
@@ -16,7 +51,7 @@ export function App() {
   // `/blocked-app` routes are the same overlays for browser-preview
   // testing.
   const [overlay, setOverlay] = useState<'app' | 'frozen' | 'blocked-app'>(
-    'app',
+    getInitialOverlay,
   );
   useEffect(() => {
     let live = true;
@@ -33,7 +68,12 @@ export function App() {
     };
   }, []);
   if (overlay === 'frozen') return <FrozenOverlayWindow />;
-  if (overlay === 'blocked-app') return <BlockedAppOverlayWindow />;
+  if (overlay === 'blocked-app') {
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.add('in-blocked-popup');
+    }
+    return <BlockedAppOverlayWindow />;
+  }
   return (
     <HashRouter>
       <Routes>

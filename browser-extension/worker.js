@@ -564,6 +564,20 @@ async function sync() {
     if (!response.ok)
       throw new Error(`Bridge rejected pairing (${response.status})`);
     const payload = await response.json();
+    if (typeof payload.adult_block_enabled === 'boolean') {
+      const currentControls = await readWebsiteControls();
+      if (currentControls.blockAdultWebsites !== payload.adult_block_enabled) {
+        const nextControls = {
+          ...currentControls,
+          blockAdultWebsites: payload.adult_block_enabled,
+        };
+        await chrome.storage.local.set({
+          [WEBSITE_CONTROLS_KEY]: nextControls,
+        });
+        await syncWebsiteControlRules(nextControls);
+        await reconcileWebsiteControls({ enforceTabs: true });
+      }
+    }
     const next = payload.policy;
     let testResult = {};
     if (payload.test_id && !leaseValid(next)) {

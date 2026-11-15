@@ -442,7 +442,9 @@ describe('PreSessionWarning popup', () => {
     expect(dialog).toHaveTextContent(/starts in \d+ minutes/);
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Connect browser' }));
-    expect(await screen.findByText(/Browser is not connected\./)).toBeVisible();
+    expect(
+      await screen.findByText(/Step 1: Select and install a browser extension/),
+    ).toBeVisible();
   });
 
   it('warns a one-shot starting in 5 minutes with camera access missing', async () => {

@@ -77,10 +77,12 @@ export function Modal({
   title,
   children,
   onClose,
+  hideClose = false,
 }: {
   title: string;
   children: ReactNode;
-  onClose: () => void;
+  onClose?: () => void;
+  hideClose?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -103,18 +105,26 @@ export function Modal({
       ref={ref}
       className="settings-dialog"
       aria-label={title}
-      onCancel={onClose}
+      onCancel={(e) => {
+        if (hideClose) {
+          e.preventDefault();
+        } else {
+          onClose?.();
+        }
+      }}
     >
       <div className="dialog-heading">
         <h2>{title}</h2>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Close dialog"
-          onClick={onClose}
-        >
-          <X size={20} />
-        </button>
+        {!hideClose && onClose && (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close dialog"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        )}
       </div>
       {children}
     </dialog>

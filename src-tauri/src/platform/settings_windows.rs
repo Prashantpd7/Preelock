@@ -233,7 +233,7 @@ pub fn info() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "login": login,
         "notifications": if notifications {2} else {1},
-        "accessibility": 1,
+        "accessibility": if crate::platform::accessibility_status(false).is_granted() { 1 } else { 0 },
         "day": time.wDayOfWeek,
         "date": format!("{}-{}-{}", time.wYear,time.wMonth,time.wDay),
         "time": format!("{:02}:{:02}",time.wHour,time.wMinute)
@@ -316,7 +316,7 @@ fn notify_headless_toast(title: &str, body: &str) -> Result<(), String> {
     ensure_aumid_registered();
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
     let xml = format!(
-        "<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text><text id=\"2\">{}</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>",
+        "<toast activationType=\"foreground\"><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text><text id=\"2\">{}</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>",
         escape_toast_xml(title),
         escape_toast_xml(body)
     );

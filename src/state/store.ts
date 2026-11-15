@@ -40,7 +40,12 @@ export const useAppStore = create<Store>((set, get) => ({
   refresh: () =>
     queue(async () => {
       try {
-        set({ data: await api.snapshot(), loading: false });
+        const snap = await api.snapshot();
+        if (snap) {
+          set({ data: snap, loading: false });
+        } else {
+          set({ loading: false });
+        }
       } catch (error) {
         set({ error: message(error), loading: false });
       }
@@ -50,7 +55,10 @@ export const useAppStore = create<Store>((set, get) => ({
     set({ busy: true, error: null });
     return queue(async () => {
       try {
-        set({ data: await api.execute(action) });
+        const snap = await api.execute(action);
+        if (snap) {
+          set({ data: snap });
+        }
         return true;
       } catch (error) {
         set({ error: message(error) });

@@ -99,6 +99,8 @@ export interface Preferences {
    *  Checked before the built-in mapping everywhere the Screen Time
    *  page categorizes usage, so a correction re-colors past days too. */
   category_overrides?: Record<string, 'Distracting' | 'Productive' | 'Others'>;
+  paused?: boolean;
+  onboarding_completed?: boolean;
 }
 /** Recurring weekly block (step 5). `focus` is a full snapshot
  *  copied from the template session at creation time: editing the
@@ -356,7 +358,9 @@ export type Action =
       type: 'set_preferences';
       theme: Preferences['theme'];
       default_minutes: number;
-    };
+    }
+  | { type: 'toggle_power' }
+  | { type: 'set_power'; enabled: boolean };
 
 export interface FocusConfig {
   mode: 'standard' | 'strict' | 'deep';
@@ -607,9 +611,23 @@ export function sameBrowser(id: string, reported: string): boolean {
     'com.vivaldi.vivaldi': 'vivaldi.exe',
     'org.chromium.chromium': 'chromium.exe',
     'ai.perplexity.comet': 'comet.exe',
+    'company.thebrowser.browser': 'arc.exe',
+    'com.operasoftware.opera': 'opera.exe',
+    'com.operasoftware.operagx': 'operagx.exe',
   };
-  const name = exe[b];
-  return !!name && a.endsWith('\\' + name);
+  const nameB = exe[b];
+  if (
+    nameB &&
+    (a.endsWith('\\' + nameB) || a.endsWith('/' + nameB) || a === nameB)
+  )
+    return true;
+  const nameA = exe[a];
+  if (
+    nameA &&
+    (b.endsWith('\\' + nameA) || b.endsWith('/' + nameA) || b === nameA)
+  )
+    return true;
+  return false;
 }
 /** The single browser a session's website rules cover: the chosen browser.
  *  One browser per session. Mirrors `FocusConfig::session_browsers` in the

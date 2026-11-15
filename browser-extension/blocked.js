@@ -94,4 +94,17 @@
       el.textContent = messages.timed_lock();
     }, 30000);
   }
+
+  const closeBtn = document.getElementById('close-btn');
+  const dismiss = () => {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.close();
+    }
+  };
+  if (closeBtn) closeBtn.addEventListener('click', dismiss);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') dismiss();
+  });
 })();

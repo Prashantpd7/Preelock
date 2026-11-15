@@ -62,20 +62,26 @@ describe('Published Browser Extension Integration & UI', () => {
   it('renders Step 1 and Step 2 with auto-selected default browser and dynamic button', async () => {
     render(<BrowserSetup setup={mockSetup} refresh={vi.fn()} />);
 
-    // Check status
-    expect(screen.getByText('Browser is not connected.')).toBeInTheDocument();
+    // Step 1 directly shows installed browsers without duplicate warning
     expect(
       screen.getByText('Step 1: Select and install a browser extension'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText('Step 2: Connect your browser'),
-    ).toBeInTheDocument();
-
-    // Default browser is Brave in mockSetup -> dropdown selects Brave, button is "Add to Brave"
-    const select = screen.getByLabelText('Select browser') as HTMLSelectElement;
-    expect(select.value).toBe('com.brave.Browser');
+    expect(screen.getByText(/Installed browsers/)).toBeInTheDocument();
+    expect(screen.getByText('Brave')).toBeInTheDocument();
+    expect(screen.getByText('Google Chrome')).toBeInTheDocument();
+    expect(screen.getByText('Microsoft Edge')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Add to Brave' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Add to Chrome' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Add to Edge' }),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByText('Step 2: Connect your browser'),
     ).toBeInTheDocument();
 
     // Connection code and copy button
@@ -102,55 +108,36 @@ describe('Published Browser Extension Integration & UI', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('dynamically changes button text and launches selected browser with official listing', async () => {
+  it('dynamically launches selected browser with official listing', async () => {
     const user = userEvent.setup();
     render(<BrowserSetup setup={mockSetup} refresh={vi.fn()} />);
 
-    const select = screen.getByLabelText('Select browser');
-    const installBtn = screen.getByRole('button', { name: 'Add to Brave' });
-
     // Click install button for Brave
-    await user.click(installBtn);
+    const braveBtn = screen.getByRole('button', { name: 'Add to Brave' });
+    await user.click(braveBtn);
     expect(api.openSetup).toHaveBeenCalledWith(
       'install_extension',
       'com.brave.Browser',
     );
 
-    // Change dropdown to Chrome
-    await user.selectOptions(select, 'com.google.chrome');
+    // Click install button for Chrome
     const chromeBtn = screen.getByRole('button', { name: 'Add to Chrome' });
-    expect(chromeBtn).toBeInTheDocument();
-
     await user.click(chromeBtn);
     expect(api.openSetup).toHaveBeenCalledWith(
       'install_extension',
       'com.google.chrome',
     );
 
-    // Change dropdown to Microsoft Edge
-    await user.selectOptions(select, 'com.microsoft.edgemac');
+    // Click install button for Microsoft Edge
     const edgeBtn = screen.getByRole('button', { name: 'Add to Edge' });
-    expect(edgeBtn).toBeInTheDocument();
-
     await user.click(edgeBtn);
     expect(api.openSetup).toHaveBeenCalledWith(
       'install_extension',
       'com.microsoft.edgemac',
     );
-
-    // Change dropdown to Comet
-    await user.selectOptions(select, 'ai.perplexity.comet');
-    const cometBtn = screen.getByRole('button', { name: 'Add to Comet' });
-    expect(cometBtn).toBeInTheDocument();
-
-    await user.click(cometBtn);
-    expect(api.openSetup).toHaveBeenCalledWith(
-      'install_extension',
-      'ai.perplexity.comet',
-    );
   });
 
-  it('handles unsupported default browser by falling back to first supported browser', () => {
+  it('handles unsupported default browser by excluding it from installed list', () => {
     const setupWithSafariDefault: FocusSetup = {
       ...mockSetup,
       default_browser: 'com.apple.Safari',
@@ -162,12 +149,9 @@ describe('Published Browser Extension Integration & UI', () => {
 
     render(<BrowserSetup setup={setupWithSafariDefault} refresh={vi.fn()} />);
 
-    const select = screen.getByLabelText('Select browser') as HTMLSelectElement;
-    // Safari is unsupported and excluded; falls back to Chrome
-    expect(select.value).toBe('com.google.chrome');
-    expect(
-      screen.getByRole('button', { name: 'Add to Chrome' }),
-    ).toBeInTheDocument();
+    // Safari is unsupported and excluded; shows Chrome and Brave in installed list
+    expect(screen.getByText('Google Chrome')).toBeInTheDocument();
+    expect(screen.getByText('Brave')).toBeInTheDocument();
     expect(screen.queryByText('Safari')).not.toBeInTheDocument();
   });
 

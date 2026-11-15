@@ -556,27 +556,151 @@ pub fn web_sample() -> super::WebSample {
         None => empty(),
     }
 }
+pub fn query_os_accessibility() -> Result<bool, String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+
+    thread_local! {
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_READY.with(|ready| {
+        if !ready.get() {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ready.set(true);
+        }
+    });
+    unsafe {
+        match CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(format!("UI Automation unavailable: {e}")),
+        }
+    }
+}
 /// UI Automation needs no separate user grant for same-integrity
 /// processes; an elevated browser simply yields `no_url` above.
-pub fn web_permission() -> &'static str {
-    "granted"
-}
 pub fn request_web_permission() {}
+pub fn activate_app() {
+    activate_existing_instance();
+}
 pub fn activate_existing_instance() {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+            AllowSetForegroundWindow, BringWindowToTop, EnumWindows, FindWindowW,
+            GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, ASFW_ANY, SW_RESTORE,
         };
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
         let title: Vec<u16> = "Preelock\0".encode_utf16().collect();
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
         if !hwnd.is_null() {
             ShowWindow(hwnd, SW_RESTORE);
+            BringWindowToTop(hwnd);
             SetForegroundWindow(hwnd);
+            return;
+        }
+
+        // Fallback: search for top-level window by GUI lock PID
+        if let Ok(dir) = crate::background::data_dir() {
+            if let Ok(content) = std::fs::read_to_string(dir.join("gui.lock")) {
+                if let Ok(target_pid) = content.trim().parse::<u32>() {
+                    struct EnumContext {
+                        target_pid: u32,
+                        found_hwnd: isize,
+                    }
+                    unsafe extern "system" fn enum_proc(hwnd: isize, lparam: isize) -> i32 {
+                        let ctx = &mut *(lparam as *mut EnumContext);
+                        let mut proc_id = 0u32;
+                        GetWindowThreadProcessId(hwnd, &mut proc_id);
+                        if proc_id == ctx.target_pid {
+                            ctx.found_hwnd = hwnd;
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    let mut ctx = EnumContext {
+                        target_pid,
+                        found_hwnd: 0,
+                    };
+                    EnumWindows(Some(enum_proc), &mut ctx as *mut _ as isize);
+                    if ctx.found_hwnd != 0 {
+                        ShowWindow(ctx.found_hwnd, SW_RESTORE);
+                        BringWindowToTop(ctx.found_hwnd);
+                        SetForegroundWindow(ctx.found_hwnd);
+                    }
+                }
+            }
         }
     }
 }
+
+pub fn deactivate_and_exit() -> ! {
+    std::process::exit(0);
+}
 pub fn redirect_safari_blocked() {}
-pub fn redirect_browser_blocked(_: &str) {}
+pub fn redirect_browser_blocked(_: &str, _: u32) {
+    unsafe {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, VK_CONTROL,
+        };
+        let mut inputs = [
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                    ki: windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+                        wVk: VK_CONTROL,
+                        wScan: 0,
+                        dwFlags: 0,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                    ki: windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+                        wVk: 0x57, // 'W' key
+                        wScan: 0,
+                        dwFlags: 0,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                    ki: windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+                        wVk: 0x57, // 'W' key up
+                        wScan: 0,
+                        dwFlags: KEYEVENTF_KEYUP,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                    ki: windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+                        wVk: VK_CONTROL,
+                        wScan: 0,
+                        dwFlags: KEYEVENTF_KEYUP,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+        ];
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
 pub fn installed_browsers() -> Vec<super::Application> {
     use winreg::{enums::*, RegKey};
     let mut candidates = Vec::new();

@@ -211,6 +211,13 @@ pub struct Preferences {
     /// built-in mapping, so a correction re-colors past days too.
     /// Serde-default: saves from before this field load as empty.
     pub category_overrides: std::collections::HashMap<String, String>,
+    /// Global pause / power off: when true, all Preelock services,
+    /// notifications, and blocking are paused.
+    #[serde(default)]
+    pub paused: bool,
+    /// Whether initial onboarding and permissions setup has been completed.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -238,6 +245,8 @@ impl Default for Preferences {
             saved_setups: vec![],
             last_reminder_date: String::new(),
             category_overrides: std::collections::HashMap::new(),
+            paused: false,
+            onboarding_completed: false,
         }
     }
 }
@@ -554,5 +563,11 @@ pub enum Action {
     SetPreferences {
         theme: String,
         default_minutes: u32,
+    },
+    /// Toggle power: pauses or resumes Preelock system-wide.
+    TogglePower,
+    /// Explicitly set the power state (true = on/active, false = off/paused).
+    SetPower {
+        enabled: bool,
     },
 }

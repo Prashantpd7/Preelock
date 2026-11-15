@@ -7,10 +7,10 @@ const policy = () => ({
   expires_at: Date.now() + 60000,
   observe_activity: true,
 });
-const response = (p, status = 200) => ({
+const response = (p, status = 200, extra = {}) => ({
   ok: status === 200,
   status,
-  json: async () => ({ policy: p }),
+  json: async () => ({ policy: p, ...extra }),
 });
 const storage = (getData, areaName = null) => ({
   get: async (keys) => {
@@ -1072,4 +1072,28 @@ it('evaluates videoMeta for youtube_block_entertainment and opens the entertainm
   expect(chrome.tabs.update).toHaveBeenCalledWith(99, {
     url: 'chrome-extension://test-extension/blocked.html?k=youtube&m=entertainment',
   });
+});
+
+it('synchronizes adult_block_enabled from desktop bridge sync response into dynamic rules', async () => {
+  local.token = 'a'.repeat(64);
+  local.client = 'test-client';
+  local.websiteControls = {
+    blockAdultWebsites: false,
+    blockDistractingWebsites: false,
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response(null, 200, {
+        adult_block_enabled: true,
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+
+  expect(local.websiteControls.blockAdultWebsites).toBe(true);
+  expect(dynamicRules.some((r) => r.id >= 101000 && r.priority === 6)).toBe(
+    true,
+  );
 });

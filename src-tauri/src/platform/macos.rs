@@ -15,13 +15,14 @@ unsafe extern "C" {
     fn preelock_set_activation_policy_prohibited();
     fn preelock_install_background_apple_events(cb: extern "C" fn());
     fn preelock_pump_runloop(seconds: f64);
+    fn preelock_activate_app();
     fn preelock_activate_existing_gui();
     fn preelock_approve_quit();
     fn preelock_web_sample() -> *mut c_char;
     fn preelock_web_permission() -> i32;
     fn preelock_web_request_permission();
     fn preelock_redirect_safari_blocked();
-    fn preelock_redirect_browser_blocked(app_name: *const c_char);
+    fn preelock_redirect_browser_blocked(app_name: *const c_char, pid: i32);
 }
 fn text(ptr: *mut c_char) -> Result<String, String> {
     if ptr.is_null() {
@@ -94,8 +95,19 @@ pub fn pump_runloop(seconds: f64) {
     unsafe { preelock_pump_runloop(seconds) };
 }
 /// Activate existing GUI application instance.
+pub fn activate_app() {
+    unsafe {
+        preelock_activate_app();
+    }
+}
+
 pub fn activate_existing_instance() {
     unsafe { preelock_activate_existing_gui() };
+}
+
+pub fn deactivate_and_exit() -> ! {
+    unsafe { preelock_set_activation_policy_prohibited() };
+    std::process::exit(0);
 }
 /// Approve quit request so AppKit termination is not cancelled.
 pub fn approve_quit() {
@@ -118,11 +130,8 @@ pub fn web_sample() -> super::WebSample {
         },
     }
 }
-pub fn web_permission() -> &'static str {
-    match unsafe { preelock_web_permission() } {
-        1 => "granted",
-        _ => "not_requested",
-    }
+pub fn query_os_accessibility() -> Result<bool, String> {
+    Ok(unsafe { preelock_web_permission() } == 1)
 }
 /// Ask macOS for Accessibility permission once (the system dialog). The
 /// caller requests at most once per process.
@@ -132,9 +141,9 @@ pub fn request_web_permission() {
 pub fn redirect_safari_blocked() {
     unsafe { preelock_redirect_safari_blocked() };
 }
-pub fn redirect_browser_blocked(app_name: &str) {
+pub fn redirect_browser_blocked(app_name: &str, pid: u32) {
     if let Ok(c_str) = std::ffi::CString::new(app_name) {
-        unsafe { preelock_redirect_browser_blocked(c_str.as_ptr()) };
+        unsafe { preelock_redirect_browser_blocked(c_str.as_ptr(), pid as i32) };
     }
 }
 /// Browsers installed on this Mac (whether running or not), so the user can

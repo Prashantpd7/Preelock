@@ -23,6 +23,8 @@ export const preferenceDefaults: Required<Preferences> = {
   grace_seconds: 60,
   saved_setups: [],
   category_overrides: {},
+  paused: false,
+  onboarding_completed: false,
 };
 export type SettingsAction =
   | {
@@ -39,7 +41,8 @@ export type SettingsAction =
         | 'dismiss_break'
         | 'export_history'
         | 'backup'
-        | 'reset_preferences';
+        | 'reset_preferences'
+        | 'recheck_permissions';
     }
   | { type: 'login'; enabled: boolean }
   | { type: 'preview_sound'; volume: number }
@@ -50,6 +53,7 @@ export interface SettingsInfo {
   login_user_pref?: boolean;
   notifications?: number;
   accessibility?: number;
+  accessibility_permission?: string;
   version?: string;
   break_remaining?: number;
   break_offer?: string;

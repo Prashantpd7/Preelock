@@ -7,15 +7,13 @@
 #import <objc/runtime.h>
 #import <Carbon/Carbon.h>
 
+int preelock_accessibility_status(void);
+
 static void onMain(dispatch_block_t work) {
     if ([NSThread isMainThread]) {
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
         work();
     } else if (NSApp != nil && [NSApp isRunning]) {
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
-            work();
-        });
+        dispatch_sync(dispatch_get_main_queue(), work);
     } else {
         work();
     }
@@ -83,7 +81,6 @@ char *preelock_sample(void) {
     @autoreleasepool {
         __block char *result;
         onMain(^{
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
             NSString *exe = executablePathForApp(app);
             NSString *bundlePath = app.bundleURL.path ?: @"";
@@ -210,13 +207,17 @@ void preelock_redirect_safari_blocked(void) {
         NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
             @"tell application \"Safari\"\n"
             @"  if (count of windows) > 0 then\n"
-            @"    set URL of current tab of front window to \"about:blank\"\n"
+            @"    try\n"
+            @"      close current tab of front window\n"
+            @"    on error\n"
+            @"      set URL of current tab of front window to \"about:blank\"\n"
+            @"    end try\n"
             @"  end if\n"
             @"end tell"];
         [script executeAndReturnError:&error];
     }
 }
-void preelock_redirect_browser_blocked(const char *appName) {
+void preelock_redirect_browser_blocked(const char *appName, int pid) {
     @autoreleasepool {
         if (!appName || strlen(appName) == 0) return;
         NSString *name = [NSString stringWithUTF8String:appName];
@@ -234,16 +235,69 @@ void preelock_redirect_browser_blocked(const char *appName) {
             targetName = @"Microsoft Edge";
         } else if ([name containsString:@"arc"] || [name containsString:@"Arc"]) {
             targetName = @"Arc";
+        } else if ([name containsString:@"comet"] || [name containsString:@"Comet"]) {
+            targetName = @"Comet";
         }
-        NSString *source = [NSString stringWithFormat:
+
+        BOOL redirected = NO;
+        NSString *source1 = [NSString stringWithFormat:
             @"tell application \"%@\"\n"
             @"  if (count of windows) > 0 then\n"
-            @"    set URL of active tab of front window to \"about:blank\"\n"
+            @"    try\n"
+            @"      close active tab of front window\n"
+            @"    on error\n"
+            @"      set URL of active tab of front window to \"about:blank\"\n"
+            @"    end try\n"
             @"  end if\n"
             @"end tell", targetName];
-        NSDictionary *error = nil;
-        NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
-        [script executeAndReturnError:&error];
+        NSDictionary *error1 = nil;
+        NSAppleScript *script1 = [[NSAppleScript alloc] initWithSource:source1];
+        if ([script1 executeAndReturnError:&error1] != nil && error1 == nil) {
+            redirected = YES;
+        }
+
+        if (!redirected) {
+            NSString *source2 = [NSString stringWithFormat:
+                @"tell application \"%@\"\n"
+                @"  if (count of windows) > 0 then\n"
+                @"    try\n"
+                @"      close active tab of window 1\n"
+                @"    on error\n"
+                @"      set URL of active tab of window 1 to \"about:blank\"\n"
+                @"    end try\n"
+                @"  end if\n"
+                @"end tell", targetName];
+            NSDictionary *error2 = nil;
+            NSAppleScript *script2 = [[NSAppleScript alloc] initWithSource:source2];
+            if ([script2 executeAndReturnError:&error2] != nil && error2 == nil) {
+                redirected = YES;
+            }
+        }
+
+        // Reliable native fallback: send Cmd+W (close tab) keystroke directly to frontmost browser window
+        pid_t targetPid = (pid_t)pid;
+        if (targetPid <= 0) {
+            NSRunningApplication *frontApp = NSWorkspace.sharedWorkspace.frontmostApplication;
+            if (frontApp != nil) {
+                targetPid = frontApp.processIdentifier;
+            }
+        }
+        if (targetPid > 0) {
+            CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+            if (src) {
+                CGEventRef keyDown = CGEventCreateKeyboardEvent(src, (CGKeyCode)13, true); // key code 13 is 'w'
+                CGEventSetFlags(keyDown, kCGEventFlagMaskCommand);
+                CGEventRef keyUp = CGEventCreateKeyboardEvent(src, (CGKeyCode)13, false);
+                CGEventSetFlags(keyUp, kCGEventFlagMaskCommand);
+                CGEventPostToPid(targetPid, keyDown);
+                CGEventPostToPid(targetPid, keyUp);
+                CGEventPost(kCGHIDEventTap, keyDown);
+                CGEventPost(kCGHIDEventTap, keyUp);
+                CFRelease(keyDown);
+                CFRelease(keyUp);
+                CFRelease(src);
+            }
+        }
     }
 }
 static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
@@ -290,7 +344,7 @@ char *preelock_web_sample(void) {
             }
         }
 
-        if (!AXIsProcessTrusted()) {
+        if (preelock_accessibility_status() != 1) {
             return strdup("{\"url\":\"\",\"status\":\"permission_required\"}");
         }
 
@@ -313,11 +367,20 @@ char *preelock_web_sample(void) {
         return json(@{@"url": url ?: @"", @"status": @"ok"});
     }
 }
-int preelock_web_permission(void) { return AXIsProcessTrusted() ? 1 : 0; }
+// Authoritative, un-cached query of macOS Accessibility trust state from WindowServer / TCC daemon.
+// Passing kAXTrustedCheckOptionPrompt: @NO bypasses HIServices stale process-local caching without showing any prompt.
+int preelock_accessibility_status(void) {
+    NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @NO};
+    Boolean trusted = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    return trusted ? 1 : 0;
+}
+int preelock_web_permission(void) { return preelock_accessibility_status(); }
 void preelock_web_request_permission(void) {
-    if (AXIsProcessTrusted()) return;
-    NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
-    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    onMain(^{
+        if (preelock_accessibility_status() == 1) return;
+        NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    });
 }
 int preelock_camera_permission(void) { return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]; }
 void preelock_request_camera(void) { [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) { (void)granted; }]; }
@@ -407,7 +470,7 @@ char *preelock_settings_info(void) {
         return json(@{
             @"notifications":@(auth),
             @"login":@(login),
-            @"accessibility":@(AXIsProcessTrusted() ? 1 : 0),
+            @"accessibility":@(preelock_accessibility_status()),
             @"day":@((parts.weekday+6)%7),
             @"date":[NSString stringWithFormat:@"%ld-%ld-%ld",(long)parts.year,(long)parts.month,(long)parts.day],
             @"time":[NSString stringWithFormat:@"%02ld:%02ld",(long)parts.hour,(long)parts.minute]
@@ -439,6 +502,7 @@ char *preelock_login(int enabled) {
     }
 }
 void preelock_activate_existing_gui(void);
+void preelock_activate_or_launch_gui(void);
 
 int preelock_notification_permission(void) {
     // UNUserNotificationCenter crashes without an .app bundle (dev mode).
@@ -487,7 +551,7 @@ void preelock_request_notification_authorization(void) {
 }
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler {
     (void)center; (void)response;
-    preelock_activate_existing_gui();
+    preelock_activate_or_launch_gui();
     if (completionHandler) {
         completionHandler();
     }
@@ -576,6 +640,11 @@ static volatile int vyTerminationApproved = 0;
 
 void preelock_approve_quit(void) {
     vyTerminationApproved = 1;
+    onMain(^{
+        if (NSApp) {
+            [NSApp terminate:nil];
+        }
+    });
 }
 
 static NSApplicationTerminateReply vyShouldTerminate(id self, SEL selector, NSApplication *sender) {
@@ -617,38 +686,21 @@ void preelock_hide_from_dock(void) {
     });
 }
 
-// Background engine and attention agent: accessory/prohibited activation policy
-// ensures they are strictly headless background processes that never allocate
-// Dock tiles or block LaunchServices from launching the foreground GUI.
+// Background engine and attention agent: set prohibited activation policy so LaunchServices
+// treats them as strictly headless background daemons. By setting prohibited policy, LaunchServices
+// never mistakes background daemons for the GUI application, never displays error -600 ("The application
+// Preelock is not open anymore"), and never creates a ghost Dock tile for background processes.
 void preelock_set_activation_policy_prohibited(void) {
     onMain(^{
         [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        if (NSApp != nil) {
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        }
     });
-}
-
-static void (*vyBackgroundOpenCallback)(void) = NULL;
-
-static OSErr handleBackgroundAppleEvent(const AppleEvent *event, AppleEvent *reply, SRefCon refcon) {
-    (void)event;
-    (void)reply;
-    (void)refcon;
-    if (vyBackgroundOpenCallback) {
-        vyBackgroundOpenCallback();
-    }
-    return noErr;
 }
 
 void preelock_install_background_apple_events(void (*callback)(void)) {
-    onMain(^{
-        vyBackgroundOpenCallback = callback;
-        [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-
-        AEEventHandlerUPP upp = NewAEEventHandlerUPP(handleBackgroundAppleEvent);
-        AEInstallEventHandler(kCoreEventClass, kAEOpenApplication, upp, 0, false);
-        AEInstallEventHandler(kCoreEventClass, kAEReopenApplication, upp, 0, false);
-    });
+    (void)callback;
 }
 
 void preelock_pump_runloop(double seconds) {
@@ -657,17 +709,102 @@ void preelock_pump_runloop(double seconds) {
     }
 }
 
-// Activate the existing GUI window when a second GUI process attempts to launch.
-void preelock_activate_existing_gui(void) {
+// Bring the Preelock GUI application to the foreground over all other apps.
+void preelock_activate_app(void) {
     onMain(^{
-        for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
-            if ([app.bundleIdentifier isEqualToString:@"com.preelock.desktop"] && app.processIdentifier != getpid()) {
+        if (NSApp) {
+            [NSApp unhide:nil];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+            [NSApp activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
+        }
+    });
+}
+
+// Activate the existing GUI window. NEVER spawns a new process.
+// Used when a second GUI process attempts to launch, to bring the existing window to the front.
+void preelock_activate_existing_gui(void) {
+    onMain(^{
+        NSRunningApplication *guiApp = nil;
+        // Check gui.lock first to find the authoritative running PID
+        NSString *support = [@"~/Library/Application Support/com.preelock.desktop/gui.lock" stringByExpandingTildeInPath];
+        NSString *content = [NSString stringWithContentsOfFile:support encoding:NSUTF8StringEncoding error:nil];
+        if (content) {
+            pid_t pid = (pid_t)[content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].intValue;
+            if (pid > 0 && pid != getpid()) {
+                guiApp = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+            }
+        }
+        if (!guiApp) {
+            for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
+                if ([app.bundleIdentifier isEqualToString:@"com.preelock.desktop"] && app.processIdentifier != getpid()) {
+                    if (app.activationPolicy == NSApplicationActivationPolicyRegular) {
+                        guiApp = app;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (guiApp != nil) {
+            [guiApp unhide];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            [guiApp activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+#pragma clang diagnostic pop
+            pid_t pid = guiApp.processIdentifier;
+            AEAddressDesc target;
+            if (AECreateDesc(typeKernelProcessID, &pid, sizeof(pid), &target) == noErr) {
+                AppleEvent reopenEvent;
+                if (AECreateAppleEvent(kCoreEventClass, kAEReopenApplication, &target, kAutoGenerateReturnID, kAnyTransactionID, &reopenEvent) == noErr) {
+                    AESendMessage(&reopenEvent, NULL, kAENoReply, kAEDefaultTimeout);
+                    AEDisposeDesc(&reopenEvent);
+                }
+                AEDisposeDesc(&target);
+            }
+        }
+    });
+}
+
+// Activate existing GUI if running, or launch application bundle if closed.
+// Used exclusively by native notification clicks.
+void preelock_activate_or_launch_gui(void) {
+    onMain(^{
+        preelock_activate_existing_gui();
+
+        // Check if an existing GUI was activated
+        NSString *support = [@"~/Library/Application Support/com.preelock.desktop/gui.lock" stringByExpandingTildeInPath];
+        NSString *content = [NSString stringWithContentsOfFile:support encoding:NSUTF8StringEncoding error:nil];
+        if (content) {
+            pid_t pid = (pid_t)[content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].intValue;
+            if (pid > 0 && pid != getpid() && [NSRunningApplication runningApplicationWithProcessIdentifier:pid] != nil) {
                 return;
             }
+        }
+        for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
+            if ([app.bundleIdentifier isEqualToString:@"com.preelock.desktop"] && app.processIdentifier != getpid()) {
+                if (app.activationPolicy == NSApplicationActivationPolicyRegular) {
+                    return;
+                }
+            }
+        }
+
+        // GUI is not running; launch the application bundle via LaunchServices
+        NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
+        if (![bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
+            NSString *userApp = [@"~/Applications/Preelock.app" stringByExpandingTildeInPath];
+            if ([NSFileManager.defaultManager fileExistsAtPath:@"/Applications/Preelock.app"]) {
+                bundleURL = [NSURL fileURLWithPath:@"/Applications/Preelock.app"];
+            } else if ([NSFileManager.defaultManager fileExistsAtPath:userApp]) {
+                bundleURL = [NSURL fileURLWithPath:userApp];
+            }
+        }
+        if (bundleURL && [NSFileManager.defaultManager fileExistsAtPath:bundleURL.path]) {
+            NSTask *task = [NSTask new];
+            task.launchPath = @"/usr/bin/open";
+            task.arguments = @[@"-a", bundleURL.path];
+            [task launch];
         }
     });
 }

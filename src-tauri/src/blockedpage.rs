@@ -21,30 +21,39 @@ use tauri::Manager;
 /// `sync_frozen_overlay`.
 pub fn sync_overlay(app: &tauri::AppHandle, snapshot: &crate::models::Snapshot) {
     let now = crate::clock::now();
-    let fresh = snapshot
-        .blocked_app_notice
-        .as_ref()
-        .is_some_and(|n| now.saturating_sub(n.at_ms) < 120_000);
+    let fresh = !snapshot.preferences.paused
+        && snapshot
+            .blocked_app_notice
+            .as_ref()
+            .is_some_and(|n| now.saturating_sub(n.at_ms) < 120_000);
     let frozen_running = snapshot.sessions.iter().any(|s| {
         crate::frozen::is_enforced(
             s.focus.frozen.enabled,
             s.status == crate::models::Status::Running,
         ) && !crate::notifications::grace_active(s.grace_until_ms, now)
     });
+    let main_window = app.get_webview_window("main");
+    let main_active = main_window
+        .as_ref()
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false));
     let window = app.get_webview_window("blocked-app");
-    if fresh && !frozen_running {
+    if fresh && !frozen_running && !main_active {
         match window {
             None => {
                 let result = tauri::WebviewWindowBuilder::new(
                     app,
                     "blocked-app",
-                    tauri::WebviewUrl::App("index.html".into()),
+                    tauri::WebviewUrl::App("index.html#blocked-app".into()),
                 )
                 .title("Preelock — Blocked")
-                .fullscreen(true)
+                .inner_size(520.0, 360.0)
+                .resizable(false)
                 .always_on_top(true)
                 .decorations(false)
+                .transparent(true)
+                .shadow(false)
                 .skip_taskbar(true)
+                .center()
                 .build();
                 if let Err(e) = result {
                     log::warn!("Could not open the blocked-app page: {e}");
@@ -56,6 +65,8 @@ pub fn sync_overlay(app: &tauri::AppHandle, snapshot: &crate::models::Snapshot) 
                 if hidden || minimized {
                     let _ = w.unminimize();
                     let _ = w.show();
+                    let _ = w.set_always_on_top(true);
+                    let _ = w.set_focus();
                 }
             }
         }
@@ -73,6 +84,9 @@ pub fn sync_overlay(app: &tauri::AppHandle, snapshot: &crate::models::Snapshot) 
 /// is untouched.
 #[tauri::command]
 pub async fn dismiss_blocked_app_page(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("blocked-app") {
+        let _ = w.destroy();
+    }
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         app.state::<crate::ipc::IpcClient>()
             .dismiss_blocked_app_page()

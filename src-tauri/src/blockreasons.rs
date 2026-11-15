@@ -80,6 +80,9 @@ impl BlockCause {
     pub fn adult() -> Self {
         Self::of("adult", "")
     }
+    pub fn adult_site(domain: &str) -> Self {
+        Self::of("adult", domain)
+    }
     pub fn fail_closed() -> Self {
         Self::of("fail_closed", "")
     }
@@ -149,6 +152,18 @@ pub fn cause_text(cause: &BlockCause, target: &str, now_ms: i64) -> String {
         ),
         "frozen" => format!("{} is blocked — your Frozen session is on", target),
         "fail_closed" => format!("{} is blocked until the browser connects", target),
+        "adult" => {
+            let site = if !cause.title.is_empty() {
+                &cause.title
+            } else {
+                target
+            };
+            if !site.is_empty() && (site.contains('.') || site.contains(':')) {
+                format!("Adult website “{site}” is blocked by Preelock")
+            } else {
+                "Adult website is blocked by Preelock".to_string()
+            }
+        }
         _ => format!("{} is blocked by Preelock", target),
     }
 }
@@ -387,6 +402,18 @@ mod tests {
         assert_eq!(
             cause_text(&BlockCause::unknown(), "Game", 1_000_000),
             "Game is blocked by Preelock"
+        );
+        assert_eq!(
+            cause_text(&BlockCause::adult(), "Comet", 1_000_000),
+            "Adult website is blocked by Preelock"
+        );
+        assert_eq!(
+            cause_text(
+                &BlockCause::adult_site("xhaccess.com"),
+                "xhaccess.com",
+                1_000_000
+            ),
+            "Adult website “xhaccess.com” is blocked by Preelock"
         );
         assert_eq!(fmt_remaining(2 * 3_600_000 + 13 * 60_000), "2h 13m");
         assert_eq!(fmt_remaining(45 * 60_000), "45m");

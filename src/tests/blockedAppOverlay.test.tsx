@@ -82,6 +82,22 @@ it('dismisses the page from the Back to work button', () => {
   expect(api.dismissBlockedAppPage).toHaveBeenCalledTimes(1);
 });
 
+it('dismisses the popup from the close cross button', () => {
+  seedNotice({
+    app_name: 'Brave',
+    reason: 'Brave Browser is blocked by Preelock',
+    ends_at_ms: null,
+    at_ms: Date.now(),
+  });
+  const closeBtn = screen.getByRole('button', { name: 'Close dialog' });
+  expect(closeBtn).toBeTruthy();
+  expect(document.documentElement.classList.contains('in-blocked-popup')).toBe(
+    true,
+  );
+  fireEvent.click(closeBtn);
+  expect(api.dismissBlockedAppPage).toHaveBeenCalledTimes(1);
+});
+
 it('dismisses the page with the Escape key', () => {
   seedNotice({
     app_name: 'Safari',

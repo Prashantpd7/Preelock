@@ -13,11 +13,13 @@
 //!   relaunches the Preelock GUI after ~5 seconds in the user's interactive
 //!   session. Outside strict sessions, UI exit is never reopened.
 
+#[cfg(not(target_os = "macos"))]
+use crate::launch;
 use crate::{
     attention_agent,
     engine::Engine,
     ipc::{BrowserSetupInfo, IpcRequest, IpcResponse, IpcServer, PingInfo, UninstallCheck},
-    launch, platform,
+    platform,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -43,8 +45,8 @@ const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
-pub const RELAUNCH_DELAY_MS: u64 = 5_000;
-pub const RELAUNCH_COOLDOWN_MS: u64 = 5_000;
+pub const RELAUNCH_DELAY_MS: u64 = 1_000;
+pub const RELAUNCH_COOLDOWN_MS: u64 = 3_000;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -849,6 +851,20 @@ impl UiRelaunchSupervisor {
             // If the process is alive at OS level, consider it alive.
             return true;
         }
+        // If known_ui_pid is None, check gui.lock to see if a GUI process is alive
+        if let Ok(content) = std::fs::read_to_string(data_dir.join("gui.lock")) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                if pid != 0 && pid != std::process::id() {
+                    if process_alive(pid) {
+                        self.known_ui_pid = Some(pid);
+                        return true;
+                    } else {
+                        clear_desktop_heartbeat(data_dir);
+                        return false;
+                    }
+                }
+            }
+        }
         desktop_alive(data_dir)
     }
 
@@ -923,7 +939,44 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let gui = launch::gui_executable(&exe);
+    let gui = crate::launch::gui_executable(&exe);
+
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = app_bundle_root(&gui).or_else(|| {
+            let default_bundle = PathBuf::from("/Applications/Preelock.app");
+            if default_bundle.exists() {
+                Some(default_bundle)
+            } else {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|h| h.join("Applications").join("Preelock.app"))
+                    .filter(|p| p.exists())
+            }
+        });
+
+        if let Some(bundle) = bundle {
+            match Command::new("/usr/bin/open")
+                .arg("-a")
+                .arg(&bundle)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => {
+                    *spawned = Some(child);
+                    return;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Could not relaunch Preelock bundle {}: {error}",
+                        bundle.display()
+                    );
+                }
+            }
+        }
+    }
 
     // In development debug builds, Tauri loads the UI from the Vite dev server (127.0.0.1:1420).
     // If Vite is not running, launching the raw debug binary results in a blank white window.
@@ -950,7 +1003,7 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000 | 0x00000200);
+        cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
     }
     match cmd.spawn() {
         Ok(child) => {
@@ -1089,26 +1142,7 @@ fn handle_ipc_request(
 #[cfg(target_os = "macos")]
 extern "C" fn on_macos_open_app_request() {
     log::info!("macOS OpenApplication AppleEvent received; ensuring GUI window is displayed");
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let gui = launch::gui_executable(&exe);
-    let Ok(dir) = data_dir() else {
-        return;
-    };
-    let gui_held = std::fs::read_to_string(dir.join("gui.lock"))
-        .ok()
-        .and_then(|c| c.trim().parse::<u32>().ok())
-        .is_some_and(process_alive);
-    if gui_held {
-        crate::platform::activate_existing_instance();
-    } else {
-        let _ = Command::new(&gui)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
+    crate::platform::activate_existing_instance();
 }
 
 pub fn run() -> i32 {
@@ -1200,6 +1234,7 @@ pub fn run() -> i32 {
     let mut supervisor = UiRelaunchSupervisor::default();
     let mut spawned_gui: Option<Child> = None;
     let mut next_tick = std::time::Instant::now();
+    let mut next_supervisor_check = std::time::Instant::now();
 
     let flush_shutdown = |engine: &mut Engine| {
         crate::lifecycle::system_shutdown();
@@ -1219,8 +1254,9 @@ pub fn run() -> i32 {
         crate::platform::pump_runloop(0.02);
 
         let now = std::time::Instant::now();
-        let wait = next_tick
+        let wait = next_supervisor_check
             .saturating_duration_since(now)
+            .min(next_tick.saturating_duration_since(now))
             .min(Duration::from_millis(100));
         if let Ok((req, reply)) = ipc_rx.recv_timeout(wait) {
             let resp = handle_ipc_request(&mut engine, &dir, &mut supervisor, req);
@@ -1238,8 +1274,27 @@ pub fn run() -> i32 {
 
         reap_child(&mut spawned_gui);
 
-        if std::time::Instant::now() >= next_tick {
-            next_tick = std::time::Instant::now() + Duration::from_secs(1);
+        let now_instant = std::time::Instant::now();
+
+        if now_instant >= next_supervisor_check {
+            next_supervisor_check = now_instant + Duration::from_millis(200);
+
+            let ui_alive = supervisor.poll_ui_alive(&dir);
+            if !ui_alive && engine.has_active() && !engine.has_active_strict() {
+                let _ = crate::tray::ensure_running(&dir);
+            }
+            if supervisor.evaluate(
+                crate::clock::continuous_ms(),
+                engine.has_active_strict(),
+                ui_alive,
+                shutdown_requested(),
+            ) {
+                spawn_gui_in_user_session(&mut spawned_gui);
+            }
+        }
+
+        if now_instant >= next_tick {
+            next_tick = now_instant + Duration::from_secs(1);
 
             let needs_attention = engine.needs_attention_agent();
             if needs_attention {
@@ -1266,19 +1321,6 @@ pub fn run() -> i32 {
 
             if let Err(error) = engine.tick() {
                 log::error!("Background engine tick failed: {error}");
-            }
-
-            let ui_alive = supervisor.poll_ui_alive(&dir);
-            if !ui_alive && engine.has_active() && !engine.has_active_strict() {
-                let _ = crate::tray::ensure_running(&dir);
-            }
-            if supervisor.evaluate(
-                crate::clock::continuous_ms(),
-                engine.has_active_strict(),
-                ui_alive,
-                shutdown_requested(),
-            ) {
-                spawn_gui_in_user_session(&mut spawned_gui);
             }
 
             if let Err(error) = touch(&dir.join(HEARTBEAT)) {
@@ -1337,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_relaunch_supervisor_only_relaunches_after_5s_during_active_strict() {
+    fn ui_relaunch_supervisor_only_relaunches_after_1s_during_active_strict() {
         let mut sup = UiRelaunchSupervisor::default();
 
         // Idle or non-strict never relaunches regardless of elapsed absence.
@@ -1348,23 +1390,58 @@ mod tests {
         sup.mark_ui_alive(1234);
         assert!(!sup.evaluate(25_000, true, true, false));
 
-        // Cmd+Q / Force Quit -> missing for < 5s does not relaunch early.
+        // Cmd+Q / Force Quit -> missing for < 1s does not relaunch early.
         assert!(!sup.evaluate(30_000, true, false, false));
-        assert!(!sup.evaluate(34_999, true, false, false));
+        assert!(!sup.evaluate(30_999, true, false, false));
 
-        // Reaches 5s missing -> relaunches once!
-        assert!(sup.evaluate(35_000, true, false, false));
+        // Reaches 1s missing -> relaunches once!
+        assert!(sup.evaluate(31_000, true, false, false));
         // Cooldown prevents duplicate spawns while GUI is booting.
-        assert!(!sup.evaluate(35_500, true, false, false));
-        assert!(!sup.evaluate(39_999, true, false, false));
+        assert!(!sup.evaluate(31_500, true, false, false));
+        assert!(!sup.evaluate(33_999, true, false, false));
+
+        // After cooldown passes, if UI still not alive, can relaunch.
+        assert!(sup.evaluate(34_000, true, false, false));
 
         // OS shutdown suppresses relaunch even in active strict.
         assert!(!sup.evaluate(50_000, true, false, true));
 
-        // Strict ends before 5s elapses -> timer cancelled, never relaunches.
+        // Strict ends before 1s elapses -> timer cancelled, never relaunches.
         assert!(!sup.evaluate(60_000, true, false, false));
-        assert!(!sup.evaluate(62_500, false, false, false));
+        assert!(!sup.evaluate(60_500, false, false, false));
         assert!(!sup.evaluate(70_000, false, false, false));
+    }
+
+    #[test]
+    fn poll_ui_alive_detects_dead_pid_in_gui_lock_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        // Write a dead PID into gui.lock (e.g. 99999999)
+        std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
+        // Also touch desktop-heartbeat to simulate a recent heartbeat
+        touch_desktop(dir.path());
+        assert!(desktop_alive(dir.path()));
+
+        // poll_ui_alive should detect the PID is dead, clear desktop-heartbeat, and return false
+        assert!(!sup.poll_ui_alive(dir.path()));
+        assert!(!desktop_alive(dir.path()));
+    }
+
+    #[test]
+    fn poll_ui_alive_marks_alive_when_pid_in_gui_lock_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        #[cfg(unix)]
+        let test_pid = unsafe { libc::getppid() as u32 };
+        #[cfg(windows)]
+        let test_pid = std::process::id();
+
+        #[cfg(unix)]
+        {
+            std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
+            assert!(sup.poll_ui_alive(dir.path()));
+            assert_eq!(sup.known_ui_pid(), Some(test_pid));
+        }
     }
 
     #[test]
@@ -1483,7 +1560,7 @@ mod tests {
 
         let t0 = crate::clock::continuous_ms();
         assert!(!supervisor.evaluate(t0, engine.has_active_strict(), false, false));
-        assert!(supervisor.evaluate(t0 + 5_001, engine.has_active_strict(), false, false));
+        assert!(supervisor.evaluate(t0 + 1_001, engine.has_active_strict(), false, false));
 
         // Verify CLI check-uninstall reflects active strict state inside dir.
         let cli_check = crate::cli::uninstall_check_in_dir(dir.path());

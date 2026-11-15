@@ -814,6 +814,12 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 ..data.preferences.clone()
             };
         }
+        Action::TogglePower => {
+            data.preferences.paused = !data.preferences.paused;
+        }
+        Action::SetPower { enabled } => {
+            data.preferences.paused = !enabled;
+        }
         Action::DeleteSession {
             id,
             password,
@@ -2703,5 +2709,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(d.sessions[0].status, Status::Ended);
+    }
+
+    #[test]
+    fn power_toggle_and_set_power_controls_paused_preference() {
+        let mut d = Snapshot::default();
+        let now = 1_700_000_000_000;
+        assert!(!d.preferences.paused);
+
+        apply(&mut d, Action::TogglePower, now).unwrap();
+        assert!(d.preferences.paused);
+
+        apply(&mut d, Action::TogglePower, now).unwrap();
+        assert!(!d.preferences.paused);
+
+        apply(&mut d, Action::SetPower { enabled: false }, now).unwrap();
+        assert!(d.preferences.paused);
+
+        apply(&mut d, Action::SetPower { enabled: true }, now).unwrap();
+        assert!(!d.preferences.paused);
     }
 }

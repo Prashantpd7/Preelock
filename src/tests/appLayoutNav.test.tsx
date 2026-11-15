@@ -39,4 +39,63 @@ describe('AppLayout navigation', () => {
     }
     unmount();
   });
+
+  it('renders the power button in the sidebar and toggles power on click', async () => {
+    let executedAction: unknown = null;
+    useAppStore.setState({
+      execute: async (action) => {
+        executedAction = action;
+        return true;
+      },
+    });
+
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <AppLayout />
+      </MemoryRouter>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Turn Preelock Off' });
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveClass('is-on');
+    expect(screen.getByText('Preelock On')).toBeInTheDocument();
+
+    button.click();
+    expect(executedAction).toEqual({ type: 'toggle_power' });
+    unmount();
+  });
+
+  it('applies dimmed and inert state when preelock is powered off', () => {
+    useAppStore.setState({
+      data: {
+        ...structuredClone(emptySnapshot),
+        preferences: {
+          theme: 'dark',
+          default_minutes: 25,
+          paused: true,
+        },
+      },
+    });
+
+    const { container, unmount } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <AppLayout />
+      </MemoryRouter>,
+    );
+
+    const shell = container.querySelector('.app-shell');
+    expect(shell).toHaveClass('preelock-powered-off');
+
+    const button = screen.getByRole('button', { name: 'Turn Preelock On' });
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveClass('is-off');
+    expect(screen.getByText('Preelock Off')).toBeInTheDocument();
+
+    const sidebarTop = container.querySelector('.sidebar-top');
+    const mainShell = container.querySelector('.main-shell');
+    expect(sidebarTop).toHaveAttribute('inert');
+    expect(mainShell).toHaveAttribute('inert');
+
+    unmount();
+  });
 });

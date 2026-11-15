@@ -46,14 +46,63 @@ pub struct WebSample {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    activate_existing_instance, app_icon, applications, approve_quit, camera_permission,
-    camera_start, camera_status, camera_stop, hide, hide_from_dock,
-    install_background_apple_events, installed_browsers, pump_runloop, redirect_browser_blocked,
-    redirect_safari_blocked, register_application_restart, request_camera, request_web_permission,
-    sample, set_activation_policy_prohibited, web_permission, web_sample,
+    activate_app, activate_existing_instance, app_icon, applications, approve_quit,
+    camera_permission, camera_start, camera_status, camera_stop, deactivate_and_exit, hide,
+    hide_from_dock, install_background_apple_events, installed_browsers, pump_runloop,
+    redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
+    request_camera, sample, set_activation_policy_prohibited, web_sample,
 };
 #[cfg(target_os = "windows")]
-pub use windows::*;
+pub use windows::{
+    activate_app, activate_existing_instance, app_icon, applications, camera_permission,
+    camera_start, camera_status, camera_stop, deactivate_and_exit, hide, installed_browsers,
+    redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
+    request_camera, sample, web_sample,
+};
+
+pub mod permissions;
+pub use permissions::{PermissionManager, PermissionStatus};
+
+static ACCESSIBILITY_MANAGER: PermissionManager =
+    PermissionManager::new(std::time::Duration::from_millis(1500));
+
+pub fn accessibility_status(force_refresh: bool) -> PermissionStatus {
+    #[cfg(target_os = "macos")]
+    {
+        ACCESSIBILITY_MANAGER.check_status(force_refresh, macos::query_os_accessibility)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ACCESSIBILITY_MANAGER.check_status(force_refresh, windows::query_os_accessibility)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = force_refresh;
+        PermissionStatus::NotGranted
+    }
+}
+
+pub fn mark_accessibility_recheck_required() {
+    ACCESSIBILITY_MANAGER.mark_recheck_required();
+}
+
+pub fn request_accessibility() {
+    if !accessibility_status(false).is_granted() {
+        #[cfg(target_os = "macos")]
+        macos::request_web_permission();
+        #[cfg(target_os = "windows")]
+        windows::request_web_permission();
+        mark_accessibility_recheck_required();
+    }
+}
+
+pub fn web_permission() -> &'static str {
+    accessibility_status(false).as_str()
+}
+
+pub fn request_web_permission() {
+    request_accessibility();
+}
 pub fn supported() -> bool {
     cfg!(any(target_os = "macos", target_os = "windows"))
 }
@@ -102,7 +151,7 @@ mod unsupported {
     }
     pub fn request_web_permission() {}
     pub fn redirect_safari_blocked() {}
-    pub fn redirect_browser_blocked(_: &str) {}
+    pub fn redirect_browser_blocked(_: &str, _: u32) {}
     pub fn register_application_restart(_args: &str) {}
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

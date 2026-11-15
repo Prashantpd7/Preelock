@@ -156,6 +156,9 @@ pub fn wait_for_release(data_dir: &Path, timeout: Duration) -> bool {
 /// The live session, if any — Running, Paused, or Preparing.
 /// Same predicate as the engine's `has_active` and the GUI tray.
 pub fn live_session(snapshot: &Snapshot) -> Option<&Session> {
+    if snapshot.preferences.paused {
+        return None;
+    }
     snapshot.sessions.iter().find(|s| {
         matches!(
             s.status,

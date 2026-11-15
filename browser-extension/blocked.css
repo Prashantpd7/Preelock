@@ -9,15 +9,41 @@ body {
   display: grid;
   place-items: center;
   margin: 0;
+  padding: 1.5rem;
+  box-sizing: border-box;
 }
 main {
   text-align: center;
-  max-width: 32rem;
-  padding: 2rem;
+  max-width: 28rem;
+  width: 100%;
+  padding: 2.25rem 2rem 2rem;
+  background: #171d18;
+  border: 1px solid #2b362c;
+  border-radius: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  position: relative;
+  box-sizing: border-box;
+}
+.close-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: #a3afa6;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.close-btn:hover {
+  color: #e5e9e3;
+  background: rgba(255, 255, 255, 0.08);
 }
 h1 {
-  font-size: 2rem;
-  margin: 1.5rem 0 1rem;
+  font-size: 1.85rem;
+  margin: 1.25rem 0 1rem;
 }
 p {
   line-height: 1.6;

@@ -292,6 +292,7 @@ struct State {
     /// still a transient disconnect — only an explicit disconnect
     /// request is refused, and only while the flag is set.
     connection_locked: bool,
+    adult_block_enabled: bool,
 }
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BrowserStatus {
@@ -767,6 +768,7 @@ impl Bridge {
                 } else {
                     String::new()
                 };
+                let adult_block_enabled = state.adult_block_enabled;
                 let policy = state
                     .policy
                     .clone()
@@ -778,7 +780,12 @@ impl Bridge {
                     });
                 drop(state);
                 let mut res = tiny_http::Response::from_string(
-                    serde_json::json!({"policy":policy,"test_id":test_id}).to_string(),
+                    serde_json::json!({
+                        "policy": policy,
+                        "test_id": test_id,
+                        "adult_block_enabled": adult_block_enabled
+                    })
+                    .to_string(),
                 );
                 for (k, v) in [
                     ("Content-Type", "application/json"),
@@ -912,6 +919,11 @@ impl Bridge {
             .lock()
             .map(|s| s.connection_locked)
             .unwrap_or(false)
+    }
+    pub fn set_adult_block_enabled(&self, enabled: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.adult_block_enabled = enabled;
+        }
     }
     pub fn set_screen_time_tracking(&self, enabled: bool) {
         if let Ok(mut state) = self.state.lock() {

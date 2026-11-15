@@ -11,7 +11,7 @@
 //!   enforcement is off, even if a budget is already exhausted.
 //!   Allowances are independent of any single session — usage
 //!   accumulates across sessions within the period — but they are
-//!   only enforced while a session is running, because Preelock only
+//!   only enforced while a session is running, because Preelock Only
 //!   enforces during sessions.
 //! - One tick accrues at most the tick delta (capped at 3000 ms,
 //!   the same cap the attention accounting uses for a single sample,

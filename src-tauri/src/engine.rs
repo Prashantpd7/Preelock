@@ -719,6 +719,7 @@ impl Engine {
         match Bridge::start(&self.data_dir) {
             Ok(bridge) => {
                 bridge.set_screen_time_tracking(true);
+                bridge.set_adult_block_enabled(self.data.adult_block.enabled);
                 bridge.set_connection_locked(self.has_active_strict());
                 self.bridge = Some(bridge);
                 self.bridge_error = String::new();
@@ -770,6 +771,7 @@ impl Engine {
         match Bridge::try_start(&self.data_dir) {
             Ok(bridge) => {
                 bridge.set_screen_time_tracking(true);
+                bridge.set_adult_block_enabled(self.data.adult_block.enabled);
                 self.bridge = Some(bridge);
                 self.bridge_error = String::new();
                 self.bridge_retry_at = 0;
@@ -821,6 +823,9 @@ impl Engine {
         };
     }
     pub fn needs_attention_agent(&self) -> bool {
+        if self.is_paused() {
+            return false;
+        }
         self.data.sessions.iter().any(|session| {
             matches!(session.status, Status::Running | Status::Preparing)
                 && session.focus.camera
@@ -1139,7 +1144,13 @@ impl Engine {
     pub fn current(&self) -> Snapshot {
         self.data.clone()
     }
+    pub fn is_paused(&self) -> bool {
+        self.data.preferences.paused
+    }
     pub fn has_active(&self) -> bool {
+        if self.is_paused() {
+            return false;
+        }
         self.data.sessions.iter().any(|s| {
             matches!(
                 s.status,
@@ -1153,6 +1164,9 @@ impl Engine {
     /// locked then, and the lock lifts as soon as no strict session
     /// is live anymore.
     pub fn has_active_strict(&self) -> bool {
+        if self.is_paused() {
+            return false;
+        }
         self.data.sessions.iter().any(|s| {
             s.focus.mode == Mode::Strict
                 && matches!(
@@ -1371,6 +1385,12 @@ impl Engine {
     }
     fn publish(&self) {
         if let Some(b) = &self.bridge {
+            if self.is_paused() {
+                b.publish(None);
+                b.set_screen_time_blocked_rules(&[], &[]);
+                b.set_connection_locked(false);
+                return;
+            }
             let policy = if self.failed.is_some() {
                 None
             } else {
@@ -1654,7 +1674,11 @@ impl Engine {
         // M5: on a wake tick the sleep span is not focus time (see
         // the doc comment above); every other commit credits the
         // full elapsed interval.
-        let credit_elapsed = if wake_gap { 0 } else { elapsed };
+        let credit_elapsed = if wake_gap || self.is_paused() {
+            0
+        } else {
+            elapsed
+        };
         let mut next = self.data.clone();
         // Step 11 clock-tamper detection: compare the wall clock
         // against the monotonic anchor. Productive time is only
@@ -1711,7 +1735,8 @@ impl Engine {
             // attention-enabled (advance skips it anyway), but a
             // one-shot session need not be, so the guard belongs
             // here, where every advance runs.
-            if !s.focus.attention.enabled
+            if !self.is_paused()
+                && !s.focus.attention.enabled
                 && !crate::notifications::grace_active(s.grace_until_ms, now)
             {
                 sessions::advance(s, credit_elapsed, now);
@@ -1724,6 +1749,11 @@ impl Engine {
         };
         if let Some(action) = action {
             sessions::apply(&mut next, action, now)?;
+        }
+        if next.preferences.paused {
+            self.stop_camera();
+            self.attempt_tracker.clear_blocked();
+            next.blocked_app_notice = None;
         }
         if let Some(id) = start {
             self.sample_anchor = tick;
@@ -2650,16 +2680,29 @@ impl Engine {
         };
         if let Some(domain) = domain_to_check {
             if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(domain) {
-                platform::redirect_browser_blocked(&sample.name);
+                platform::redirect_browser_blocked(&sample.name, sample.pid);
                 if crate::focus::safari(&sample.id) {
                     platform::redirect_safari_blocked();
                 }
-                let cause = crate::blockreasons::BlockCause::adult();
-                self.notify_block_cause(&sample, &cause, now);
+                let _ = platform::hide(&sample);
+                let cause = crate::blockreasons::BlockCause::adult_site(domain);
+                if self.data.preferences.notifications_enabled
+                    && self
+                        .attempt_tracker
+                        .should_log(&format!("site:{}", domain), now)
+                {
+                    self.notify_general(
+                        "Preelock",
+                        &crate::blockreasons::cause_text(&cause, domain, now),
+                    );
+                }
+                let mut site_sample = sample.clone();
+                site_sample.id = format!("site:{}", domain);
+                site_sample.name = domain.to_string();
                 record_blocked_app_page(
                     &mut self.data.blocked_app_notice,
                     &mut self.overlay_last_shown,
-                    &sample,
+                    &site_sample,
                     &cause,
                     now,
                 );
@@ -2710,6 +2753,7 @@ impl Engine {
             }
         }
         if let Some(bridge) = &self.bridge {
+            bridge.set_adult_block_enabled(self.data.adult_block.enabled);
             let mut site_rules =
                 crate::allowances::exhausted_site_rules(&self.data.allowances, now);
             site_rules.extend(crate::applocks::locked_site_rules(
@@ -2749,7 +2793,7 @@ impl Engine {
     }
 
     fn evaluate_notifications(&mut self) {
-        if !crate::desktop_settings::can_notify() {
+        if self.is_paused() || !crate::desktop_settings::can_notify() {
             return;
         }
         let now = clock::now();
@@ -2822,7 +2866,7 @@ impl Engine {
 
     fn evaluate_daily_reminders(&mut self) {
         let p = self.data.preferences.clone();
-        if !p.reminder || !p.notifications_enabled || self.has_active() {
+        if self.is_paused() || !p.reminder || !p.notifications_enabled || self.has_active() {
             return;
         }
         if let Ok(info) = crate::desktop_settings::info() {
@@ -2888,6 +2932,24 @@ impl Engine {
         }
         if self.camera_test_until > 0 && clock::continuous_ms() >= self.camera_test_until {
             self.stop_test();
+        }
+        if self.is_paused() {
+            self.sample_anchor = clock::continuous_ms();
+            self.screen_time_anchor = clock::continuous_ms();
+            self.anchor = clock::continuous_ms();
+            self.wall = tick_wall;
+            self.stop_camera();
+            self.attempt_tracker.clear_blocked();
+            if self.data.blocked_app_notice.is_some() {
+                self.data.blocked_app_notice = None;
+            }
+            if let Some(bridge) = &self.bridge {
+                bridge.set_screen_time_blocked_rules(&[], &[]);
+                bridge.publish(None);
+                bridge.set_connection_locked(false);
+            }
+            self.commit(None, true)?;
+            return Ok(());
         }
         // M5: the gap flag travels into commit so the sleep span is
         // never credited as focus time (see `commit`).
@@ -3519,7 +3581,7 @@ impl Engine {
                             // but hiding the app's own window strands the user
                             // with no way to stop the session).
                             if blocked && !crate::focus::protected(&sample.id) {
-                                platform::redirect_browser_blocked(&sample.name);
+                                platform::redirect_browser_blocked(&sample.name, sample.pid);
                                 if crate::focus::safari(&sample.id) {
                                     platform::redirect_safari_blocked();
                                 }
@@ -6839,5 +6901,41 @@ mod tests {
         // Re-starting immediately after drop acquires lock and succeeds
         let bridge2 = Bridge::start_at_retries(dir.path(), 0, 5, 5);
         assert!(bridge2.is_ok());
+    }
+
+    #[test]
+    fn engine_power_off_pauses_all_services_and_unpausing_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("power-test.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        assert!(!engine.is_paused());
+
+        let mut s = running_session("PowerTest");
+        s.focus.mode = Mode::Strict;
+        s.focus.camera = true;
+        s.remaining_ms = 1_000_000;
+        engine.data.sessions.push(s);
+        engine.db.save(&engine.data).unwrap();
+
+        assert!(engine.has_active());
+        assert!(engine.has_active_strict());
+
+        // Toggle power off
+        engine.execute(Action::TogglePower).unwrap();
+        assert!(engine.is_paused());
+        assert!(!engine.has_active());
+        assert!(!engine.has_active_strict());
+        assert!(!engine.needs_attention_agent());
+
+        // Ticking while paused does not reduce remaining time
+        let rem_before = engine.data.sessions[0].remaining_ms;
+        engine.tick().unwrap();
+        assert_eq!(engine.data.sessions[0].remaining_ms, rem_before);
+
+        // Toggle power back on
+        engine.execute(Action::TogglePower).unwrap();
+        assert!(!engine.is_paused());
+        assert!(engine.has_active());
+        assert!(engine.has_active_strict());
     }
 }

@@ -47,7 +47,8 @@ use std::sync::{
 struct ExitApproved(AtomicBool);
 
 pub struct GuiLock {
-    _file: std::fs::File,
+    file: std::fs::File,
+    path: std::path::PathBuf,
 }
 
 impl GuiLock {
@@ -70,12 +71,22 @@ impl GuiLock {
                     let _ = f.seek(SeekFrom::Start(0));
                     let _ = writeln!(f, "{}", std::process::id());
                     let _ = f.flush();
-                    return Some(Self { _file: f });
+                    return Some(Self {
+                        file: f,
+                        path: lock_path,
+                    });
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         None
+    }
+}
+
+impl Drop for GuiLock {
+    fn drop(&mut self) {
+        let _ = self.file.set_len(0);
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 /// M6: whether the main window was auto-hidden at this launch
@@ -121,12 +132,15 @@ pub(crate) fn login_registration_decision(app: &tauri::AppHandle) -> bool {
     app.state::<IpcClient>()
         .snapshot()
         .map(|snapshot| {
-            let has_active = snapshot.sessions.iter().any(|s| {
-                matches!(
-                    s.status,
-                    models::Status::Running | models::Status::Paused | models::Status::Preparing
-                )
-            });
+            let has_active = !snapshot.preferences.paused
+                && snapshot.sessions.iter().any(|s| {
+                    matches!(
+                        s.status,
+                        models::Status::Running
+                            | models::Status::Paused
+                            | models::Status::Preparing
+                    )
+                });
             crate::schedules::login_registration_needed(has_active, &snapshot.schedules, user_pref)
         })
         .unwrap_or(user_pref)
@@ -185,7 +199,7 @@ async fn focus_setup(
     browser_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let applications = platform::applications()?;
+        let applications = platform::applications().unwrap_or_default();
         let mut browsers: Vec<_> = applications
             .iter()
             .filter(|a| focus::supported_browser(&a.id))
@@ -266,6 +280,7 @@ fn show_window(app: &tauri::AppHandle) {
     if let Some(hidden) = app.try_state::<StartHidden>() {
         hidden.0.store(false, Ordering::Release);
     }
+    platform::activate_app();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -352,9 +367,9 @@ fn disconnect_ui(app: &tauri::AppHandle) {
     desktop_settings::approve_quit();
     app.state::<ExitApproved>().0.store(true, Ordering::Release);
     app.exit(0);
-    // Hard exit fallback: if webviews or OS AppKit event loop hangs on exit, terminate cleanly after 1s
+    // Hard exit fallback: if webviews or OS AppKit event loop hangs on exit, terminate cleanly after 500ms
     std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(500));
         std::process::exit(0);
     });
 }
@@ -389,10 +404,11 @@ fn sync_frozen_overlay(app: &tauri::AppHandle, snapshot: &models::Snapshot) {
     // does, and appears when grace ends (or never, if the session
     // ends during grace).
     let now = crate::clock::now();
-    let frozen_running = snapshot.sessions.iter().any(|s| {
-        crate::frozen::is_enforced(s.focus.frozen.enabled, s.status == models::Status::Running)
-            && !crate::notifications::grace_active(s.grace_until_ms, now)
-    });
+    let frozen_running = !snapshot.preferences.paused
+        && snapshot.sessions.iter().any(|s| {
+            crate::frozen::is_enforced(s.focus.frozen.enabled, s.status == models::Status::Running)
+                && !crate::notifications::grace_active(s.grace_until_ms, now)
+        });
     let window = app.get_webview_window("frozen");
     let action = crate::frozen::overlay_action(
         window.is_some(),
@@ -504,7 +520,7 @@ pub fn run() {
         None => {
             log::info!("Another Preelock GUI instance is already running; activating existing window and exiting.");
             platform::activate_existing_instance();
-            std::process::exit(0);
+            platform::deactivate_and_exit();
         }
     };
     let setup_dir = dir.clone();
@@ -761,5 +777,17 @@ mod tests {
         let lock2 = GuiLock::try_acquire(dir2.path());
         assert!(lock1.is_some());
         assert!(lock2.is_some());
+    }
+
+    #[test]
+    fn gui_lock_cleans_up_file_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("gui.lock");
+        let lock = GuiLock::try_acquire(dir.path()).expect("acquire");
+        assert!(lock_path.exists());
+        let pid_str = std::fs::read_to_string(&lock_path).unwrap();
+        assert_eq!(pid_str.trim(), std::process::id().to_string());
+        drop(lock);
+        assert!(!lock_path.exists(), "gui.lock must be removed on drop");
     }
 }
