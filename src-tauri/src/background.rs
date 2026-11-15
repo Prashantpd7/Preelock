@@ -13,8 +13,6 @@
 //!   relaunches the Preelock GUI after ~5 seconds in the user's interactive
 //!   session. Outside strict sessions, UI exit is never reopened.
 
-#[cfg(not(target_os = "macos"))]
-use crate::launch;
 use crate::{
     attention_agent,
     engine::Engine,

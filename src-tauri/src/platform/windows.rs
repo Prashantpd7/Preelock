@@ -606,9 +606,9 @@ pub fn activate_existing_instance() {
                 if let Ok(target_pid) = content.trim().parse::<u32>() {
                     struct EnumContext {
                         target_pid: u32,
-                        found_hwnd: isize,
+                        found_hwnd: HWND,
                     }
-                    unsafe extern "system" fn enum_proc(hwnd: isize, lparam: isize) -> i32 {
+                    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
                         let ctx = &mut *(lparam as *mut EnumContext);
                         let mut proc_id = 0u32;
                         GetWindowThreadProcessId(hwnd, &mut proc_id);
@@ -621,10 +621,10 @@ pub fn activate_existing_instance() {
                     }
                     let mut ctx = EnumContext {
                         target_pid,
-                        found_hwnd: 0,
+                        found_hwnd: std::ptr::null_mut(),
                     };
-                    EnumWindows(Some(enum_proc), &mut ctx as *mut _ as isize);
-                    if ctx.found_hwnd != 0 {
+                    EnumWindows(Some(enum_proc), &mut ctx as *mut _ as LPARAM);
+                    if !ctx.found_hwnd.is_null() {
                         ShowWindow(ctx.found_hwnd, SW_RESTORE);
                         BringWindowToTop(ctx.found_hwnd);
                         SetForegroundWindow(ctx.found_hwnd);
