@@ -1444,7 +1444,10 @@ mod tests {
         assert_eq!(sup.known_ui_pid(), Some(test_pid));
 
         #[cfg(windows)]
-        let _ = child.kill();
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]
