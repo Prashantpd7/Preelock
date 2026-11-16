@@ -62,7 +62,43 @@
 
   if (!el) return;
   const title = params.get('t') || '';
+  const host = params.get('h') || '';
   const endsAt = Number(params.get('e') || 0);
+
+  function resolveSiteName(t, h) {
+    const raw = t || h || '';
+    if (!raw) return 'This website';
+    const clean = raw.replace(/^www\./i, '');
+    const dot = clean.indexOf('.');
+    const base = dot > 0 ? clean.slice(0, dot) : clean;
+    if (base.toLowerCase() === 'instagram') return 'Instagram';
+    if (base.toLowerCase() === 'youtube') return 'YouTube';
+    if (base.toLowerCase() === 'facebook') return 'Facebook';
+    if (base.toLowerCase() === 'twitter') return 'Twitter';
+    if (base.toLowerCase() === 'reddit') return 'Reddit';
+    if (base.toLowerCase() === 'netflix') return 'Netflix';
+    if (base.length > 0) return base.charAt(0).toUpperCase() + base.slice(1);
+    return 'This website';
+  }
+  const siteName = resolveSiteName(title, host);
+
+  if (titleEl && !titleEl.textContent)
+    titleEl.textContent = 'Stay with your task';
+  if (hintEl) hintEl.hidden = false;
+
+  if (messageEl) {
+    if (
+      kind === 'timed_lock' ||
+      kind === 'daily_limit' ||
+      kind === 'allowance' ||
+      kind === 'unknown'
+    ) {
+      messageEl.textContent = `${siteName} is blocked by Preelock.`;
+    } else if (kind === 'session') {
+      messageEl.textContent =
+        'This website is blocked during your focus session.';
+    }
+  }
 
   function remaining() {
     const ms = endsAt - Date.now();
@@ -88,7 +124,7 @@
     website_adult: () => `Adult websites are blocked by Preelock.`,
     fail_closed: () =>
       `This website is blocked until Preelock connects to your browser.`,
-    unknown: () => `This website is blocked by Preelock.`,
+    unknown: () => `${siteName} is blocked by Preelock.`,
   };
   el.textContent = (messages[kind] || messages.unknown)();
   el.hidden = false;

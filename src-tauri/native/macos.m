@@ -244,109 +244,27 @@ static NSString *safariCurrentURL(void) {
     return @"";
 }
 void preelock_redirect_safari_blocked(void) {
-    @autoreleasepool {
-        NSDictionary *error = nil;
-        NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
-            @"tell application \"Safari\"\n"
-            @"  if (count of windows) > 0 then\n"
-            @"    try\n"
-            @"      close current tab of front window\n"
-            @"    on error\n"
-            @"      set URL of current tab of front window to \"about:blank\"\n"
-            @"    end try\n"
-            @"  end if\n"
-            @"end tell"];
-        [script executeAndReturnError:&error];
-    }
+    // No-op: Do not close Safari tabs or terminate browser processes.
+    // Safari does not have an extension capable of in-tab redirection;
+    // native code must not destroy user tabs or close windows as a fallback.
 }
 void preelock_redirect_browser_blocked(const char *appName, int pid) {
-    @autoreleasepool {
-        if (!appName || strlen(appName) == 0) return;
-        NSString *name = [NSString stringWithUTF8String:appName];
-        if ([name containsString:@"Safari"]) {
-            preelock_redirect_safari_blocked();
-            return;
-        }
-        // Maps bundle id or binary names to application name for AppleScript
-        NSString *targetName = name;
-        if ([name containsString:@"chrome"] || [name containsString:@"Chrome"]) {
-            targetName = @"Google Chrome";
-        } else if ([name containsString:@"brave"] || [name containsString:@"Brave"]) {
-            targetName = @"Brave Browser";
-        } else if ([name containsString:@"edge"] || [name containsString:@"Edge"]) {
-            targetName = @"Microsoft Edge";
-        } else if ([name containsString:@"arc"] || [name containsString:@"Arc"]) {
-            targetName = @"Arc";
-        } else if ([name containsString:@"comet"] || [name containsString:@"Comet"]) {
-            targetName = @"Comet";
-        }
-
-        BOOL redirected = NO;
-        NSString *source1 = [NSString stringWithFormat:
-            @"tell application \"%@\"\n"
-            @"  if (count of windows) > 0 then\n"
-            @"    try\n"
-            @"      close active tab of front window\n"
-            @"    on error\n"
-            @"      set URL of active tab of front window to \"about:blank\"\n"
-            @"    end try\n"
-            @"  end if\n"
-            @"end tell", targetName];
-        NSDictionary *error1 = nil;
-        NSAppleScript *script1 = [[NSAppleScript alloc] initWithSource:source1];
-        if ([script1 executeAndReturnError:&error1] != nil && error1 == nil) {
-            redirected = YES;
-        }
-
-        if (!redirected) {
-            NSString *source2 = [NSString stringWithFormat:
-                @"tell application \"%@\"\n"
-                @"  if (count of windows) > 0 then\n"
-                @"    try\n"
-                @"      close active tab of window 1\n"
-                @"    on error\n"
-                @"      set URL of active tab of window 1 to \"about:blank\"\n"
-                @"    end try\n"
-                @"  end if\n"
-                @"end tell", targetName];
-            NSDictionary *error2 = nil;
-            NSAppleScript *script2 = [[NSAppleScript alloc] initWithSource:source2];
-            if ([script2 executeAndReturnError:&error2] != nil && error2 == nil) {
-                redirected = YES;
-            }
-        }
-
-        // Reliable native fallback: send Cmd+W (close tab) keystroke directly to frontmost browser window
-        pid_t targetPid = (pid_t)pid;
-        if (targetPid <= 0) {
-            NSRunningApplication *frontApp = NSWorkspace.sharedWorkspace.frontmostApplication;
-            if (frontApp != nil) {
-                targetPid = frontApp.processIdentifier;
-            }
-        }
-        if (targetPid > 0) {
-            CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
-            if (src) {
-                CGEventRef keyDown = CGEventCreateKeyboardEvent(src, (CGKeyCode)13, true); // key code 13 is 'w'
-                CGEventSetFlags(keyDown, kCGEventFlagMaskCommand);
-                CGEventRef keyUp = CGEventCreateKeyboardEvent(src, (CGKeyCode)13, false);
-                CGEventSetFlags(keyUp, kCGEventFlagMaskCommand);
-                CGEventPostToPid(targetPid, keyDown);
-                CGEventPostToPid(targetPid, keyUp);
-                CGEventPost(kCGHIDEventTap, keyDown);
-                CGEventPost(kCGHIDEventTap, keyUp);
-                CFRelease(keyDown);
-                CFRelease(keyUp);
-                CFRelease(src);
-            }
-        }
-    }
+    (void)appName;
+    (void)pid;
+    // No-op: The browser extension handles in-tab redirection for Chromium browsers.
+    // Native code must never send Cmd+W, close tabs, or hide windows for website blocks.
 }
 static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
     if (depth > 12 || *budget <= 0) return @"";
     (*budget)--;
     NSString *role = axStringAttr(element, kAXRoleAttribute);
     if ([role isEqualToString:@"AXTextField"] || [role isEqualToString:@"AXComboBox"]) {
+        CFTypeRef focused = NULL;
+        if (AXUIElementCopyAttributeValue(element, kAXFocusedAttribute, &focused) == kAXErrorSuccess && focused) {
+            BOOL isFocused = (focused == kCFBooleanTrue);
+            CFRelease(focused);
+            if (isFocused) return @"";
+        }
         NSString *value = axStringAttr(element, kAXValueAttribute);
         if (looksLikeAddress(value)) return value;
     }
@@ -400,8 +318,22 @@ char *preelock_web_sample(void) {
             int budget = 600;
             url = axURLFromWebArea((AXUIElementRef)window, 0, &budget);
             if (url.length == 0) {
-                int barBudget = 400;
-                url = axAddressBar((AXUIElementRef)window, 0, &barBudget);
+                // IMPORTANT: Never sample the address bar if keyboard focus is in
+                // an edit field / address bar. When typing, autocomplete suggestions
+                // and search history appear before navigation is committed.
+                BOOL editingAddress = NO;
+                CFTypeRef focusedEl = NULL;
+                if (AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute, &focusedEl) == kAXErrorSuccess && focusedEl) {
+                    NSString *role = axStringAttr((AXUIElementRef)focusedEl, kAXRoleAttribute);
+                    if ([role isEqualToString:@"AXTextField"] || [role isEqualToString:@"AXComboBox"]) {
+                        editingAddress = YES;
+                    }
+                    CFRelease(focusedEl);
+                }
+                if (!editingAddress) {
+                    int barBudget = 400;
+                    url = axAddressBar((AXUIElementRef)window, 0, &barBudget);
+                }
             }
             CFRelease(window);
         }

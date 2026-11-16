@@ -407,3 +407,49 @@ describe('youtube-controls individual CSS selectors and independence', () => {
     expect(headerCss).toContain('ytd-mini-guide-renderer{top:0!important}');
   });
 });
+
+describe('youtube-controls responsive layout resilience', () => {
+  it('keeps feed and recommendation containers hidden when YouTube re-renders its layout', () => {
+    const home = controlsHiddenSelectors({ home: { hideHomeFeed: true } });
+    expect(home).toContain(
+      'html[data-preelock-route="home"] ytd-browse #contents',
+    );
+    expect(home).toContain(
+      'html[data-preelock-route="home"] ytd-browse ytd-rich-grid-renderer',
+    );
+    expect(home).toContain(
+      'html[data-preelock-route="home"] ytd-two-column-browse-results-renderer #primary',
+    );
+
+    const sidebar = controlsHiddenSelectors({
+      recommendations: { hideVideoSidebar: true },
+    });
+    expect(sidebar).toContain('html[data-preelock-route="watch"] #secondary');
+    expect(sidebar).toContain(
+      'html[data-preelock-route="watch"] #columns > #secondary',
+    );
+
+    const css = controlsCss({
+      recommendations: { hideRecommended: true },
+    });
+    expect(css).toContain(
+      'html[data-preelock-route="watch"] #related{display:none!important}',
+    );
+    expect(css).toContain(
+      'html[data-preelock-route="watch"] ytd-watch-next-secondary-results-renderer{display:none!important}',
+    );
+  });
+
+  it('scopes the resilient containers to their own route only', () => {
+    const css = controlsCss({
+      home: { hideHomeFeed: true },
+      recommendations: { hideVideoSidebar: true, hideRecommended: true },
+    });
+    // Search, channel and playlist pages keep their results.
+    expect(css).not.toContain('html[data-preelock-route="search"]');
+    expect(css).not.toContain('html[data-preelock-route="channel"]');
+    expect(css).not.toContain('html[data-preelock-route="playlist"]');
+    // And a settings-off page still has no hiding rules at all.
+    expect(controlsCss(null)).toBe('');
+  });
+});

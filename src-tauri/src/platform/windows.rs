@@ -525,6 +525,12 @@ fn address_bar_value(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
         let pattern = element
             .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
             .ok()?;
+        // Never treat an address bar with keyboard focus as a committed navigation.
+        // When typing in the address bar, autocomplete suggestions and history appear
+        // before navigation is committed.
+        if element.CurrentHasKeyboardFocus().unwrap_or(false) {
+            return None;
+        }
         let value = pattern.CurrentValue().ok()?;
         let text = value.to_string();
         // Only a value that validates as an http(s) page is used, so a

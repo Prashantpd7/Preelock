@@ -279,6 +279,7 @@ pub fn site_locked(
 }
 
 /// The enforced lock matching this site, if any.
+#[allow(dead_code)]
 pub fn enforced_lock_for_site<'a>(
     locks: &'a [AppLock],
     buckets: &[ScreenTimeBucket],

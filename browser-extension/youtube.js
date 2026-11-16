@@ -449,6 +449,7 @@
       isChannelRestrictedPolicy: isChannelRestrictedPolicy,
       subscriptionsRedirectTarget: subscriptionsRedirectTarget,
       styleCss: styleCss,
+      ensureStylesApplied: ensureStylesApplied,
       PRODUCTIVE_EDUCATIONAL_PATTERN: PRODUCTIVE_EDUCATIONAL_PATTERN,
       STRONG_ENTERTAINMENT_PATTERN: STRONG_ENTERTAINMENT_PATTERN,
       isProductiveEducationalText: isProductiveEducationalText,
@@ -778,7 +779,11 @@
       if (style && style.remove) style.remove();
       return '';
     }
-    if (style && cacheRef === css) return css;
+    // The cached string is not proof the page still holds it: another page
+    // script (or a browser assistant rewriting the page) can clear or
+    // overwrite this stylesheet. Compare the live element too, so the next
+    // enforcement pass repairs it instead of keeping a stale cache.
+    if (style && cacheRef === css && style.textContent === css) return css;
     if (!style) {
       try {
         style = document.createElement('style');
@@ -803,12 +808,17 @@
     if (!controlsApi) return;
     try {
       var route = controlsApi.youtubeRouteKind(location.href);
+      var root = document.documentElement;
+      var applied =
+        root && root.getAttribute
+          ? root.getAttribute('data-preelock-route')
+          : null;
       if (
-        route !== lastRouteKind &&
-        document.documentElement &&
-        document.documentElement.setAttribute
+        (route !== lastRouteKind || applied !== route) &&
+        root &&
+        root.setAttribute
       ) {
-        document.documentElement.setAttribute('data-preelock-route', route);
+        root.setAttribute('data-preelock-route', route);
         lastRouteKind = route;
       }
     } catch (e) {}
@@ -823,6 +833,50 @@
       css,
       lastControlsCss,
     );
+  }
+
+  // Comet Assistant (and other browser chrome) can resize or re-show the
+  // page, and YouTube re-renders its layout when the viewport changes. The
+  // only things the hiding rules depend on are the injected stylesheet and
+  // the route attribute, so re-assert both on layout/lifecycle signals and
+  // repair a stylesheet that was removed or overwritten. No DOM scan is
+  // involved: one getElementById plus a string compare.
+  function ensureStylesApplied() {
+    if (!controlsApi || !currentControls) return;
+    syncRouteAttribute();
+    var style = null;
+    try {
+      style = document.getElementById(controlsApi.CONTROLS_STYLE_ID);
+    } catch (e) {}
+    if (lastControlsCss) {
+      if (!style || style.textContent !== lastControlsCss)
+        applyControlsStyles();
+    } else if (style) {
+      applyControlsStyles();
+    }
+  }
+
+  var enforcementTimer = null;
+  function scheduleEnforcement() {
+    if (enforcementTimer) return;
+    enforcementTimer = setTimeout(function () {
+      enforcementTimer = null;
+      ensureStylesApplied();
+      if (typeof applyDynamicDomControls === 'function') {
+        applyDynamicDomControls();
+      }
+    }, 100);
+  }
+
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    ['resize', 'orientationchange', 'pageshow', 'focus'].forEach(
+      function (name) {
+        window.addEventListener(name, scheduleEnforcement);
+      },
+    );
+  }
+  if (typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', scheduleEnforcement);
   }
 
   function showGuard() {
@@ -1274,6 +1328,7 @@
     if (dynamicTimer) return;
     dynamicTimer = setTimeout(function () {
       dynamicTimer = null;
+      ensureStylesApplied();
       if (typeof requestAnimationFrame === 'function') {
         requestAnimationFrame(applyDynamicDomControls);
       } else {

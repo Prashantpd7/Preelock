@@ -15,10 +15,15 @@ const here = import.meta.url.startsWith('file:')
   ? path.dirname(fileURLToPath(import.meta.url))
   : path.join(process.cwd(), 'browser-extension');
 const source = readFileSync(path.join(here, 'youtube.js'), 'utf8');
+const controlsSource = readFileSync(
+  path.join(here, 'youtube-controls.js'),
+  'utf8',
+);
 function loadScript(overrides = {}) {
   const messages = [];
   const replaced = [];
   const elements = {};
+  const listeners = {};
   const storage = new Map();
   const makeElement = (tag) => ({
     tagName: tag,
@@ -44,9 +49,23 @@ function loadScript(overrides = {}) {
         return overrides.queryAll(selector);
       return overrides.ownerNodes ?? [];
     },
+    addEventListener: (name, fn) => {
+      (listeners[name] = listeners[name] || []).push(fn);
+    },
     head: { appendChild: register },
     body: { appendChild: register },
-    documentElement: { appendChild: register },
+    documentElement: {
+      attributes: {},
+      appendChild: register,
+      setAttribute(name, value) {
+        this.attributes[name] = String(value);
+      },
+      getAttribute(name) {
+        return Object.prototype.hasOwnProperty.call(this.attributes, name)
+          ? this.attributes[name]
+          : null;
+      },
+    },
   };
   const context = {
     console,
@@ -56,8 +75,9 @@ function loadScript(overrides = {}) {
     Date: { now: () => overrides.now ?? 0 },
     setTimeout: (fn, delay) => {
       // Run the observer debounce immediately, but leave IPC timeout
-      // callbacks pending so the synchronous mock response can win.
-      if (delay === 500) fn();
+      // callbacks pending so the synchronous mock response can win. Tests
+      // that exercise the enforcement scheduler opt in to running it too.
+      if (delay === 500 || (overrides.immediateTimeouts && delay <= 500)) fn();
       return 0;
     },
     clearTimeout: () => {},
@@ -97,16 +117,29 @@ function loadScript(overrides = {}) {
   };
   context.window = {
     location: context.location,
-    addEventListener: () => {},
+    addEventListener: (name, fn) => {
+      (listeners[name] = listeners[name] || []).push(fn);
+    },
+  };
+  context.chrome.storage = {
+    local: {
+      get: (key, callback) => callback(overrides.storage || {}),
+    },
+    onChanged: { addListener: () => {} },
   };
   context.globalThis = context;
   vm.createContext(context);
+  // YouTube Controls live in their own classic script; load it first when a
+  // test needs the real CSS pipeline.
+  if (overrides.withControls) vm.runInContext(controlsSource, context);
   vm.runInContext(source, context);
   return {
     api: context.__preelockYoutube,
     messages,
     replaced,
     elements,
+    listeners,
+    documentElement: document.documentElement,
     storage,
   };
 }
@@ -2063,5 +2096,70 @@ describe('youtube.js Unhook controls, SPA navigation, and channel hardening', ()
       expect(api.isStrongEntertainmentText(title)).toBe(true);
       expect(api.isEntertainmentCardTitle(title)).toBe(true);
     }
+  });
+});
+
+describe('youtube.js enforcement survives layout and lifecycle churn', () => {
+  const styleId = 'preelock-yt-controls-style';
+  const controls = {
+    home: { hideHomeFeed: true },
+    recommendations: { hideVideoSidebar: true, hideRecommended: true },
+  };
+
+  it('re-applies the hiding stylesheet and route attribute after a resize', async () => {
+    const { elements, listeners, documentElement } = loadScript({
+      withControls: true,
+      immediateTimeouts: true,
+      href: 'https://www.youtube.com/watch?v=abc123',
+      storage: { youtubeControls: controls },
+    });
+    await settle();
+
+    // The initial storage read already applied the controls for this route.
+    expect(documentElement.getAttribute('data-preelock-route')).toBe('watch');
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="watch"] #secondary',
+    );
+    expect(listeners.resize.length).toBeGreaterThan(0);
+
+    // A re-render (or another script) drops the stylesheet and the route
+    // attribute while the URL stays the same; the next layout signal must
+    // restore both without a navigation or a full DOM scan.
+    elements[styleId].remove();
+    documentElement.attributes = {};
+    for (const fn of listeners.resize) fn();
+
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="watch"] #secondary',
+    );
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="watch"] #related{display:none!important}',
+    );
+    expect(documentElement.getAttribute('data-preelock-route')).toBe('watch');
+  });
+
+  it('repairs an overwritten stylesheet on tab focus and page show', async () => {
+    const { elements, listeners } = loadScript({
+      withControls: true,
+      immediateTimeouts: true,
+      href: 'https://www.youtube.com/',
+      storage: { youtubeControls: controls },
+    });
+    await settle();
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="home"] ytd-browse #contents',
+    );
+
+    elements[styleId].textContent = '';
+    for (const fn of listeners.focus) fn();
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="home"] ytd-browse #contents',
+    );
+
+    elements[styleId].remove();
+    for (const fn of listeners.pageshow) fn();
+    expect(elements[styleId].textContent).toContain(
+      'html[data-preelock-route="home"] ytd-browse #contents',
+    );
   });
 });

@@ -2692,12 +2692,13 @@ impl Engine {
         };
         if let Some(domain) = domain_to_check {
             if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(domain) {
-                // Extension handles same-tab redirection to blocked.html directly for
-                // Chromium browsers. Do not close tabs, hide the browser window, or show
-                // a desktop blocked-app popup.
-                if crate::focus::safari(&sample.id) {
-                    platform::redirect_safari_blocked();
-                }
+                // The browser extension owns adult blocking: its DNR rules stop the
+                // request and worker.js replaces the SAME tab with blocked.html, exactly
+                // like ordinary website blocking. Native code takes no action at all
+                // here: no AppleScript, no Cmd+W/Ctrl+W or synthesized keystrokes, no
+                // tab closing or browser-process termination, no window hiding, no
+                // blocked-app page and no desktop activation. The attempt is still
+                // recorded for stats.
                 let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
                     at_ms: now,
                     kind: crate::stats::AttemptKind::Site,
@@ -2714,34 +2715,18 @@ impl Engine {
                     domain,
                 )
             {
-                if crate::focus::safari(&sample.id) {
-                    platform::redirect_safari_blocked();
-                }
-                let _ = platform::hide(&sample);
-                if let Some(lock) = crate::applocks::enforced_lock_for_site(
-                    &self.data.app_locks,
-                    &self.data.screen_time_usage,
-                    day_ms,
-                    now,
-                    domain,
-                ) {
-                    let cause = match lock.rule {
-                        crate::applocks::LockRule::Timed { ends_at_ms } => {
-                            crate::blockreasons::BlockCause::timed_lock(&lock.title, ends_at_ms)
-                        }
-                        crate::applocks::LockRule::DailyLimit { .. } => {
-                            crate::blockreasons::BlockCause::daily_limit(&lock.title)
-                        }
-                    };
-                    self.notify_block_cause(&sample, &cause, now);
-                    record_blocked_app_page(
-                        &mut self.data.blocked_app_notice,
-                        &mut self.overlay_last_shown,
-                        &sample,
-                        &cause,
-                        now,
-                    );
-                }
+                // The browser extension owns website blocking: locked site rules are synced
+                // to the extension via bridge.set_screen_time_blocked_rules, where worker.js
+                // replaces the SAME tab with blocked.html. Native code takes NO window-control,
+                // tab-closing, or desktop-popup action for website locks: no platform::hide,
+                // no record_blocked_app_page, no redirect_browser_blocked, and no desktop activation.
+                let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
+                    at_ms: now,
+                    kind: crate::stats::AttemptKind::Site,
+                    target: domain.into(),
+                    session_id: None,
+                    reason: "site_lock".into(),
+                });
             }
         }
         if let Some(bridge) = &self.bridge {
@@ -3341,63 +3326,53 @@ impl Engine {
                             let fail_closed_hit = fail_closed
                                 && !sample.id.is_empty()
                                 && crate::focus::ids_match(&sample.id, &s.focus.browser_app);
-                            let blocked = session_rules_blocked
+                            let app_blocked = session_rules_blocked
                                 || allowance_blocked
                                 || lock_blocked
-                                || site_lock_blocked
                                 || fail_closed_hit;
-                            // "Why am I blocked": the true cause,
-                            // threaded from the check that fired — never
-                            // guessed. Priority: fail-closed > app lock >
-                            // allowance > frozen > session > schedule
+                            let blocked = app_blocked || site_lock_blocked;
+                            // "Why am I blocked": the true cause for blocked applications,
+                            // threaded from the check that fired — never guessed.
+                            // Priority: fail-closed > app lock > allowance > frozen > session > schedule
                             // (see blockreasons).
-                            let block_cause: Option<crate::blockreasons::BlockCause> = if blocked {
-                                let lock = if lock_blocked {
-                                    crate::applocks::enforced_lock_for_app(
-                                        &self.data.app_locks,
-                                        &self.data.screen_time_usage,
-                                        day_ms,
-                                        now,
-                                        &sample.id,
-                                    )
-                                } else if site_lock_blocked {
-                                    domain_for_lock.and_then(|d| {
-                                        crate::applocks::enforced_lock_for_site(
+                            let block_cause: Option<crate::blockreasons::BlockCause> =
+                                if app_blocked {
+                                    let lock = if lock_blocked {
+                                        crate::applocks::enforced_lock_for_app(
                                             &self.data.app_locks,
                                             &self.data.screen_time_usage,
                                             day_ms,
                                             now,
-                                            d,
+                                            &sample.id,
                                         )
-                                    })
-                                } else {
-                                    None
-                                };
-                                let allowance_title = if allowance_blocked {
-                                    crate::allowances::exhausted_allowance_for_app(
-                                        &self.data.allowances,
-                                        now,
-                                        &sample.id,
-                                        &s.focus.browser_app,
-                                    )
-                                    .map(|a| a.title.clone())
-                                } else {
-                                    None
-                                };
-                                crate::blockreasons::app_cause(
-                                    fail_closed_hit,
-                                    lock,
-                                    allowance_title.as_deref(),
-                                    if session_rules_blocked {
-                                        Some(&*s)
                                     } else {
                                         None
-                                    },
-                                    &self.data.schedules,
-                                )
-                            } else {
-                                None
-                            };
+                                    };
+                                    let allowance_title = if allowance_blocked {
+                                        crate::allowances::exhausted_allowance_for_app(
+                                            &self.data.allowances,
+                                            now,
+                                            &sample.id,
+                                            &s.focus.browser_app,
+                                        )
+                                        .map(|a| a.title.clone())
+                                    } else {
+                                        None
+                                    };
+                                    crate::blockreasons::app_cause(
+                                        fail_closed_hit,
+                                        lock,
+                                        allowance_title.as_deref(),
+                                        if session_rules_blocked {
+                                            Some(&*s)
+                                        } else {
+                                            None
+                                        },
+                                        &self.data.schedules,
+                                    )
+                                } else {
+                                    None
+                                };
                             signals.activity_available = !sample.id.is_empty();
                             let work_apps = if s.focus.mode == Mode::Standard {
                                 &s.focus.attention.work_apps
@@ -3500,7 +3475,7 @@ impl Engine {
                             // flood the log. A write failure is logged
                             // only: attempt logging must never end a
                             // session or fail a tick.
-                            if blocked && !sample.id.is_empty() {
+                            if app_blocked && !sample.id.is_empty() {
                                 if !self.attempt_tracker.blocked_now.contains(&sample.id)
                                     && self.attempt_tracker.should_log(&sample.id, now)
                                 {
@@ -3555,6 +3530,24 @@ impl Engine {
                             } else if !sample.id.is_empty() {
                                 self.attempt_tracker.blocked_now.remove(&sample.id);
                             }
+                            if site_lock_blocked && !app_blocked {
+                                if let Some(domain) = domain_for_lock {
+                                    let site_key = format!("site:{domain}");
+                                    if !self.attempt_tracker.blocked_now.contains(&site_key)
+                                        && self.attempt_tracker.should_log(&site_key, now)
+                                    {
+                                        let _ =
+                                            self.db.record_attempt(&crate::stats::BlockAttempt {
+                                                at_ms: now,
+                                                kind: crate::stats::AttemptKind::Site,
+                                                target: domain.into(),
+                                                session_id: Some(s.id.clone()),
+                                                reason: "site_lock".into(),
+                                            });
+                                        self.attempt_tracker.blocked_now.insert(site_key);
+                                    }
+                                }
+                            }
                             // One-second samples, not inferred activity during sleep or a process outage.
                             // Break time is counted nowhere: it is neither
                             // productive nor distracted time.
@@ -3573,11 +3566,10 @@ impl Engine {
                             // matches them (blocked_sample already guards this,
                             // but hiding the app's own window strands the user
                             // with no way to stop the session).
-                            if blocked && !crate::focus::protected(&sample.id) {
-                                platform::redirect_browser_blocked(&sample.name, sample.pid);
-                                if crate::focus::safari(&sample.id) {
-                                    platform::redirect_safari_blocked();
-                                }
+                            // Only blocked desktop applications are hidden; website blocks
+                            // are handled directly by the browser extension inside the tab
+                            // and must NEVER hide the browser or close tabs.
+                            if app_blocked && !crate::focus::protected(&sample.id) {
                                 // Best effort: the OS can refuse a hide request (for
                                 // example while the app is still launching). Never
                                 // end the session over it; the next sample retries,
@@ -6952,6 +6944,65 @@ mod tests {
             target: "pornhub.com".into(),
             session_id: None,
             reason: "adult_block".into(),
+        };
+        engine.db.record_attempt(&attempt).unwrap();
+
+        assert!(engine.data.blocked_app_notice.is_none());
+    }
+
+    #[test]
+    fn site_locked_does_not_create_blocked_app_notice_or_hide_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("site-lock-test.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        let now = crate::clock::now();
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+
+        // Add a timed lock for instagram.com (2 minutes)
+        engine.data.app_locks.push(crate::applocks::AppLock {
+            id: "lock-insta".into(),
+            title: "Instagram".into(),
+            kind: crate::allowances::TargetKind::Site,
+            target: "instagram.com".into(),
+            rule: crate::applocks::LockRule::Timed {
+                ends_at_ms: now + 120_000,
+            },
+            enabled: true,
+            created_at: now,
+        });
+
+        // Verify that site_locked returns true for instagram.com and subdomains
+        assert!(crate::applocks::site_locked(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+            "instagram.com"
+        ));
+        assert!(crate::applocks::site_locked(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+            "www.instagram.com"
+        ));
+
+        // Other sites are not locked
+        assert!(!crate::applocks::site_locked(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+            "github.com"
+        ));
+
+        // When site lock is detected, recording a site attempt does NOT set blocked_app_notice
+        let attempt = crate::stats::BlockAttempt {
+            at_ms: now,
+            kind: crate::stats::AttemptKind::Site,
+            target: "instagram.com".into(),
+            session_id: None,
+            reason: "site_lock".into(),
         };
         engine.db.record_attempt(&attempt).unwrap();
 

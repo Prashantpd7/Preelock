@@ -366,6 +366,15 @@
         'html[data-preelock-route="home"] ytd-browse[page-subtype="home"] #header',
         'html[data-preelock-route="home"] ytd-browse[page-subtype="home"] ytd-rich-grid-renderer',
         'html[data-preelock-route="home"] ytd-browse[page-subtype="home"] ytd-feed-filter-chip-bar-renderer',
+        // Route-scoped fallbacks: the page-subtype attribute and the browse
+        // host element are not stable across YouTube's responsive layouts or
+        // re-renders, so the feed containers are also matched by route alone.
+        // The route attribute is only "home" on the homepage, so these never
+        // hide search, channel or playlist results.
+        'html[data-preelock-route="home"] ytd-browse #contents',
+        'html[data-preelock-route="home"] ytd-browse ytd-rich-grid-renderer',
+        'html[data-preelock-route="home"] ytd-browse ytd-feed-filter-chip-bar-renderer',
+        'html[data-preelock-route="home"] ytd-two-column-browse-results-renderer #primary',
         'html[data-preelock-route="home"] ytm-rich-grid-renderer',
         'html[data-preelock-route="home"] ytm-feed-filter-chip-bar-renderer',
       );
@@ -426,6 +435,14 @@
         'ytd-watch-flexy #secondary',
         'ytd-watch-flexy #secondary-inner',
         'ytd-watch-grid #secondary',
+        'ytd-watch-grid #secondary-inner',
+        // Route-scoped fallbacks: Comet Assistant narrows the page, YouTube
+        // switches to a different responsive watch layout, and the watch host
+        // element / column ids are not guaranteed. Matching the column by
+        // route keeps the sidebar hidden after that re-render.
+        'html[data-preelock-route="watch"] #secondary',
+        'html[data-preelock-route="watch"] #secondary-inner',
+        'html[data-preelock-route="watch"] #columns > #secondary',
       );
     }
 
@@ -433,6 +450,9 @@
       selectors.push(
         'ytd-watch-next-secondary-results-renderer',
         'ytd-watch-flexy #related',
+        'html[data-preelock-route="watch"] #related',
+        'html[data-preelock-route="watch"] ytd-watch-next-secondary-results-renderer',
+        'html[data-preelock-route="watch"] ytd-watch-next-secondary-results-renderer #contents',
         'ytm-item-section-renderer[section-identifier="related-items"]',
         'ytm-watch-next-secondary-results-renderer',
       );

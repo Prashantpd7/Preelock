@@ -99,4 +99,26 @@ describe('blocked.js', () => {
     );
     expect(doc.getElementById('hint').hidden).toBe(true);
   });
+  it('shows Stay with your task and Instagram is blocked by Preelock for Instagram timed lock', () => {
+    const doc = render(
+      'h=www.instagram.com&k=timed_lock&t=Instagram&e=' + (Date.now() + 120000),
+    );
+    expect(doc.getElementById('title').textContent).toBe('Stay with your task');
+    expect(doc.getElementById('message').textContent).toBe(
+      'Instagram is blocked by Preelock.',
+    );
+    expect(doc.getElementById('reason').textContent).toContain(
+      'This website is blocked for',
+    );
+    expect(doc.getElementById('reason').hidden).toBe(false);
+    expect(doc.getElementById('hint').hidden).toBe(false);
+
+    // Resolves from host when title param is omitted
+    const docNoTitle = render(
+      'h=www.instagram.com&k=timed_lock&e=' + (Date.now() + 120000),
+    );
+    expect(docNoTitle.getElementById('message').textContent).toBe(
+      'Instagram is blocked by Preelock.',
+    );
+  });
 });

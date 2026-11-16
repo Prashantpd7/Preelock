@@ -25,10 +25,16 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run format:check
+      - run: npm run extension:zip
       - id: version
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: node scripts/release-version.mjs >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-extension
+          path: dist/preelock-focus-extension-v*-chrome-web-store.zip
+          if-no-files-found: error
   macos:
     needs: validate
     strategy:
@@ -170,6 +176,10 @@ jobs:
         with:
           name: release-windows-x64
           path: installers/windows
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-extension
+          path: installers/extension
       - name: Publish all installers together as a public beta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -182,17 +192,20 @@ jobs:
           windows_exe="$(find windows -type f -path '*/nsis/*.exe' -print -quit)"
           windows_msix="$(find windows -type f -name '*.msix' -print -quit)"
           windows_info="$(find windows -type f -name 'msix-build-info.json' -print -quit)"
-          test -n "$arm_dmg" -a -n "$intel_dmg" -a -n "$windows_exe" -a -n "$windows_msix" -a -n "$windows_info"
+          extension_zip="$(find extension -type f -name 'preelock-focus-extension-v*-chrome-web-store.zip' -print -quit)"
+          test -n "$arm_dmg" -a -n "$intel_dmg" -a -n "$windows_exe" -a -n "$windows_msix" -a -n "$windows_info" -a -n "$extension_zip"
           cp "$arm_dmg" "Preelock-macOS-Apple-Silicon.dmg"
           cp "$intel_dmg" "Preelock-macOS-Intel.dmg"
           cp "$windows_exe" "Preelock-Windows-Setup.exe"
           cp "$windows_msix" "Preelock-Windows-MSIX.msix"
           cp "$windows_info" "msix-build-info.json"
+          cp "$extension_zip" "preelock-focus-extension-v${VERSION}-chrome-web-store.zip"
           test -f "Preelock-macOS-Apple-Silicon.dmg"
           test -f "Preelock-macOS-Intel.dmg"
           test -f "Preelock-Windows-Setup.exe"
           test -f "Preelock-Windows-MSIX.msix"
-          sha256sum *.dmg *.exe *.msix > SHA256SUMS.txt
+          test -f "preelock-focus-extension-v${VERSION}-chrome-web-store.zip"
+          sha256sum *.dmg *.exe *.msix *.zip > SHA256SUMS.txt
           cp ../docs/RELEASE_NOTES.md RELEASE_NOTES.md
           {
             printf '\n## Installation\n\n'
@@ -207,6 +220,7 @@ jobs:
             "Preelock-macOS-Intel.dmg"
             "Preelock-Windows-Setup.exe"
             "Preelock-Windows-MSIX.msix"
+            "preelock-focus-extension-v${VERSION}-chrome-web-store.zip"
             SHA256SUMS.txt
             msix-build-info.json
           )
@@ -220,7 +234,7 @@ jobs:
               "${assets[@]}"
           fi
           mkdir downloaded
-          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe' --pattern '*.msix'
+          gh release download "v$VERSION" --dir downloaded --pattern '*.dmg' --pattern '*.exe' --pattern '*.msix' --pattern '*.zip'
           cp SHA256SUMS.txt downloaded/
           (cd downloaded && sha256sum --check SHA256SUMS.txt)
           gh release edit "v$VERSION" --draft=false --prerelease

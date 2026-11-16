@@ -9,6 +9,7 @@ const versions = [
   read('package-lock.json').version,
   read('package-lock.json').packages[''].version,
   read('src-tauri/tauri.conf.json').version,
+  read('browser-extension/manifest.json').version,
   cargo.match(/^version = "([^"]+)"/m)?.[1],
   lock.match(/name = "preelock"\nversion = "([^"]+)"/)?.[1],
 ];

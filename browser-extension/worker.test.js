@@ -1158,3 +1158,76 @@ it('redirects adult websites in the same tab to existing blocked page without cl
   await send({ type: 'sync' });
   expect(chrome.tabs.update).not.toHaveBeenCalled();
 });
+
+it('redirects only the blocked website tab (Instagram) without closing tabs or affecting other tabs', async () => {
+  local.token = 'a'.repeat(64);
+  local.client = 'test-client';
+  const endsAt = Date.now() + 120000;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response({
+        token: 'a'.repeat(64),
+        client: 'test-client',
+        mode: 'blocklist',
+        expires_at: Date.now() + 60000,
+        allowlist: false,
+        rules: [],
+        exceptions: [],
+        channels: [],
+        search_keywords: [],
+        extra_blocked: ['instagram.com'],
+        rule_causes: [
+          {
+            rule: 'instagram.com',
+            cause: {
+              kind: 'timed_lock',
+              title: 'Instagram',
+              ends_at_ms: endsAt,
+            },
+          },
+        ],
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+
+  chrome.tabs.remove = vi.fn();
+  chrome.tabs.update.mockClear();
+
+  // Multiple tabs open:
+  // Tab 1: Normal work tab (github.com)
+  // Tab 2: Media playback tab (youtube.com/watch?v=123)
+  // Tab 3: Attempting navigation to Instagram (instagram.com)
+  // Tab 4: Another normal website (wikipedia.org)
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+
+  onUpdated(1, { url: 'https://github.com/my-project' }, { id: 1 });
+  onUpdated(2, { url: 'https://www.youtube.com/watch?v=123' }, { id: 2 });
+  onUpdated(3, { url: 'https://www.instagram.com/' }, { id: 3 });
+  onUpdated(4, { url: 'https://en.wikipedia.org/wiki/Main_Page' }, { id: 4 });
+
+  await send({ type: 'sync' });
+
+  // Only Tab 3 is redirected
+  expect(chrome.tabs.update).toHaveBeenCalledTimes(1);
+  expect(chrome.tabs.update).toHaveBeenCalledWith(3, {
+    url: `chrome-extension://test-extension/blocked.html?h=www.instagram.com&k=timed_lock&t=Instagram&e=${endsAt}`,
+  });
+
+  // Tabs 1, 2, and 4 are NOT touched
+  const updatedIds = chrome.tabs.update.mock.calls.map(([id]) => id);
+  expect(updatedIds).not.toContain(1);
+  expect(updatedIds).not.toContain(2);
+  expect(updatedIds).not.toContain(4);
+
+  // Tabs are NEVER closed
+  expect(chrome.tabs.remove).not.toHaveBeenCalled();
+
+  // Typing or uncommitted address bar text without a navigation URL change does NOT trigger tab redirection
+  chrome.tabs.update.mockClear();
+  onUpdated(5, {}); // no url change (e.g. typing or autocomplete query without navigation)
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+});
