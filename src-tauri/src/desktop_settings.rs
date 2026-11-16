@@ -158,6 +158,12 @@ fn stable_notification_id(kind: &str, title: &str, body: &str) -> String {
     format!("preelock-{hash:016x}")
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub use other::*;
+
+#[cfg(target_os = "windows")]
+pub use crate::platform::settings_windows::*;
+
 #[cfg(test)]
 mod tests {
     use super::stable_notification_id;
@@ -181,9 +187,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub use other::*;
-
-#[cfg(target_os = "windows")]
-pub use crate::platform::settings_windows::*;
