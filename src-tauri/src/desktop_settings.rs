@@ -137,6 +137,10 @@ mod other {
 /// a repeated reminder replaces the previous request rather than stacking.
 /// FNV-1a, 64-bit — a stable hash across runs and processes (unlike
 /// `DefaultHasher`, whose seed is not guaranteed).
+/// Only the macOS module posts through it; Windows deliveries reuse the text
+/// as-is (WinRT toast activation owns the click), so this stays test-covered
+/// on those targets without being called in a production build.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn stable_notification_id(kind: &str, title: &str, body: &str) -> String {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
