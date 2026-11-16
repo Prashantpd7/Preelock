@@ -51,17 +51,34 @@ describe('blocked.js', () => {
     );
     expect(doc.getElementById('reason').hidden).toBe(false);
   });
-  it('shows clear Adult Website and Distracting Website blocks for local Website Controls', () => {
+  it('shows the Stay with your task blocked page with adult message for Adult Website blocks', () => {
     const adultDoc = render('h=www.pornhub.com&k=website_adult');
     expect(adultDoc.title).toBe('Adult Website blocked \u00b7 Preelock');
     expect(adultDoc.getElementById('title').textContent).toBe(
-      'Adult Website blocked',
+      'Stay with your task',
     );
     expect(adultDoc.getElementById('reason').textContent).toBe(
-      'Category: Adult Website',
+      'Adult websites are blocked by Preelock.',
     );
     expect(adultDoc.getElementById('reason').hidden).toBe(false);
-    expect(adultDoc.getElementById('hint').hidden).toBe(true);
+    expect(adultDoc.getElementById('hint').hidden).toBe(false);
+    expect(adultDoc.getElementById('message').textContent).toBe(
+      'This website is blocked by Preelock.',
+    );
+
+    const sessionAdultDoc = render('k=adult');
+    expect(sessionAdultDoc.title).toBe('Adult Website blocked \u00b7 Preelock');
+    expect(sessionAdultDoc.getElementById('title').textContent).toBe(
+      'Stay with your task',
+    );
+    expect(sessionAdultDoc.getElementById('reason').textContent).toBe(
+      'Adult websites are blocked by Preelock.',
+    );
+    expect(sessionAdultDoc.getElementById('reason').hidden).toBe(false);
+    expect(sessionAdultDoc.getElementById('hint').hidden).toBe(false);
+    expect(sessionAdultDoc.getElementById('message').textContent).toBe(
+      'This website is blocked during your focus session.',
+    );
 
     const distDoc = render('h=www.instagram.com&k=website_distracting');
     expect(distDoc.title).toBe('Distracting Website blocked \u00b7 Preelock');

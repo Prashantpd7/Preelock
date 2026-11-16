@@ -30,17 +30,19 @@
     return;
   }
 
-  if (kind === 'website_adult') {
+  if (kind === 'website_adult' || kind === 'adult') {
     document.title = 'Adult Website blocked \u00b7 Preelock';
-    if (titleEl) titleEl.textContent = 'Adult Website blocked';
+    if (titleEl) titleEl.textContent = 'Stay with your task';
     if (el) {
-      el.textContent = 'Category: Adult Website';
+      el.textContent = 'Adult websites are blocked by Preelock.';
       el.hidden = false;
     }
     if (messageEl)
       messageEl.textContent =
-        'Access to known adult websites is blocked while browsing by Preelock Website Controls.';
-    if (hintEl) hintEl.hidden = true;
+        kind === 'adult'
+          ? 'This website is blocked during your focus session.'
+          : 'This website is blocked by Preelock.';
+    if (hintEl) hintEl.hidden = false;
     return;
   }
 
@@ -82,7 +84,8 @@
     daily_limit: () =>
       `You've reached your daily limit${quoted(title)} \u2014 it opens again at midnight.`,
     allowance: () => `Your${quoted(title)} time budget is used up.`,
-    adult: () => `Adult content is blocked during your focus session.`,
+    adult: () => `Adult websites are blocked by Preelock.`,
+    website_adult: () => `Adult websites are blocked by Preelock.`,
     fail_closed: () =>
       `This website is blocked until Preelock connects to your browser.`,
     unknown: () => `This website is blocked by Preelock.`,

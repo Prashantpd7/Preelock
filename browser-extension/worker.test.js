@@ -1097,3 +1097,64 @@ it('synchronizes adult_block_enabled from desktop bridge sync response into dyna
     true,
   );
 });
+
+it('redirects adult websites in the same tab to existing blocked page without closing tabs or touching other tabs', async () => {
+  local.token = 'a'.repeat(64);
+  local.client = 'test-client';
+  local.websiteControls = {
+    blockAdultWebsites: true,
+    blockDistractingWebsites: false,
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response(null, 200, {
+        adult_block_enabled: true,
+      }),
+    ),
+  );
+  await import('./worker.js');
+  await send({ type: 'sync' });
+
+  chrome.tabs.remove = vi.fn();
+  chrome.tabs.update.mockClear();
+
+  // Multiple tabs open:
+  // Tab 1: Normal work tab (e.g., github.com)
+  // Tab 2: Video playing tab (e.g., youtube.com/watch?v=123)
+  // Tab 3: Attempting navigation to adult domain (e.g., pornhub.com)
+  const onUpdated = chrome.tabs.onUpdated.addListener.mock.calls[0][0];
+
+  onUpdated(1, { url: 'https://github.com/my-project' });
+  onUpdated(2, { url: 'https://www.youtube.com/watch?v=123' });
+  onUpdated(3, { url: 'https://www.pornhub.com/' });
+
+  await send({ type: 'sync' });
+
+  expect(chrome.tabs.update).toHaveBeenCalledTimes(1);
+  expect(chrome.tabs.update).toHaveBeenCalledWith(3, {
+    url: 'chrome-extension://test-extension/blocked.html?h=www.pornhub.com&k=website_adult',
+  });
+
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(1);
+  expect(chrome.tabs.update.mock.calls.map(([id]) => id)).not.toContain(2);
+  expect(chrome.tabs.remove).not.toHaveBeenCalled();
+
+  // Disabling adult blocking stops adult-category redirection
+  chrome.tabs.update.mockClear();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      response(null, 200, {
+        adult_block_enabled: false,
+      }),
+    ),
+  );
+  await send({ type: 'sync' });
+  expect(local.websiteControls.blockAdultWebsites).toBe(false);
+
+  // Navigating to adult site now does NOT redirect
+  onUpdated(4, { url: 'https://www.pornhub.com/' });
+  await send({ type: 'sync' });
+  expect(chrome.tabs.update).not.toHaveBeenCalled();
+});
