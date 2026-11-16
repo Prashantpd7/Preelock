@@ -332,6 +332,16 @@ fn notify_headless_toast(title: &str, body: &str) -> Result<(), String> {
     notifier.Show(&toast).map_err(|e| e.message())
 }
 
+/// Windows notifications are delivered by the toast channel; there is no
+/// in-process centre delegate to install (WinRT activation owns clicks).
+pub fn install_notification_delegate() {}
+
+/// The kind travels with the text on Windows too; the toast activation path does
+/// not need it, so this is the same delivery as `notify`.
+pub fn notify_kind(_kind: &str, title: &str, body: &str) {
+    notify(title, body);
+}
+
 pub fn notify(title: &str, body: &str) {
     if cfg!(test) {
         return;

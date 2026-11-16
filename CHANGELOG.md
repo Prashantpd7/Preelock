@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **macOS notification click after Command+Q showed "The application 'Preelock' is not open anymore" and left a ghost Dock icon.** The `--background` engine initialized `NSApplication` and set a Prohibited activation policy, which registered a second `com.preelock.desktop` application instance with LaunchServices (`lsappinfo`: `BackgroundOnly`) beside the GUI. Once the GUI quit, macOS resolved "Preelock" to that windowless daemon: notification activation failed, `open -a Preelock.app` promoted the daemon to a frontmost app with no window, and the only way out was Force Quit. Headless modes no longer touch AppKit at all, so the bundle has exactly one application identity — the GUI.
+- Every GUI activation request (notification click, second instance, tray timer, supervisor relaunch, new `preelock --open-gui`) now goes through one coordinator that activates a _verified_ live GUI or launches the bundle through LaunchServices. A `gui.lock` PID is no longer trusted on its own: bundle identity, bundled executable and activation policy are validated first.
+- Notification responses are handled with a correlation id and a non-sensitive kind (`reminder`, `warning`, `general`) that survives a cold launch through `notification-click.json`, consumed exactly once. Notification identifiers are stable, so one reminder replaces itself instead of stacking. The response completion handler always runs.
+- A GUI launch loser now exits without creating an `NSApplication`, so a duplicate launch request can no longer leave a ghost Dock icon.
+
+### Added
+
+- Structured lifecycle diagnostics (`src/lifecycle_log.rs`) written to `~/Library/Logs/Preelock/lifecycle.log` and stderr, plus `scripts/collect-macos-diagnostics.sh` for collecting them with LaunchServices, process and signature state.
+- `scripts/acceptance-macos-notification.py`: production acceptance harness for the installed signed app, including the invariant that LaunchServices has no entry for the bundle while the GUI is closed.
+- `preelock --open-gui`: activate or launch the GUI through the real coordinator and report the outcome.
+
+---
+
 ## [0.5.5] - 2026-11-14
 
 ### Added

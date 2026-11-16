@@ -48,17 +48,41 @@ pub struct WebSample {
 pub use macos::{
     activate_app, activate_existing_instance, app_icon, applications, approve_quit,
     camera_permission, camera_start, camera_status, camera_stop, deactivate_and_exit, hide,
-    hide_from_dock, install_background_apple_events, installed_browsers, pump_runloop,
+    hide_from_dock, install_notification_delegate, installed_browsers, pump_runloop,
     redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
-    request_camera, sample, set_activation_policy_prohibited, web_sample,
+    request_camera, request_gui_activation, sample, web_sample,
 };
 #[cfg(target_os = "windows")]
 pub use windows::{
     activate_app, activate_existing_instance, app_icon, applications, camera_permission,
     camera_start, camera_status, camera_stop, deactivate_and_exit, hide, installed_browsers,
     redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
-    request_camera, sample, web_sample,
+    request_camera, request_gui_activation, sample, web_sample,
 };
+
+/// Outcome of one GUI activation request, from any process mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuiActivation {
+    /// This process is the GUI (the click belongs to the running app).
+    SelfProcess,
+    /// A verified live GUI was brought to the front.
+    Activated,
+    /// No GUI existed; a fresh one was launched.
+    Launched,
+    /// Nothing could be activated or launched.
+    Failed,
+}
+
+impl GuiActivation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SelfProcess => "self",
+            Self::Activated => "activated",
+            Self::Launched => "launched",
+            Self::Failed => "failed",
+        }
+    }
+}
 
 pub mod permissions;
 pub use permissions::{PermissionManager, PermissionStatus};
@@ -184,19 +208,25 @@ pub fn enable_background_startup() -> Result<(), String> {
 /// provides this via `macos::hide_from_dock`; on Windows and Linux
 /// a windowless process shows no taskbar entry, so this is a no-op.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn activate_existing_instance() {}
+pub fn activate_existing_instance() -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn request_gui_activation(_source: &str, _correlation: &str) -> GuiActivation {
+    GuiActivation::Failed
+}
 
 #[cfg(not(target_os = "macos"))]
 pub fn hide_from_dock() {}
 
 #[cfg(not(target_os = "macos"))]
-pub fn set_activation_policy_prohibited() {}
-
-#[cfg(not(target_os = "macos"))]
 pub fn approve_quit() {}
 
+/// Non-macOS platforms have nothing to install: their notification click path
+/// lives in the Tauri plugin / WinRT toast activation, not in a centre delegate.
 #[cfg(not(target_os = "macos"))]
-pub fn install_background_apple_events(_cb: extern "C" fn()) {}
+pub fn install_notification_delegate() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn pump_runloop(_seconds: f64) {}

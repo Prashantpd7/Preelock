@@ -12,11 +12,11 @@ unsafe extern "C" {
     fn preelock_camera_status() -> *mut c_char;
     fn preelock_app_icon(identity: *const c_char) -> *mut c_char;
     fn preelock_hide_from_dock();
-    fn preelock_set_activation_policy_prohibited();
-    fn preelock_install_background_apple_events(cb: extern "C" fn());
     fn preelock_pump_runloop(seconds: f64);
     fn preelock_activate_app();
-    fn preelock_activate_existing_gui();
+    fn preelock_activate_existing_gui() -> i32;
+    fn preelock_request_gui_activation(source: *const c_char, correlation: *const c_char) -> i32;
+    fn preelock_install_notification_delegate();
     fn preelock_approve_quit();
     fn preelock_web_sample() -> *mut c_char;
     fn preelock_web_permission() -> i32;
@@ -82,13 +82,11 @@ pub fn app_icon(identity: &str) -> Option<String> {
 pub fn hide_from_dock() {
     unsafe { preelock_hide_from_dock() };
 }
-/// Set activation policy to prohibited for background engine and attention agent.
-pub fn set_activation_policy_prohibited() {
-    unsafe { preelock_set_activation_policy_prohibited() };
-}
-/// Install AppleEvent handlers so background engine responds to macOS LaunchServices open events.
-pub fn install_background_apple_events(cb: extern "C" fn()) {
-    unsafe { preelock_install_background_apple_events(cb) };
+/// Install the notification-centre delegate in this process. Safe to call in
+/// every mode: it is what lets a click be handled (and the GUI activated or
+/// launched) even when the click arrives in the background engine.
+pub fn install_notification_delegate() {
+    unsafe { preelock_install_notification_delegate() }
 }
 /// Pump the macOS CFRunLoop on the main thread for the given duration.
 pub fn pump_runloop(seconds: f64) {
@@ -101,12 +99,28 @@ pub fn activate_app() {
     }
 }
 
-pub fn activate_existing_instance() {
-    unsafe { preelock_activate_existing_gui() };
+/// Activate the running GUI, if one exists. Returns whether it did.
+pub fn activate_existing_instance() -> bool {
+    unsafe { preelock_activate_existing_gui() == 1 }
 }
 
+/// The one GUI entry point on macOS (see `native/macos.m`): activate a verified
+/// live GUI, otherwise launch the bundle through LaunchServices.
+pub fn request_gui_activation(source: &str, correlation: &str) -> super::GuiActivation {
+    let source = std::ffi::CString::new(source).unwrap_or_default();
+    let correlation = std::ffi::CString::new(correlation).unwrap_or_default();
+    match unsafe { preelock_request_gui_activation(source.as_ptr(), correlation.as_ptr()) } {
+        3 => super::GuiActivation::SelfProcess,
+        1 => super::GuiActivation::Activated,
+        2 => super::GuiActivation::Launched,
+        _ => super::GuiActivation::Failed,
+    }
+}
+
+/// A second instance exits WITHOUT touching AppKit: creating an NSApplication
+/// (even with a Prohibited policy) is what registered a competing
+/// com.preelock.desktop identity and produced the ghost Dock icon.
 pub fn deactivate_and_exit() -> ! {
-    unsafe { preelock_set_activation_policy_prohibited() };
     std::process::exit(0);
 }
 /// Approve quit request so AppKit termination is not cancelled.

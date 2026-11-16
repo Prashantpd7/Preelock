@@ -61,8 +61,23 @@ flowchart TD
    - Protected by `engine.lock` (flock).
 2. **Thin Desktop GUI (`preelock`):**
    - Renders the window, system tray menu, and modals.
-   - Protected by `gui.lock` (single GUI instance). If launched when a GUI is already running, brings the existing window to focus.
+   - Protected by `gui.lock` (single GUI instance, acquired before any AppKit initialization). If launched when a GUI is already running, brings the existing window to focus and exits without creating an `NSApplication`.
    - Can be closed (`Cmd+W`, `Cmd+Q`, or minimized to tray) at any time without terminating or interrupting background focus sessions or blocking enforcement.
+
+### 2.1a macOS Application Identity (single LaunchServices entry)
+
+LaunchServices identifies an application by bundle identifier, not by process. The GUI and the headless modes (`--background`, `--attention`, and the brief `--tray` handover) all execute `Preelock.app/Contents/MacOS/preelock`, so **only the GUI may create an `NSApplication`**. Initializing AppKit in a headless mode registers a second `com.preelock.desktop` instance (`lsappinfo`: `BackgroundOnly`) beside the GUI, and macOS then resolves "Preelock" to that daemon: activation, Apple Events and notification clicks are delivered to a windowless process with no run loop. That produced the reported failure (an "application is not open anymore" alert, then a windowless Preelock icon that stole focus and had to be Force Quit).
+
+Rules that keep one identity:
+
+- Headless modes never call `[NSApplication sharedApplication]` and never set an activation policy. A process that never connects to the window server is invisible to LaunchServices.
+- Every GUI activation request — notification click, second instance, tray timer, supervisor relaunch, `preelock --open-gui` — goes through one coordinator (`preelock_request_gui_activation` in `native/macos.m`): activate a **verified** live GUI (bundle id, bundled executable, Regular policy, alive) or launch the bundle through `NSWorkspace`. LaunchServices' `open -a` on the bundle is never used to activate; while a headless instance exists it resolves to that instance and launches nothing.
+- `gui.lock` is a hard singleton acquired before AppKit exists: a second GUI activates the winner and exits without touching AppKit, so requesting a new instance cannot create a duplicate.
+- Notification clicks preserve a correlation id and a non-sensitive `kind` (`reminder`, `warning`, `general`) in `notification-click.json`, consumed exactly once by the GUI. The response callback is always completed.
+
+### 2.1b Lifecycle Diagnostics
+
+Every process start, singleton decision, activation attempt, window presentation, notification click and shutdown writes one `key=value` line (`src/lifecycle_log.rs`) to `~/Library/Logs/Preelock/lifecycle.log` and to stderr. `bash scripts/collect-macos-diagnostics.sh` bundles those logs with the LaunchServices, process, LaunchAgent and signature state needed to diagnose activation problems. Notification text is never logged.
 
 ### 2.2 Force-Quit Recovery & Re-Launch Supervisor
 

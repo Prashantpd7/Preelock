@@ -196,8 +196,10 @@ fn handle(mut stream: TcpStream, expected: &str, capture: &mut Capture) {
 }
 
 pub fn run() -> i32 {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    crate::platform::set_activation_policy_prohibited();
+    crate::lifecycle_log::init();
+    crate::lifecycle_log::log_process_start("attention");
+    // No AppKit/NSApplication call: a headless mode must not register a second
+    // application identity for this bundle (see native/macos.m).
     let dir = match data_dir() {
         Ok(dir) => dir,
         Err(_) => return 1,

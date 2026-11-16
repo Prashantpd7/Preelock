@@ -584,7 +584,11 @@ pub fn request_web_permission() {}
 pub fn activate_app() {
     activate_existing_instance();
 }
-pub fn activate_existing_instance() {
+/// Bring the GUI window forward. Returns whether a window was found — Windows
+/// has no bundle-level application identity that a headless process could
+/// hijack, so activation is a plain window lookup plus a PID fallback.
+pub fn activate_existing_instance() -> bool {
+    let mut activated = false;
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             AllowSetForegroundWindow, BringWindowToTop, EnumWindows, FindWindowW,
@@ -597,7 +601,7 @@ pub fn activate_existing_instance() {
             ShowWindow(hwnd, SW_RESTORE);
             BringWindowToTop(hwnd);
             SetForegroundWindow(hwnd);
-            return;
+            return true;
         }
 
         // Fallback: search for top-level window by GUI lock PID
@@ -628,10 +632,24 @@ pub fn activate_existing_instance() {
                         ShowWindow(ctx.found_hwnd, SW_RESTORE);
                         BringWindowToTop(ctx.found_hwnd);
                         SetForegroundWindow(ctx.found_hwnd);
+                        activated = true;
                     }
                 }
             }
         }
+    }
+    activated
+}
+
+/// Windows equivalent of the macOS launch coordinator. The existing single
+/// instance architecture is preserved: activate the running GUI when there is
+/// one, otherwise report honestly that nothing was activated (the background
+/// supervisor / app-restart registration owns the cold-launch path).
+pub fn request_gui_activation(_source: &str, _correlation: &str) -> super::GuiActivation {
+    if activate_existing_instance() {
+        super::GuiActivation::Activated
+    } else {
+        super::GuiActivation::Failed
     }
 }
 

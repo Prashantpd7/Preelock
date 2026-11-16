@@ -78,7 +78,7 @@ const RESULT_PREFIX: &str = "preelock-cli-result-";
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const HELP: &str = "Preelock — command-line control\n\nUsage: preelock [command]\n\nCommands:\n  --help                  Show this help.\n  --version               Show the Preelock version.\n  --status                Show the live session state (read-only).\n  --list-blocks           Show schedules, one-shots, saved setups and\n                          the live session summary (read-only).\n  --start <id>            Start a Ready session, resume a Paused\n                          session, or start a fresh session from a\n                          saved setup or schedule with this id.\n                          Requires the app to be running.\n  --stop                  End the live session. Requires the app to\n                          be running. A locked or frozen session is\n                          rejected with its reason, never bypassed.\n\nRead-only commands work whether or not the app is running. Control\ncommands refuse with \"Preelock isn't running — start it first\" when\nthe app is not running, and never leave a pending request behind.\nWith no command, Preelock launches its normal window instead.";
+pub const HELP: &str = "Preelock — command-line control\n\nUsage: preelock [command]\n\nCommands:\n  --help                  Show this help.\n  --version               Show the Preelock version.\n  --status                Show the live session state (read-only).\n  --list-blocks           Show schedules, one-shots, saved setups and\n                          the live session summary (read-only).\n  --start <id>            Start a Ready session, resume a Paused\n                          session, or start a fresh session from a\n                          saved setup or schedule with this id.\n                          Requires the app to be running.\n  --stop                  End the live session. Requires the app to\n                          be running. A locked or frozen session is\n                          rejected with its reason, never bypassed.\n  --open-gui              Activate the running Preelock window, or\n                          launch it through the same coordinator a\n                          notification click uses, and report what\n                          happened.\n\nRead-only commands work whether or not the app is running. Control\ncommands refuse with \"Preelock isn't running — start it first\" when\nthe app is not running, and never leave a pending request behind.\nWith no command, Preelock launches its normal window instead.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -90,6 +90,7 @@ pub enum Command {
     Stop,
     CheckUninstall,
     TestNotify(String, String),
+    OpenGui,
 }
 
 /// The flags that switch the binary into CLI mode. Any other first
@@ -110,6 +111,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
                 | "--stop"
                 | "--check-uninstall"
                 | "--test-notify"
+                | "--open-gui"
         )
     )
 }
@@ -126,6 +128,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
         },
         Some("--stop") => Ok(Command::Stop),
         Some("--check-uninstall") => Ok(Command::CheckUninstall),
+        Some("--open-gui") => Ok(Command::OpenGui),
         Some("--test-notify") => {
             let title = args
                 .get(1)
@@ -620,6 +623,20 @@ pub fn run(args: &[String]) -> i32 {
             crate::desktop_settings::notify(&title, &body);
             println!("Test notification dispatched: {title} - {body}");
             0
+        }
+        Command::OpenGui => {
+            let correlation = crate::lifecycle_log::new_correlation("cli");
+            let outcome = crate::platform::request_gui_activation("cli", &correlation);
+            log::info!(
+                "lifecycle event=gui_request result={} source=cli correlation={correlation}",
+                outcome.as_str()
+            );
+            println!("Preelock GUI request: {}", outcome.as_str());
+            if outcome == crate::platform::GuiActivation::Failed {
+                1
+            } else {
+                0
+            }
         }
         Command::Status | Command::ListBlocks => {
             let dir = match app_data_dir() {

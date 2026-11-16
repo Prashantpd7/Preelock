@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 fn main() {
+    // Lifecycle diagnostics for every mode, before dispatch: the trace must
+    // include the launch source and correlation id of the process itself.
+    preelock_lib::lifecycle_log::init();
     // Step 15 CLI: a known CLI flag runs one command and exits
     // without launching the GUI; anything else launches the GUI
     // exactly as before (see `cli::is_cli_invocation` — unknown

@@ -324,6 +324,11 @@ pub(crate) fn scheduled_task_xml(exe: &str) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
+/// Resolve the enclosing `.app` wrapper for a bundled executable. The GUI is
+/// now launched only through the native coordinator (which uses
+/// `NSBundle.mainBundle`), so this remains as the tested definition of what
+/// "inside a bundle" means for the packaging checks.
+#[allow(dead_code)]
 pub(crate) fn app_bundle_root(exe: &Path) -> Option<PathBuf> {
     exe.ancestors().find_map(|ancestor| {
         (ancestor.extension().is_some_and(|e| e == "app")
@@ -939,41 +944,22 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
     };
     let gui = crate::launch::gui_executable(&exe);
 
+    // macOS: the same single coordinator every other launch request uses.
+    // `/usr/bin/open -a` used to be used here; it never launched a GUI while a
+    // headless instance of the bundle existed, because LaunchServices treats
+    // that instance as "the application".
     #[cfg(target_os = "macos")]
     {
-        let bundle = app_bundle_root(&gui).or_else(|| {
-            let default_bundle = PathBuf::from("/Applications/Preelock.app");
-            if default_bundle.exists() {
-                Some(default_bundle)
-            } else {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|h| h.join("Applications").join("Preelock.app"))
-                    .filter(|p| p.exists())
-            }
-        });
-
-        if let Some(bundle) = bundle {
-            match Command::new("/usr/bin/open")
-                .arg("-a")
-                .arg(&bundle)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                Ok(child) => {
-                    *spawned = Some(child);
-                    return;
-                }
-                Err(error) => {
-                    log::warn!(
-                        "Could not relaunch Preelock bundle {}: {error}",
-                        bundle.display()
-                    );
-                }
-            }
+        let correlation = crate::lifecycle_log::new_correlation("supervisor");
+        let outcome = crate::platform::request_gui_activation("supervisor", &correlation);
+        log::info!(
+            "lifecycle event=gui_request result={} source=supervisor correlation={correlation}",
+            outcome.as_str()
+        );
+        if outcome != crate::platform::GuiActivation::Failed {
+            return;
         }
+        log::warn!("Could not relaunch the Preelock GUI through LaunchServices; trying the executable directly.");
     }
 
     // In development debug builds, Tauri loads the UI from the Vite dev server (127.0.0.1:1420).
@@ -1137,18 +1123,17 @@ fn handle_ipc_request(
     }
 }
 
-#[cfg(target_os = "macos")]
-extern "C" fn on_macos_open_app_request() {
-    log::info!("macOS OpenApplication AppleEvent received; ensuring GUI window is displayed");
-    crate::platform::activate_existing_instance();
-}
-
 pub fn run() -> i32 {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    crate::lifecycle_log::init();
+    let correlation = crate::lifecycle_log::log_process_start("background");
     install_shutdown_handler();
-    crate::platform::set_activation_policy_prohibited();
-    #[cfg(target_os = "macos")]
-    crate::platform::install_background_apple_events(on_macos_open_app_request);
+    // Deliberately NO NSApplication / activation-policy call here. A headless
+    // mode that initializes AppKit registers a second com.preelock.desktop
+    // instance with LaunchServices; macOS then sends activation, Apple Events
+    // and notification clicks to this daemon instead of the GUI (the ghost Dock
+    // icon + "application is not open anymore"). See native/macos.m.
+    crate::platform::install_notification_delegate();
+    let _ = correlation;
     #[cfg(target_os = "windows")]
     if let Ok(exe) = std::env::current_exe() {
         if crate::launch::launch_mode(

@@ -20,6 +20,7 @@ mod frozen;
 pub mod ipc;
 pub mod launch;
 mod lifecycle;
+pub mod lifecycle_log;
 mod locks;
 pub mod models;
 mod notifications;
@@ -275,6 +276,7 @@ async fn settings_action(
         .map_err(|e| e.to_string())?
 }
 fn show_window(app: &tauri::AppHandle) {
+    log::info!("lifecycle event=window_show");
     // M6: the window is visible again, so later tray-menu rebuilds
     // use the normal menu (no "Show Preelock" item).
     if let Some(hidden) = app.try_state::<StartHidden>() {
@@ -506,23 +508,31 @@ fn copy_directory(source: &std::path::Path, destination: &std::path::Path) -> st
 }
 
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    lifecycle_log::init();
+    let correlation = lifecycle_log::log_process_start("gui");
     let dir = std::env::var_os("PREELOCK_DATA_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| background::data_dir().unwrap_or_default());
     let _ = std::fs::create_dir_all(&dir);
 
     // Single-instance enforcement BEFORE initializing Tauri / AppKit.
-    // If another GUI instance is already running, activate it and exit without
-    // initializing a second NSApplication / Dock icon or leaving ghost processes.
+    // A loser never initializes NSApplication: doing so (even with a Prohibited
+    // policy) registers a second com.preelock.desktop identity with
+    // LaunchServices, which is what let macOS activate a windowless process
+    // instead of the GUI after a notification click.
     let gui_lock = match GuiLock::try_acquire(&dir) {
         Some(lock) => lock,
         None => {
-            log::info!("Another Preelock GUI instance is already running; activating existing window and exiting.");
-            platform::activate_existing_instance();
+            let activated = platform::activate_existing_instance();
+            log::info!(
+                "lifecycle event=second_instance correlation={correlation} activated={activated}"
+            );
             platform::deactivate_and_exit();
         }
     };
+    // The delegate must exist before the run loop starts so a click that caused
+    // this launch is delivered, not dropped.
+    platform::install_notification_delegate();
     let setup_dir = dir.clone();
 
     let builder = tauri::Builder::default();
@@ -583,6 +593,19 @@ pub fn run() {
                 })?;
             let _ = client.ui_heartbeat();
             let initial_snapshot = client.snapshot().map_err(std::io::Error::other)?;
+            // A click consumes the handoff exactly once. It forces the window
+            // visible even when the launch rules would start hidden.
+            let pending_click = lifecycle_log::take_pending_notification_click(&dir);
+            if let Some(click) = &pending_click {
+                log::info!(
+                    "lifecycle event=notification_open correlation={} request={} action={} kind={} received_at_ms={}",
+                    click.correlation,
+                    click.request_identifier,
+                    click.action_identifier,
+                    click.kind,
+                    click.received_at_ms
+                );
+            }
             app.manage(client);
             app.manage(Mutex::new(settings::Runtime::default()));
             app.manage(ExitApproved::default());
@@ -590,11 +613,12 @@ pub fn run() {
             desktop_settings::install_quit_guard(app.handle()).map_err(std::io::Error::other)?;
             sync_login_for_sessions(app.handle());
             crate::tray::wait_for_release(&dir, crate::tray::gui_takeover_wait());
-            let start_hidden = crate::quit::login_window_action(
-                initial_ping.has_active,
-                crate::settings::login_user_pref_enabled(&dir),
-                initial_ping.recovered_after_os_shutdown,
-            ) == crate::quit::LoginWindowAction::StartHidden;
+            let start_hidden = pending_click.is_none()
+                && crate::quit::login_window_action(
+                    initial_ping.has_active,
+                    crate::settings::login_user_pref_enabled(&dir),
+                    initial_ping.recovered_after_os_shutdown,
+                ) == crate::quit::LoginWindowAction::StartHidden;
             if start_hidden {
                 if let Some(hidden) = app.try_state::<StartHidden>() {
                     hidden.0.store(true, Ordering::Release);
@@ -732,7 +756,10 @@ pub fn run() {
                 desktop_settings::approve_quit();
             }
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => show_window(app),
+            tauri::RunEvent::Reopen { .. } => {
+                log::info!("lifecycle event=reopen_apple_event");
+                show_window(app);
+            }
             _ => {}
         }),
         Err(error) => {

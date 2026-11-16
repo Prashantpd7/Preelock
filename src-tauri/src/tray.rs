@@ -251,32 +251,39 @@ pub fn should_show_gui(desktop_alive: bool, last_spawn_ms: i64, now_ms: i64) -> 
 /// itself be running from the MSIX background copy, whose bare
 /// launch runs the background, not the GUI.
 fn show_gui() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = crate::launch::gui_executable(&exe);
+    // macOS: the one coordinator. A fresh instance is requested only because
+    // this tray process may itself be the bundle's running instance; gui.lock
+    // keeps the GUI single, and this tray exits on the new heartbeat.
     #[cfg(target_os = "macos")]
-    if let Some(bundle) = crate::background::app_bundle_root(&exe) {
-        return Command::new("/usr/bin/open")
-            .arg("-a")
-            .arg(&bundle)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Could not reopen Preelock bundle: {e}"));
-    }
-    let mut cmd = Command::new(&exe);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000 | 0x00000200);
+        let correlation = crate::lifecycle_log::new_correlation("tray");
+        let outcome = crate::platform::request_gui_activation("tray", &correlation);
+        log::info!(
+            "lifecycle event=gui_request result={} source=tray correlation={correlation}",
+            outcome.as_str()
+        );
+        match outcome {
+            crate::platform::GuiActivation::Failed => Err("Could not reopen Preelock.".to_string()),
+            _ => Ok(()),
+        }
     }
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not reopen Preelock: {e}"))
+    #[cfg(not(target_os = "macos"))]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = crate::launch::gui_executable(&exe);
+        let mut cmd = Command::new(&exe);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000 | 0x00000200);
+        }
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not reopen Preelock: {e}"))
+    }
 }
 
 /// The `--tray` process: one menu-bar / system-tray icon, no windows,
@@ -284,7 +291,9 @@ fn show_gui() -> Result<(), String> {
 /// A second tray process exits 0 on the lock; a process that cannot
 /// find the data dir exits 1.
 pub fn run() -> i32 {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    crate::lifecycle_log::init();
+    crate::lifecycle_log::log_process_start("tray");
+    crate::platform::install_notification_delegate();
     let Ok(dir) = background::data_dir() else {
         return 1;
     };

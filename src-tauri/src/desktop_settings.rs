@@ -9,7 +9,12 @@ mod mac {
         fn preelock_login(enabled: i32) -> *mut c_char;
         fn preelock_notification_permission() -> i32;
         fn preelock_request_notification_authorization();
-        fn preelock_notify(title: *const c_char, body: *const c_char);
+        fn preelock_notify_ctx(
+            identifier: *const c_char,
+            kind: *const c_char,
+            title: *const c_char,
+            body: *const c_char,
+        );
         fn preelock_sound(volume: f32);
         fn preelock_file_panel(save: i32, filename: *const c_char) -> *mut c_char;
         fn preelock_free(p: *mut c_char);
@@ -60,15 +65,28 @@ mod mac {
     pub fn request_authorization() {
         unsafe { preelock_request_notification_authorization() };
     }
-    /// macOS notifications go through the native `preelock_notify`
+    /// macOS notifications go through the native `preelock_notify_ctx`
     /// call, which needs no app handle: they can be shown from any
     /// process, including the background engine.
     pub fn can_notify() -> bool {
         true
     }
     pub fn notify(title: &str, body: &str) {
+        notify_kind("general", title, body);
+    }
+    /// Post a notification with a non-sensitive kind (`reminder`, `warning`,
+    /// `general`). The kind and a stable identifier travel with the request so a
+    /// click that cold-launches the GUI can be understood without logging the
+    /// notification text, and so one reminder replaces itself instead of
+    /// stacking duplicate banners.
+    pub fn notify_kind(kind: &str, title: &str, body: &str) {
+        let identifier = super::stable_notification_id(kind, title, body);
+        let identifier = CString::new(identifier).unwrap_or_default();
+        let kind = CString::new(kind).unwrap_or_default();
         if let (Ok(t), Ok(b)) = (CString::new(title), CString::new(body)) {
-            unsafe { preelock_notify(t.as_ptr(), b.as_ptr()) };
+            unsafe {
+                preelock_notify_ctx(identifier.as_ptr(), kind.as_ptr(), t.as_ptr(), b.as_ptr())
+            };
         }
     }
     pub fn sound(volume: u32) {
@@ -109,11 +127,57 @@ mod other {
         true
     }
     pub fn notify(_: &str, _: &str) {}
+    pub fn notify_kind(_: &str, _: &str, _: &str) {}
     pub fn sound(_: u32) {}
     pub fn file(_: bool, _: &str) -> Result<String, String> {
         Err("File tools are available on Mac only.".into())
     }
 }
+/// Stable notification identifier: the same kind and text map to the same id, so
+/// a repeated reminder replaces the previous request rather than stacking.
+/// FNV-1a, 64-bit — a stable hash across runs and processes (unlike
+/// `DefaultHasher`, whose seed is not guaranteed).
+fn stable_notification_id(kind: &str, title: &str, body: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in kind
+        .bytes()
+        .chain(std::iter::once(0x1f_u8))
+        .chain(title.bytes())
+        .chain(std::iter::once(0x1f_u8))
+        .chain(body.bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("preelock-{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stable_notification_id;
+
+    #[test]
+    fn notification_identifier_is_stable_and_kind_specific() {
+        let first = stable_notification_id("reminder", "Time to focus", "Choose a task.");
+        assert_eq!(
+            first,
+            stable_notification_id("reminder", "Time to focus", "Choose a task.")
+        );
+        assert!(first.starts_with("preelock-"));
+        // Kind is part of the identity: a warning never overwrites a reminder.
+        assert_ne!(
+            first,
+            stable_notification_id("warning", "Time to focus", "Choose a task.")
+        );
+        assert_ne!(
+            first,
+            stable_notification_id("reminder", "Time to focus", "Choose a task!")
+        );
+    }
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use other::*;
 

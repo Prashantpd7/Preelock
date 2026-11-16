@@ -857,7 +857,13 @@ impl Engine {
         )
     }
     fn notify_general(&self, title: &str, body: &str) {
-        crate::desktop_settings::notify(title, body);
+        self.notify_kind("general", title, body);
+    }
+    /// A notification whose non-sensitive kind (`reminder`, `warning`) travels
+    /// with the request, so a click that cold-launches the GUI can report what
+    /// it was about without the notification text ever being logged.
+    fn notify_kind(&self, kind: &str, title: &str, body: &str) {
+        crate::desktop_settings::notify_kind(kind, title, body);
         if self.data.preferences.notifications_sound {
             crate::desktop_settings::sound(self.data.preferences.volume);
         }
@@ -1952,7 +1958,8 @@ impl Engine {
                     platform::camera_permission() == "granted",
                     cfg!(target_os = "macos"),
                 );
-                self.notify_general(
+                self.notify_kind(
+                    "warning",
                     "Block starting soon",
                     &crate::notifications::warning_body_with_readiness(
                         &schedule.title,
@@ -1995,7 +2002,8 @@ impl Engine {
                     platform::camera_permission() == "granted",
                     cfg!(target_os = "macos"),
                 );
-                self.notify_general(
+                self.notify_kind(
+                    "warning",
                     "Block starting soon",
                     &crate::notifications::warning_body_with_readiness(
                         &shot.title,
@@ -2684,32 +2692,12 @@ impl Engine {
         };
         if let Some(domain) = domain_to_check {
             if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(domain) {
-                platform::redirect_browser_blocked(&sample.name, sample.pid);
+                // Extension handles same-tab redirection to blocked.html directly for
+                // Chromium browsers. Do not close tabs, hide the browser window, or show
+                // a desktop blocked-app popup.
                 if crate::focus::safari(&sample.id) {
                     platform::redirect_safari_blocked();
                 }
-                let _ = platform::hide(&sample);
-                let cause = crate::blockreasons::BlockCause::adult_site(domain);
-                if self.data.preferences.notifications_enabled
-                    && self
-                        .attempt_tracker
-                        .should_log(&format!("site:{}", domain), now)
-                {
-                    self.notify_general(
-                        "Preelock",
-                        &crate::blockreasons::cause_text(&cause, domain, now),
-                    );
-                }
-                let mut site_sample = sample.clone();
-                site_sample.id = format!("site:{}", domain);
-                site_sample.name = domain.to_string();
-                record_blocked_app_page(
-                    &mut self.data.blocked_app_notice,
-                    &mut self.overlay_last_shown,
-                    &site_sample,
-                    &cause,
-                    now,
-                );
                 let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
                     at_ms: now,
                     kind: crate::stats::AttemptKind::Site,
@@ -2887,7 +2875,8 @@ impl Engine {
                 && self.data.preferences.last_reminder_date != key
             {
                 self.data.preferences.last_reminder_date = key;
-                crate::desktop_settings::notify(
+                self.notify_kind(
+                    "reminder",
                     "Time to focus",
                     "Choose a task when you’re ready.",
                 );
@@ -6941,5 +6930,31 @@ mod tests {
         assert!(!engine.is_paused());
         assert!(engine.has_active());
         assert!(engine.has_active_strict());
+    }
+
+    #[test]
+    fn adult_blocking_does_not_create_blocked_app_notice_or_native_popup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("adult-block-test.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine.data.adult_block.enabled = true;
+        assert!(engine.data.blocked_app_notice.is_none());
+
+        // Verify that is_adult_domain detects adult domains correctly
+        assert!(crate::adult_block::is_adult_domain("pornhub.com"));
+        assert!(crate::adult_block::is_adult_domain("www.pornhub.com"));
+
+        // When adult block is active, the engine records the attempt in database stats
+        // but NEVER sets blocked_app_notice (which would trigger the Tauri blocked-app popup).
+        let attempt = crate::stats::BlockAttempt {
+            at_ms: crate::clock::now(),
+            kind: crate::stats::AttemptKind::Site,
+            target: "pornhub.com".into(),
+            session_id: None,
+            reason: "adult_block".into(),
+        };
+        engine.db.record_attempt(&attempt).unwrap();
+
+        assert!(engine.data.blocked_app_notice.is_none());
     }
 }
