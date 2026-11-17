@@ -75,6 +75,8 @@ pub struct AppLock {
     pub target: String,
     pub rule: LockRule,
     pub enabled: bool,
+    #[serde(default)]
+    pub strict: bool,
     pub created_at: i64,
 }
 
@@ -360,6 +362,7 @@ mod tests {
                 target: target.into(),
                 rule,
                 enabled: true,
+                strict: false,
                 created_at: now,
             },
             now,
@@ -425,6 +428,7 @@ mod tests {
                     ends_at_ms: now - 1000,
                 },
                 enabled: true,
+                strict: false,
                 created_at: now - 60_000,
             },
             now - 2000,
@@ -444,6 +448,26 @@ mod tests {
         ];
         assert!(!prune_expired(&mut locks, now));
         assert_eq!(locks.len(), 2);
+    }
+
+    #[test]
+    fn strict_timed_lock_still_prunes_at_expiry() {
+        // Strict only removes the user's early cancel (the cross);
+        // the timer still ends the block on its own. Expiry is
+        // deletion, and the strict flag must not keep a dead lock
+        // enforcing — or listed — past its end.
+        let now = 1_800_000_000_000;
+        let mut strict = timed_lock("com.example.game", now + 60_000, now);
+        strict.strict = true;
+        let buckets: Vec<ScreenTimeBucket> = vec![];
+        assert!(is_enforced(&strict, &buckets, now, now));
+        let mut locks = vec![strict];
+        // Before the end: alive and enforcing.
+        assert!(!prune_expired(&mut locks, now));
+        assert_eq!(locks.len(), 1);
+        // At the end instant: pruned, like any timed lock.
+        assert!(prune_expired(&mut locks, now + 60_000));
+        assert!(locks.is_empty());
     }
 
     #[test]
@@ -579,6 +603,7 @@ mod tests {
             target: target.into(),
             rule,
             enabled: true,
+            strict: false,
             created_at: now,
         };
         let timed = || LockRule::Timed {
@@ -686,6 +711,7 @@ mod tests {
                 ends_at_ms: now + 20 * 60_000,
             },
             enabled: true,
+            strict: false,
             created_at: now - 10 * 60_000,
         };
         let buckets: Vec<ScreenTimeBucket> = vec![];

@@ -71,10 +71,8 @@ pub struct FocusConfig {
     /// youtube.com is domain-blocked or absent from the allowlist. It
     /// never covers another route — videos (including ones carrying
     /// `list=WL`), Shorts, search, channel pages and other playlists
-    /// stay blocked. This is extension-enforced only: query parameters
-    /// are invisible to the engine, so the engine still counts
-    /// youtube.com as not relevant on the allowed page (see the
-    /// engine-limitation note in browser-extension/rules.js).
+    /// stay blocked. When enabled, the engine counts YouTube activity as
+    /// relevant so the session focus timer runs during Watch Later usage.
     pub youtube_allow_watch_later: bool,
     pub block_adult_content: bool,
     pub website_blocking: WebsiteBlocking,

@@ -663,6 +663,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                     target,
                     rule,
                     enabled: true,
+                    strict: false,
                     created_at: now,
                 },
                 now,
@@ -676,6 +677,9 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 .position(|l| l.id == id)
                 .ok_or("App lock not found.")?;
             let lock = &data.app_locks[index];
+            if lock.strict {
+                return Err("Strict block is active for this lock. It cannot be deleted or bypassed until expired.".into());
+            }
             if lock.kind == crate::allowances::TargetKind::App
                 && data.strict_apps.strict
                 && data.strict_apps.ends_at_ms.is_some_and(|e| now < e)
@@ -689,6 +693,14 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 return Err("Strict block is active for websites. Website blocks cannot be deleted or bypassed until expiry.".into());
             }
             data.app_locks.remove(index);
+        }
+        Action::SetAppLockStrict { id } => {
+            let index = data
+                .app_locks
+                .iter()
+                .position(|l| l.id == id)
+                .ok_or("App lock not found.")?;
+            data.app_locks[index].strict = true;
         }
         Action::StartStrictBlock { target, days } => match target {
             crate::models::StrictTarget::Adult => {
@@ -1284,6 +1296,102 @@ mod tests {
         let res = apply(&mut d, Action::DeleteAppLock { id: lock_id }, now);
         assert!(res.is_ok());
         assert!(d.app_locks.is_empty());
+    }
+
+    #[test]
+    fn individual_strict_app_lock_prevents_deletion() {
+        let mut d = Snapshot::default();
+        let now = 1_000_000;
+        apply(
+            &mut d,
+            Action::CreateAppLock {
+                title: "Site".into(),
+                kind: crate::allowances::TargetKind::Site,
+                target: "example.com".into(),
+                rule: crate::applocks::AppLockRuleInput::Timed { minutes: 30 },
+            },
+            now,
+        )
+        .unwrap();
+        let lock_id = d.app_locks[0].id.clone();
+        assert!(!d.app_locks[0].strict);
+
+        apply(
+            &mut d,
+            Action::SetAppLockStrict {
+                id: lock_id.clone(),
+            },
+            now,
+        )
+        .unwrap();
+        assert!(d.app_locks[0].strict);
+
+        let res = apply(&mut d, Action::DeleteAppLock { id: lock_id }, now);
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("Strict block is active for this lock"));
+    }
+
+    #[test]
+    fn individual_strict_app_lock_prevents_deletion_and_stays_strict() {
+        // Same guarantee as the site-lock test, for an app lock:
+        // turning Strict on is one-way (there is no action that
+        // clears it), the lock cannot be deleted while strict,
+        // and the flag survives a save/load round-trip, so a
+        // snapshot refresh can never silently un-strict it.
+        let mut d = Snapshot::default();
+        let now = 1_000_000;
+        apply(
+            &mut d,
+            Action::CreateAppLock {
+                title: "Game".into(),
+                kind: crate::allowances::TargetKind::App,
+                target: "com.example.game".into(),
+                rule: crate::applocks::AppLockRuleInput::Timed { minutes: 60 },
+            },
+            now,
+        )
+        .unwrap();
+        let lock_id = d.app_locks[0].id.clone();
+        assert!(!d.app_locks[0].strict);
+
+        apply(
+            &mut d,
+            Action::SetAppLockStrict {
+                id: lock_id.clone(),
+            },
+            now,
+        )
+        .unwrap();
+        assert!(d.app_locks[0].strict);
+
+        // Applying it again is a no-op, never an un-strict.
+        apply(
+            &mut d,
+            Action::SetAppLockStrict {
+                id: lock_id.clone(),
+            },
+            now,
+        )
+        .unwrap();
+        assert!(d.app_locks[0].strict);
+
+        // The flag survives the JSON round-trip the engine's
+        // save and the GUI's snapshot both go through.
+        let json = serde_json::to_string(&d).unwrap();
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        assert!(back.app_locks[0].strict);
+
+        // Deletion is refused while strict, and the lock is still
+        // there — and still strict — afterwards.
+        let res = apply(&mut d, Action::DeleteAppLock { id: lock_id }, now);
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("Strict block is active for this lock"));
+        assert_eq!(d.app_locks.len(), 1);
+        assert!(d.app_locks[0].strict);
     }
 
     #[test]

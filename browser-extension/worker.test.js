@@ -323,7 +323,7 @@ it('reports the extension version on every sync', async () => {
   for (const [, init] of request.mock.calls) {
     const body = JSON.parse(init.body);
     // Kept in sync with EXTENSION_VERSION in worker.js and browser.rs.
-    expect(body.v).toBe(13);
+    expect(body.v).toBe(14);
   }
 });
 

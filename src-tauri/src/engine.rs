@@ -107,6 +107,7 @@ fn browser_domain_relevant(
         &[],
         active_domain,
         block_adult,
+        false,
     )
 }
 fn browser_domain_relevant_with_exceptions(
@@ -116,6 +117,7 @@ fn browser_domain_relevant_with_exceptions(
     exceptions: &[String],
     active_domain: &str,
     block_adult: bool,
+    youtube_allow_watch_later: bool,
 ) -> bool {
     if block_adult
         && !matches!(website_blocking, WebsiteBlocking::None)
@@ -124,6 +126,9 @@ fn browser_domain_relevant_with_exceptions(
             .any(|d| rule_matches(d, active_domain, ""))
     {
         return false;
+    }
+    if youtube_allow_watch_later && rule_matches("youtube.com", active_domain, "") {
+        return true;
     }
     let effective_blocklist = matches!(website_blocking, WebsiteBlocking::Blocklist)
         || (matches!(website_blocking, WebsiteBlocking::Auto) && matches!(mode, Mode::Standard));
@@ -1391,6 +1396,14 @@ impl Engine {
     }
     fn publish(&self) {
         if let Some(b) = &self.bridge {
+            // Adult website blocking is a user setting, not session state, so
+            // it is mirrored on every publish (every action and every tick).
+            // This used to be published only by the screen-time sampler, which
+            // returns early while a session is live and whenever a sample is
+            // skipped, so toggling it during a focus session never reached the
+            // extension and adult sites stayed open. See
+            // `Engine::adult_block_toggle_reaches_browser_bridge`.
+            b.set_adult_block_enabled(self.data.adult_block.enabled);
             if self.is_paused() {
                 b.publish(None);
                 b.set_screen_time_blocked_rules(&[], &[]);
@@ -3431,6 +3444,7 @@ impl Engine {
                                                 &s.focus.exceptions,
                                                 &browser.active_domain,
                                                 s.focus.block_adult_content,
+                                                s.focus.youtube_allow_watch_later,
                                             )
                                         },
                                     );
@@ -4455,7 +4469,7 @@ mod tests {
                         domain: &str,
                         adult: bool| {
             browser_domain_relevant_with_exceptions(
-                mode, blocking, domains, exceptions, domain, adult,
+                mode, blocking, domains, exceptions, domain, adult, false,
             )
         };
         // Exception overrides a blocklist rule (and its subdomains).
@@ -4518,6 +4532,77 @@ mod tests {
             &["example.com".to_string()],
             &["*.example.com".to_string()],
             "example.com",
+            false,
+        ));
+    }
+    #[test]
+    fn watch_later_allows_youtube_relevance_when_enabled() {
+        let blocked = vec!["youtube.com".to_string()];
+        // Blocklist mode: youtube.com is blocked, but youtube_allow_watch_later makes YouTube relevant
+        assert!(browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Blocklist,
+            &blocked,
+            &[],
+            "youtube.com",
+            false,
+            true,
+        ));
+        assert!(browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Blocklist,
+            &blocked,
+            &[],
+            "www.youtube.com",
+            false,
+            true,
+        ));
+        assert!(browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Blocklist,
+            &blocked,
+            &[],
+            "m.youtube.com",
+            false,
+            true,
+        ));
+        // Allowlist mode: youtube.com is absent from allowlist, but youtube_allow_watch_later makes YouTube relevant
+        let allowed = vec!["github.com".to_string()];
+        assert!(browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Allowlist,
+            &allowed,
+            &[],
+            "youtube.com",
+            false,
+            true,
+        ));
+        assert!(browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Allowlist,
+            &allowed,
+            &[],
+            "www.youtube.com",
+            false,
+            true,
+        ));
+        // With youtube_allow_watch_later = false, YouTube remains not relevant
+        assert!(!browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Blocklist,
+            &blocked,
+            &[],
+            "youtube.com",
+            false,
+            false,
+        ));
+        assert!(!browser_domain_relevant_with_exceptions(
+            &Mode::Strict,
+            &WebsiteBlocking::Allowlist,
+            &allowed,
+            &[],
+            "youtube.com",
+            false,
             false,
         ));
     }
@@ -6968,6 +7053,7 @@ mod tests {
                 ends_at_ms: now + 120_000,
             },
             enabled: true,
+            strict: false,
             created_at: now,
         });
 
@@ -7007,5 +7093,50 @@ mod tests {
         engine.db.record_attempt(&attempt).unwrap();
 
         assert!(engine.data.blocked_app_notice.is_none());
+    }
+
+    // The desktop's "Block adult websites" toggle must reach the browser
+    // synchronization API (`adult_block_enabled`) on the toggle itself, not
+    // only from the screen-time sampler. The sampler returns early while a
+    // session is live (`has_active`), which is exactly when strict adult
+    // blocks are configured, so that path alone left the extension on its
+    // old value and adult sites opened normally.
+    #[test]
+    fn adult_block_toggle_reaches_browser_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("adult-bridge.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        assert!(engine.owns_engine_lock());
+        engine.set_native_for_test(true);
+        engine.bridge = Some(Bridge::start_at_retries(dir.path(), 0, 1, 1).unwrap());
+        // A live session makes the screen-time sampler return before it can
+        // publish anything, reproducing the reported failure.
+        engine.data.sessions.push(running_session("live"));
+        assert!(engine.has_active());
+        assert!(!engine.bridge.as_ref().unwrap().adult_block_enabled());
+
+        engine
+            .execute(Action::SetAdultBlock {
+                enabled: true,
+                strict: false,
+                minutes: None,
+            })
+            .unwrap();
+        assert!(
+            engine.bridge.as_ref().unwrap().adult_block_enabled(),
+            "enabling adult blocking did not reach the browser synchronization API"
+        );
+
+        engine
+            .execute(Action::SetAdultBlock {
+                enabled: false,
+                strict: false,
+                minutes: None,
+            })
+            .unwrap();
+        assert!(
+            !engine.bridge.as_ref().unwrap().adult_block_enabled(),
+            "disabling adult blocking did not reach the browser synchronization API"
+        );
     }
 }

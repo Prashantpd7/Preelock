@@ -251,28 +251,9 @@ it('shows the New one-shot button even with no sessions, and it opens the wizard
   expect(await screen.findByLabelText('Task name')).toBeInTheDocument();
 });
 
-it('still opens the template form when rendered without the wizard callback', async () => {
-  const snapshot = {
-    ...structuredClone(emptySnapshot),
-    sessions: [templateSession],
-    one_shots: [],
-  };
-  useAppStore.setState({
-    data: snapshot,
-    loading: false,
-    error: null,
-    busy: false,
-  });
-  vi.mocked(api.execute).mockResolvedValue({
-    ...snapshot,
-    one_shots: [oneShot({})],
-  });
-  const user = userEvent.setup();
+it('does not render a New one-shot button in the activity planning section', () => {
   render(<PlanningSections only="oneshots" />);
-  await user.click(screen.getByRole('button', { name: 'New one-shot' }));
-  await user.click(screen.getByLabelText('One-shot template'));
-  await user.click(
-    screen.getByRole('option', { name: 'Write outline · 25 min' }),
-  );
-  expect(screen.getByLabelText('One-shot name')).toHaveValue('Write outline');
+  expect(
+    screen.queryByRole('button', { name: 'New one-shot' }),
+  ).not.toBeInTheDocument();
 });

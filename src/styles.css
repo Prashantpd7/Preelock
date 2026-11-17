@@ -2984,6 +2984,18 @@ button.screen-time-category:focus-visible {
   color: var(--muted);
   white-space: nowrap;
 }
+.screen-time-lock-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.screen-time-lock-strict-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
 
 /* Adult Website Block Section */
 .adult-block-toggle-row {

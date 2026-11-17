@@ -135,6 +135,12 @@ beforeEach(() => {
   window.location.hash = '#/screen-time';
   localStorage.setItem('preelock-permissions-v2', 'seen');
   vi.clearAllMocks();
+  HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute('open', '');
+  };
+  HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute('open');
+  };
   vi.mocked(api.snapshot).mockImplementation(async () =>
     structuredClone(useAppStore.getState().data),
   );
@@ -580,14 +586,14 @@ it('strict block displays active state with locked notice and disables turning o
   expect(toggle).toBeDisabled();
 });
 
-it('strict block in Block apps starts strict countdown and locks active app locks', async () => {
+it('strict block in Block apps asks first, then locks the app lock and removes delete button', async () => {
   const now = Date.now();
   const sampleLock: AppLock = {
     id: 'lock-app-1',
     title: 'Safari',
     kind: 'app',
     target: 'com.apple.Safari',
-    rule: { type: 'timed', expires_at_ms: now + 3600_000 },
+    rule: { type: 'timed', ends_at_ms: now + 45 * 60_000 + 30_000 },
     created_at: now,
   };
 
@@ -596,61 +602,66 @@ it('strict block in Block apps starts strict countdown and locks active app lock
   await screen.findByText('App lock');
   await user.click(screen.getByRole('button', { name: 'Block apps' }));
 
-  // Strict block controls are present in Block apps
-  expect(
-    screen.getByRole('switch', { name: 'Strict block for apps' }),
-  ).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '5 days' })).toBeInTheDocument();
+  // Strict block controls are present in active block row
+  const strictToggle = screen.getByRole('switch', {
+    name: 'Strict block for Safari',
+  });
+  expect(strictToggle).toBeInTheDocument();
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
 
   // Active lock shows delete button initially
   expect(
     screen.getByRole('button', { name: 'Remove block: Safari' }),
   ).toBeInTheDocument();
 
-  // Select 5 days and toggle strict block
-  await user.click(screen.getByRole('button', { name: '5 days' }));
-  await user.click(
-    screen.getByRole('switch', { name: 'Strict block for apps' }),
+  // Clicking the toggle only opens the confirmation — Strict stays off
+  // and nothing is sent to the backend yet.
+  await user.click(strictToggle);
+  expect(api.execute).not.toHaveBeenCalled();
+  const dialog = await screen.findByRole('dialog', { name: 'Strict block' });
+  expect(dialog).toHaveTextContent(
+    'Safari will be strictly blocked for the next 45m. This cannot be undone.',
   );
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
 
+  // Block confirms: dispatches set_app_lock_strict and closes the popup.
+  await user.click(within(dialog).getByRole('button', { name: 'Block' }));
   expect(api.execute).toHaveBeenCalledWith({
-    type: 'start_strict_block',
-    target: 'apps',
-    days: 5,
+    type: 'set_app_lock_strict',
+    id: 'lock-app-1',
   });
+  expect(screen.queryByRole('dialog', { name: 'Strict block' })).toBeNull();
 
-  // When strict mode becomes active on apps:
+  // When strict mode is enabled on the lock:
   act(() => {
     useAppStore.setState((s) => ({
       data: {
         ...s.data,
-        strict_apps: {
-          enabled: true,
-          strict: true,
-          ends_at_ms: now + 5 * 86_400_000,
-          activating_until_ms: null,
-          created_at_ms: now,
-        },
+        app_locks: [{ ...sampleLock, strict: true }],
       },
     }));
   });
 
-  // Delete button is removed and replaced by Strictly locked tag
+  // Delete button is removed and toggle is checked & disabled
   expect(
     screen.queryByRole('button', { name: 'Remove block: Safari' }),
   ).toBeNull();
-  expect(screen.getByText('Strictly locked')).toBeInTheDocument();
-  expect(screen.getByText('Apps blocked strictly')).toBeInTheDocument();
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for Safari' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for Safari' }),
+  ).toBeDisabled();
 });
 
-it('strict block in Block websites starts strict countdown and locks active website locks', async () => {
+it('strict block in Block websites asks first, then locks the website lock and removes delete button', async () => {
   const now = Date.now();
   const sampleLock: AppLock = {
     id: 'lock-site-1',
     title: 'youtube.com',
     kind: 'site',
     target: 'youtube.com',
-    rule: { type: 'timed', expires_at_ms: now + 3600_000 },
+    rule: { type: 'timed', ends_at_ms: now + 45 * 60_000 + 30_000 },
     created_at: now,
   };
 
@@ -659,47 +670,146 @@ it('strict block in Block websites starts strict countdown and locks active webs
   await screen.findByText('App lock');
   await user.click(screen.getByRole('button', { name: 'Block websites' }));
 
-  // Strict block controls are present in Block websites
-  expect(
-    screen.getByRole('switch', { name: 'Strict block for websites' }),
-  ).toBeInTheDocument();
+  // Strict block controls are present in active block row
+  const strictToggle = screen.getByRole('switch', {
+    name: 'Strict block for youtube.com',
+  });
+  expect(strictToggle).toBeInTheDocument();
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
 
   // Active lock shows delete button initially
   expect(
     screen.getByRole('button', { name: 'Remove block: youtube.com' }),
   ).toBeInTheDocument();
 
-  // Toggle strict block
-  await user.click(
-    screen.getByRole('switch', { name: 'Strict block for websites' }),
+  // Clicking the toggle only opens the confirmation — Strict stays off
+  // and nothing is sent to the backend yet.
+  await user.click(strictToggle);
+  expect(api.execute).not.toHaveBeenCalled();
+  const dialog = await screen.findByRole('dialog', { name: 'Strict block' });
+  expect(dialog).toHaveTextContent(
+    'youtube.com will be strictly blocked for the next 45m. This cannot be undone.',
   );
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
 
+  // Block confirms: dispatches set_app_lock_strict and closes the popup.
+  await user.click(within(dialog).getByRole('button', { name: 'Block' }));
   expect(api.execute).toHaveBeenCalledWith({
-    type: 'start_strict_block',
-    target: 'sites',
-    days: 1,
+    type: 'set_app_lock_strict',
+    id: 'lock-site-1',
   });
+  expect(screen.queryByRole('dialog', { name: 'Strict block' })).toBeNull();
 
-  // When strict mode becomes active on sites:
+  // When strict mode is enabled on the lock:
   act(() => {
     useAppStore.setState((s) => ({
       data: {
         ...s.data,
-        strict_sites: {
-          enabled: true,
-          strict: true,
-          ends_at_ms: now + 1 * 86_400_000,
-          activating_until_ms: null,
-          created_at_ms: now,
-        },
+        app_locks: [{ ...sampleLock, strict: true }],
       },
     }));
   });
 
-  // Delete button is removed and replaced by Strictly locked tag
+  // Delete button is removed and toggle is checked & disabled
   expect(
     screen.queryByRole('button', { name: 'Remove block: youtube.com' }),
   ).toBeNull();
-  expect(screen.getByText('Strictly locked')).toBeInTheDocument();
-  expect(screen.getByText('Websites blocked strictly')).toBeInTheDocument();
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for youtube.com' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  expect(
+    screen.getByRole('switch', { name: 'Strict block for youtube.com' }),
+  ).toBeDisabled();
+});
+
+it('cancel in the strict confirmation leaves the block untouched', async () => {
+  const now = Date.now();
+  const sampleLock: AppLock = {
+    id: 'lock-app-1',
+    title: 'Safari',
+    kind: 'app',
+    target: 'com.apple.Safari',
+    rule: { type: 'timed', ends_at_ms: now + 45 * 60_000 + 30_000 },
+    created_at: now,
+  };
+
+  seed([], [sampleLock]);
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(screen.getByRole('button', { name: 'Block apps' }));
+
+  const strictToggle = screen.getByRole('switch', {
+    name: 'Strict block for Safari',
+  });
+  await user.click(strictToggle);
+  const dialog = await screen.findByRole('dialog', { name: 'Strict block' });
+
+  // Cancel closes the popup and sends nothing to the backend.
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(api.execute).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Strict block' })).toBeNull();
+  expect(strictToggle).toHaveAttribute('aria-checked', 'false');
+  expect(
+    screen.getByRole('button', { name: 'Remove block: Safari' }),
+  ).toBeInTheDocument();
+});
+
+it('daily-limit strict confirmation names the rest of today, not a duration', async () => {
+  const now = Date.now();
+  seed(
+    [bucket('youtube.com', 'youtube.com', 45, 'site')],
+    [
+      {
+        id: 'lock-daily',
+        title: 'youtube.com',
+        kind: 'site',
+        target: 'youtube.com',
+        rule: { type: 'daily_limit', limit_ms: 120 * 60_000 },
+        enabled: true,
+        created_at: now - 60_000,
+      },
+    ],
+  );
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(screen.getByRole('button', { name: 'Block websites' }));
+
+  await user.click(
+    screen.getByRole('switch', { name: 'Strict block for youtube.com' }),
+  );
+  const dialog = await screen.findByRole('dialog', { name: 'Strict block' });
+  expect(dialog).toHaveTextContent(
+    'youtube.com will be strictly blocked for the rest of today once the daily limit is reached. This cannot be undone.',
+  );
+  expect(api.execute).not.toHaveBeenCalled();
+});
+
+it('daily-limit strict confirmation says until midnight once the limit is reached', async () => {
+  const now = Date.now();
+  seed(
+    [bucket('youtube.com', 'youtube.com', 150, 'site')],
+    [
+      {
+        id: 'lock-daily',
+        title: 'youtube.com',
+        kind: 'site',
+        target: 'youtube.com',
+        rule: { type: 'daily_limit', limit_ms: 120 * 60_000 },
+        enabled: true,
+        created_at: now - 60_000,
+      },
+    ],
+  );
+  const user = userEvent.setup();
+  await screen.findByText('App lock');
+  await user.click(screen.getByRole('button', { name: 'Block websites' }));
+
+  await user.click(
+    screen.getByRole('switch', { name: 'Strict block for youtube.com' }),
+  );
+  const dialog = await screen.findByRole('dialog', { name: 'Strict block' });
+  expect(dialog).toHaveTextContent(
+    'youtube.com will be strictly blocked until midnight. This cannot be undone.',
+  );
+  expect(api.execute).not.toHaveBeenCalled();
 });

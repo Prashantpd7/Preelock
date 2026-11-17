@@ -530,6 +530,9 @@ pub enum Action {
     DeleteAppLock {
         id: String,
     },
+    SetAppLockStrict {
+        id: String,
+    },
     /// Initiate a 20-second countdown for strict mode on a target category (apps, sites, adult).
     StartStrictBlock {
         target: StrictTarget,

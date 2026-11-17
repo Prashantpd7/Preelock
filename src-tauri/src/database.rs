@@ -711,6 +711,7 @@ mod tests {
                         ends_at_ms: now - 1000,
                     },
                     enabled: true,
+                    strict: false,
                     created_at: now - 60_000,
                 },
                 now - 2000,

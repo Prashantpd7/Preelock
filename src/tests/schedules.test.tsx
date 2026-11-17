@@ -294,30 +294,11 @@ it('shows the New schedule button even with no sessions, and it opens the wizard
   expect(await screen.findByLabelText('Task name')).toBeInTheDocument();
 });
 
-it('still opens the template form when rendered without the wizard callback', async () => {
-  const snapshot = {
-    ...structuredClone(emptySnapshot),
-    sessions: [templateSession],
-    schedules: [],
-  };
-  useAppStore.setState({
-    data: snapshot,
-    loading: false,
-    error: null,
-    busy: false,
-  });
-  vi.mocked(api.execute).mockResolvedValue({
-    ...snapshot,
-    schedules: [schedule({})],
-  });
-  const user = userEvent.setup();
+it('does not render a New schedule button in the activity planning section', () => {
   render(<PlanningSections only="schedules" />);
-  await user.click(screen.getByRole('button', { name: 'New schedule' }));
-  await user.click(screen.getByLabelText('Template session'));
-  await user.click(
-    screen.getByRole('option', { name: 'Write outline · 25 min' }),
-  );
-  expect(screen.getByLabelText('Schedule name')).toHaveValue('Write outline');
+  expect(
+    screen.queryByRole('button', { name: 'New schedule' }),
+  ).not.toBeInTheDocument();
 });
 
 it('edit form offers only the password lock and clears stored delay/restart locks on save', async () => {

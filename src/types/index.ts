@@ -173,6 +173,7 @@ export interface AppLock {
   target: string;
   rule: AppLockRule;
   enabled: boolean;
+  strict?: boolean;
   created_at: number;
 }
 /** How an app lock blocks, as stored in the snapshot. */
@@ -333,6 +334,7 @@ export type Action =
       rule: AppLockRuleInput;
     }
   | { type: 'delete_app_lock'; id: string }
+  | { type: 'set_app_lock_strict'; id: string }
   | {
       type: 'start_strict_block';
       target: 'apps' | 'sites' | 'adult';

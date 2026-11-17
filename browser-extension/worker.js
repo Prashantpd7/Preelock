@@ -71,7 +71,11 @@ import { selfTest } from './self-test.js';
 // Bump this every time extension behavior changes. The desktop app
 // compares it against its own copy to spot extension copies that were
 // never reloaded after an app update.
-const EXTENSION_VERSION = 13;
+// 14: desktop-driven adult blocking (`adult_block_enabled` in the sync
+// response). Builds up to 0.5.6 also reported 13, so the desktop could not
+// tell them apart and silently claimed adult blocking was active in a browser
+// whose extension had no adult support at all.
+const EXTENSION_VERSION = 14;
 // Learned UC-id <-> @handle aliases. YouTube's player data names a
 // video's stable channel id, the page metadata names its handle, and a
 // Preelock rule may use either form. Identities observed together for

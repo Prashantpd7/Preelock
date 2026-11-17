@@ -10,7 +10,7 @@ import {
 import { useAppStore } from '../state/store';
 import { Dropdown } from './Dropdown';
 import { RowIcon } from './AppIcon';
-import { Toggle } from './SettingsControls';
+import { Modal, Toggle } from './SettingsControls';
 import { localDayStart } from '../services/screenTimeWeek';
 import {
   LIMIT_MAX_MINUTES,
@@ -18,6 +18,7 @@ import {
   TIMED_MAX_MINUTES,
   TIMED_PRESETS,
   appLockStatus,
+  formatAppLockMinutes,
   normalizeAppLockDomain,
   recentApps,
   validateAppLockForm,
@@ -148,18 +149,8 @@ function AppLockPanelBody({
   execute: Execute;
 }) {
   const [mode, setMode] = useState<LockMode | null>(null);
-  const target = kind === 'app' ? 'apps' : 'sites';
-  const label = kind === 'app' ? 'apps' : 'websites';
   return (
     <div className="screen-time-lock-panel">
-      <StrictBlockSection
-        description={`Lock ${label} blocking for the chosen duration. Active ${label} blocks cannot be deleted or bypassed until expired.`}
-        strictState={strictState}
-        target={target}
-        nowMs={nowMs}
-        busy={busy}
-        execute={execute}
-      />
       <div
         className="screen-time-lock-modes"
         role="group"
@@ -398,6 +389,11 @@ function AppLockList({
     .filter((lock) => lock.kind === kind)
     .sort((a, b) => b.created_at - a.created_at);
 
+  // Lock awaiting strict confirmation: the toggle opens the popup,
+  // Strict only turns on when "Block" is pressed.
+  const [confirmLock, setConfirmLock] = useState<AppLock | null>(null);
+  const [confirmProblem, setConfirmProblem] = useState('');
+
   const isStrictLocked = Boolean(
     strictState?.strict &&
     strictState?.ends_at_ms &&
@@ -411,6 +407,7 @@ function AppLockList({
         <ul className="screen-time-lock-list">
           {panelLocks.map((lock) => {
             const status = appLockStatus(lock, buckets, todayMs, nowMs);
+            const isStrict = Boolean(lock.strict || isStrictLocked);
             return (
               <li key={lock.id} className="screen-time-lock-row">
                 <RowIcon
@@ -427,31 +424,35 @@ function AppLockList({
                     {status.text}
                   </span>
                 </span>
-                {isStrictLocked ? (
-                  <span
-                    className="screen-time-lock-tag"
-                    style={{
-                      borderColor: 'var(--amber, #f59e0b)',
-                      color: 'var(--amber, #f59e0b)',
-                      fontSize: '11px',
-                      padding: '2px 8px',
-                    }}
-                  >
-                    Strictly locked
+                <div className="screen-time-lock-row-actions">
+                  <span className="screen-time-lock-strict-label">
+                    Strict block
                   </span>
-                ) : (
-                  <button
-                    type="button"
-                    className="icon-button danger"
-                    aria-label={`Remove block: ${lock.title}`}
-                    disabled={busy}
-                    onClick={async () => {
-                      await execute({ type: 'delete_app_lock', id: lock.id });
+                  <Toggle
+                    label={`Strict block for ${lock.title}`}
+                    checked={isStrict}
+                    disabled={busy || isStrict}
+                    onChange={(turnOn) => {
+                      if (turnOn) {
+                        setConfirmProblem('');
+                        setConfirmLock(lock);
+                      }
                     }}
-                  >
-                    <X size={16} aria-hidden="true" />
-                  </button>
-                )}
+                  />
+                  {!isStrict && (
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      aria-label={`Remove block: ${lock.title}`}
+                      disabled={busy}
+                      onClick={async () => {
+                        await execute({ type: 'delete_app_lock', id: lock.id });
+                      }}
+                    >
+                      <X size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}
@@ -463,7 +464,98 @@ function AppLockList({
             : 'No active website blocks.'}
         </p>
       )}
+      {confirmLock && (
+        <StrictBlockConfirmDialog
+          lock={confirmLock}
+          buckets={buckets}
+          todayMs={todayMs}
+          nowMs={nowMs}
+          busy={busy}
+          problem={confirmProblem}
+          onCancel={() => {
+            setConfirmLock(null);
+            setConfirmProblem('');
+          }}
+          onConfirm={async () => {
+            const ok = await execute({
+              type: 'set_app_lock_strict',
+              id: confirmLock.id,
+            });
+            if (ok) {
+              setConfirmLock(null);
+              setConfirmProblem('');
+            } else {
+              setConfirmProblem(
+                useAppStore.getState().error ||
+                  'Could not turn on Strict block.',
+              );
+            }
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Confirm before a lock goes strict: strict cannot be undone, so the
+ *  toggle opens this small popup first. The sentence names the exact
+ *  time the lock will stay strict — the remaining time for a timed
+ *  lock, until midnight for a daily-limit lock already blocking, or
+ *  the rest of today once the daily limit is reached. Cancel changes
+ *  nothing. */
+function StrictBlockConfirmDialog({
+  lock,
+  buckets,
+  todayMs,
+  nowMs,
+  busy,
+  problem,
+  onCancel,
+  onConfirm,
+}: {
+  lock: AppLock;
+  buckets: ScreenTimeBucket[];
+  todayMs: number;
+  nowMs: number;
+  busy: boolean;
+  problem: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const status = appLockStatus(lock, buckets, todayMs, nowMs);
+  const duration =
+    lock.rule.type === 'timed'
+      ? `for the next ${formatAppLockMinutes(lock.rule.ends_at_ms - nowMs)}`
+      : status.enforced
+        ? 'until midnight'
+        : 'for the rest of today once the daily limit is reached';
+  return (
+    <Modal title="Strict block" onClose={onCancel}>
+      <div className="dialog-stack">
+        <p>
+          {lock.title} will be strictly blocked {duration}. This cannot be
+          undone.
+        </p>
+        {problem && (
+          <p className="error small" role="alert">
+            {problem}
+          </p>
+        )}
+        <div className="row controls" style={{ justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button type="button" onClick={onConfirm} disabled={busy}>
+            Block
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -490,171 +582,6 @@ function formatStrictDateTime(ms: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
-}
-
-function StrictBlockSection({
-  description,
-  strictState,
-  target,
-  nowMs,
-  busy,
-  execute,
-}: {
-  description: string;
-  strictState?: StrictBlockState;
-  target: 'apps' | 'sites';
-  nowMs: number;
-  busy: boolean;
-  execute: Execute;
-}) {
-  const [selectedDays, setSelectedDays] = useState(1);
-
-  const isEnabled = Boolean(strictState?.enabled);
-  const isStrict = Boolean(strictState?.strict);
-  const endsAt = strictState?.ends_at_ms ?? null;
-  const isExpired = endsAt != null && endsAt <= nowMs;
-  const isStrictActive = isEnabled && isStrict && !isExpired;
-
-  const activatingUntil = strictState?.activating_until_ms ?? null;
-  const isActivating = activatingUntil != null && nowMs < activatingUntil;
-  const countdownSec = isActivating
-    ? Math.max(1, Math.ceil((activatingUntil - nowMs) / 1000))
-    : 0;
-
-  const displayDays =
-    endsAt && activatingUntil
-      ? Math.max(1, Math.round((endsAt - activatingUntil) / 86_400_000))
-      : selectedDays;
-
-  const label = target === 'apps' ? 'apps' : 'websites';
-
-  if (isStrictActive && endsAt) {
-    return (
-      <div className="adult-block-locked-card" style={{ marginBottom: '12px' }}>
-        <div className="screen-time-lock-row">
-          {target === 'apps' ? (
-            <LayoutGrid size={20} aria-hidden="true" />
-          ) : (
-            <Globe size={20} aria-hidden="true" />
-          )}
-          <div className="screen-time-lock-row-meta">
-            <strong>
-              {target === 'apps'
-                ? 'Apps blocked strictly'
-                : 'Websites blocked strictly'}
-            </strong>
-            <span className="screen-time-lock-status muted small">
-              <span
-                className="screen-time-lock-tag"
-                style={{
-                  borderColor: 'var(--amber, #f59e0b)',
-                  color: 'var(--amber, #f59e0b)',
-                }}
-              >
-                Strict block
-              </span>
-              {formatStrictRemaining(endsAt - nowMs)}
-            </span>
-          </div>
-        </div>
-        <p className="adult-block-strict-note">
-          Strict block is active until{' '}
-          <strong>{formatStrictDateTime(endsAt)}</strong> (
-          {formatStrictRemaining(endsAt - nowMs)}). Active {label} blocks cannot
-          be deleted or disabled until expired.
-        </p>
-      </div>
-    );
-  }
-
-  if (isActivating) {
-    return (
-      <div
-        className="adult-block-countdown-card"
-        style={{ marginBottom: '12px' }}
-      >
-        <div className="adult-block-countdown-info">
-          <div className="adult-block-countdown-header">
-            <AlertTriangle size={16} aria-hidden="true" />
-            <span>Strict block activating in {countdownSec}s...</span>
-          </div>
-          <p
-            className="muted small"
-            style={{ fontSize: '11px', margin: '2px 0 0' }}
-          >
-            Locks {label} strictly for {displayDays}{' '}
-            {displayDays === 1 ? 'day' : 'days'}. Turn back off now to cancel.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="secondary"
-          style={{
-            padding: '6px 12px',
-            fontSize: '12px',
-            whiteSpace: 'nowrap',
-          }}
-          disabled={busy}
-          onClick={async () => {
-            await execute({ type: 'cancel_strict_block', target });
-          }}
-        >
-          Turn back off
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="adult-block-strict-section"
-      style={{ marginBottom: '12px' }}
-    >
-      <div className="adult-block-strict-row">
-        <div className="adult-block-strict-meta">
-          <span className="screen-time-lock-label">Strict block</span>
-          <p
-            className="muted small"
-            style={{ margin: '2px 0 0', fontSize: '12px' }}
-          >
-            {description}
-          </p>
-        </div>
-        <div className="adult-block-strict-controls">
-          <div
-            className="adult-block-compact-chips"
-            role="group"
-            aria-label={`Strict duration days for ${label}`}
-          >
-            {STRICT_DAY_PRESETS.map((d) => (
-              <button
-                key={d}
-                type="button"
-                aria-pressed={selectedDays === d}
-                onClick={() => setSelectedDays(d)}
-              >
-                {d} {d === 1 ? 'day' : 'days'}
-              </button>
-            ))}
-          </div>
-          <Toggle
-            label={`Strict block for ${label}`}
-            checked={false}
-            disabled={busy}
-            onChange={async (checked) => {
-              if (checked) {
-                await execute({
-                  type: 'start_strict_block',
-                  target,
-                  days: selectedDays,
-                });
-              }
-            }}
-          />
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function AdultBlockPanelBody({

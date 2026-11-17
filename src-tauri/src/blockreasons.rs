@@ -267,6 +267,7 @@ mod tests {
             target: "com.example.game".into(),
             rule,
             enabled: true,
+            strict: false,
             created_at: 1_000,
         }
     }

@@ -333,11 +333,11 @@ describe('Activity dropdown', () => {
     await user.click(screen.getByRole('button', { name: 'Schedules' }));
     await user.click(screen.getByRole('option', { name: 'Start once at' }));
     expect(screen.getByText('No one-shot timers yet.')).toBeInTheDocument();
-    // Two "New one-shot" buttons by design: the card's and the
-    // section's. Both open the same wizard.
+    // Only one "New one-shot" button in the top planning cards;
+    // Activity section is list-focused and has no duplicate button.
     expect(
-      screen.getAllByRole('button', { name: 'New one-shot' }),
-    ).toHaveLength(2);
+      screen.getByRole('button', { name: 'New one-shot' }),
+    ).toBeInTheDocument();
   });
 });
 

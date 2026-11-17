@@ -117,6 +117,43 @@ struct BackgroundMeta {
     exe: String,
     ipc: bool,
     updated_ms: i64,
+    /// Modification time of the binary that wrote this meta, ms
+    /// since the Unix epoch; 0 when the writer predates this
+    /// field. A rebuild rewrites the binary at the same path, so
+    /// the path alone cannot tell a fresh binary from a stale one
+    /// — the mtime can.
+    #[serde(default)]
+    exe_mtime_ms: u64,
+}
+
+/// Modification time of `exe`, ms since the Unix epoch; `None`
+/// when it cannot be read.
+fn exe_mtime_ms(exe: &Path) -> Option<u64> {
+    std::fs::metadata(exe)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Whether the running background was started from a different
+/// binary than the one now on disk: a different path, or the same
+/// path rewritten by a rebuild (the mtime tells them apart). A
+/// meta without an mtime predates this check, so it counts as
+/// stale — the replacement writes a fresh meta, so this fires at
+/// most once per upgrade. When the on-disk mtime cannot be read,
+/// keep the running background rather than kill the engine on a
+/// guess.
+fn background_binary_mismatch(meta: &BackgroundMeta, exe: &Path) -> bool {
+    if !meta.exe.is_empty() && meta.exe != exe.to_string_lossy() {
+        return true;
+    }
+    match exe_mtime_ms(exe) {
+        Some(current) => meta.exe_mtime_ms != current,
+        None => false,
+    }
 }
 
 fn write_service_health(data_dir: &Path, healthy: bool, state: &str, detail: &str) {
@@ -148,14 +185,18 @@ fn read_background_meta(data_dir: &Path) -> Option<BackgroundMeta> {
 }
 
 fn write_background_meta(data_dir: &Path, ipc_ready: bool) {
-    let exe = std::env::current_exe()
+    let exe_path = std::env::current_exe().ok();
+    let exe = exe_path
+        .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let exe_mtime_ms = exe_path.as_ref().and_then(|p| exe_mtime_ms(p)).unwrap_or(0);
     let meta = BackgroundMeta {
         pid: std::process::id(),
         exe,
         ipc: ipc_ready,
         updated_ms: crate::clock::now(),
+        exe_mtime_ms,
     };
     if let Ok(bytes) = serde_json::to_vec(&meta) {
         let _ = std::fs::create_dir_all(data_dir);
@@ -736,9 +777,15 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
             }
         }
         if ipc_ok {
+            // Dev only: a rebuild rewrites the binary at the same
+            // path, so a path-only check keeps a stale background
+            // serving IPC — and a stale background 400s any action
+            // variant it predates (e.g. `set_app_lock_strict`),
+            // which the GUI then retries for ~2 s before giving
+            // up. The mtime catches the rebuild.
             let mismatch_dev = development
                 && read_background_meta(data_dir)
-                    .is_some_and(|m| !m.exe.is_empty() && m.exe != exe.to_string_lossy());
+                    .is_some_and(|m| background_binary_mismatch(&m, &exe));
             if !mismatch_dev {
                 return Ok(());
             }
@@ -1568,5 +1615,63 @@ mod tests {
         let _ = std::fs::remove_file(db_path.with_extension("lifecycle.json"));
         let cli_idle = crate::cli::uninstall_check_in_dir(dir.path());
         assert!(cli_idle.allowed);
+    }
+
+    #[test]
+    fn background_binary_mismatch_detects_rebuilt_binary() {
+        // A rebuild rewrites the binary at the same path, so the
+        // path alone cannot tell a fresh binary from a stale one
+        // — this is what left a pre-`set_app_lock_strict`
+        // background serving IPC while the GUI already sent the
+        // new action (HTTP 400, retried ~2 s, toggle reverted).
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("preelock");
+        std::fs::write(&exe, b"fake binary").unwrap();
+        let mtime = exe_mtime_ms(&exe).unwrap();
+        let meta = |exe_str: &str, mtime_ms: u64| BackgroundMeta {
+            pid: 1,
+            exe: exe_str.into(),
+            ipc: true,
+            updated_ms: 0,
+            exe_mtime_ms: mtime_ms,
+        };
+        let current = exe.to_string_lossy().into_owned();
+
+        // Same path, same mtime: current binary, keep running.
+        assert!(!background_binary_mismatch(&meta(&current, mtime), &exe));
+        // Same path, rewritten since the background started: stale.
+        assert!(background_binary_mismatch(
+            &meta(&current, mtime + 1_000),
+            &exe
+        ));
+        // Different path: stale (the pre-existing check).
+        assert!(background_binary_mismatch(
+            &meta("/other/preelock", mtime),
+            &exe
+        ));
+        // No mtime recorded: writer predates this check, stale.
+        assert!(background_binary_mismatch(&meta(&current, 0), &exe));
+        // Empty path but matching mtime: same binary, keep running.
+        assert!(!background_binary_mismatch(&meta("", mtime), &exe));
+    }
+
+    #[test]
+    fn write_background_meta_records_exe_mtime_and_old_meta_still_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        write_background_meta(dir.path(), true);
+        let meta = read_background_meta(dir.path()).unwrap();
+        // The running binary's own mtime, recorded.
+        let current = exe_mtime_ms(&std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(meta.exe_mtime_ms, current);
+        assert!(meta.exe_mtime_ms > 0);
+        // A meta written before this field existed still parses,
+        // with mtime 0 — and therefore counts as stale.
+        let old: BackgroundMeta =
+            serde_json::from_slice(br#"{"pid":1,"exe":"x","ipc":true,"updated_ms":1}"#).unwrap();
+        assert_eq!(old.exe_mtime_ms, 0);
+        assert!(background_binary_mismatch(
+            &old,
+            &std::env::current_exe().unwrap()
+        ));
     }
 }

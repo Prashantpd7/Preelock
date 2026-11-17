@@ -19,7 +19,7 @@ pub const PORT: u16 = 47832;
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
-pub const EXTENSION_VERSION: u32 = 13;
+pub const EXTENSION_VERSION: u32 = 14;
 pub const CONNECTION_TIMEOUT_MS: u64 = 65_000;
 #[derive(Clone, Debug, Serialize)]
 pub struct Policy {
@@ -954,6 +954,15 @@ impl Bridge {
             state.adult_block_enabled = enabled;
         }
     }
+    /// Test-only read of the adult-blocking flag served to extensions
+    /// (see `set_adult_block_enabled`).
+    #[cfg(test)]
+    pub fn adult_block_enabled(&self) -> bool {
+        self.state
+            .lock()
+            .map(|s| s.adult_block_enabled)
+            .unwrap_or(false)
+    }
     pub fn set_screen_time_tracking(&self, enabled: bool) {
         if let Ok(mut state) = self.state.lock() {
             if !enabled {
@@ -1608,6 +1617,42 @@ mod tests {
         // sends the field) reports none.
         beat(false, true);
         assert!(!bridge.status_for("com.google.chrome").media_playing);
+    }
+    #[test]
+    fn extension_builds_without_adult_support_are_reported_stale() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let beat = |version: u32| {
+            let body = serde_json::json!({
+                "client": "11111111-1111-1111-1111-111111111111",
+                "browser": "com.brave.browser",
+                "applied_id": "",
+                "v": version,
+            })
+            .to_string();
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(stream,"POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",bridge.token,body.len()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+        };
+        // The Web Store build 0.5.5 reports 13 and ignores the desktop's
+        // adult-blocking setting entirely: it must not be treated as current.
+        beat(13);
+        let status = bridge.status_for("com.brave.browser");
+        assert!(status.connected);
+        assert!(
+            status.extension_stale,
+            "an extension without adult support must be reported stale"
+        );
+        assert_eq!(status.ext_v_debug, 13);
+        // The build the app ships reports the expected version.
+        beat(EXTENSION_VERSION);
+        assert!(!bridge.status_for("com.brave.browser").extension_stale);
     }
     #[test]
     fn two_browsers_share_one_code_without_disturbing_each_other() {

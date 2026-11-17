@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Plus } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { Empty } from './ui';
 import { Dropdown } from './Dropdown';
@@ -46,9 +45,6 @@ import {
 // forms remain available as a fallback.
 export function PlanningSections({
   only,
-  onNewSchedule,
-  onNewOneShot,
-  onNewAllowance,
   onEditAllowance,
   range = 'all',
   setup,
@@ -494,27 +490,7 @@ export function PlanningSections({
           ) : (
             <Empty>No schedules yet.</Empty>
           )}
-          {!schedFormOpen ? (
-            <div className="row controls">
-              <button
-                type="button"
-                onClick={() => {
-                  // New schedules always start from the session wizard
-                  // now — no saved session is needed first. The inline
-                  // form below is only for editing an existing one.
-                  if (onNewSchedule) {
-                    onNewSchedule();
-                    return;
-                  }
-                  resetSchedForm();
-                  setSchedFormOpen(true);
-                }}
-              >
-                <Plus size={16} />
-                New schedule
-              </button>
-            </div>
-          ) : (
+          {schedFormOpen && (
             <form className="panel form-panel" onSubmit={submitSchedule}>
               <h2>{schedEditingId ? 'Edit schedule' : 'New schedule'}</h2>
               {!schedEditingId && (
@@ -754,26 +730,7 @@ export function PlanningSections({
           ) : (
             <Empty>No one-shot timers yet.</Empty>
           )}
-          {!oneFormOpen ? (
-            <div className="row controls">
-              <button
-                type="button"
-                onClick={() => {
-                  // New one-shots always start from the session wizard
-                  // now — no saved session is needed first.
-                  if (onNewOneShot) {
-                    onNewOneShot();
-                    return;
-                  }
-                  resetOneForm();
-                  setOneFormOpen(true);
-                }}
-              >
-                <Plus size={16} />
-                New one-shot
-              </button>
-            </div>
-          ) : (
+          {oneFormOpen && (
             <form className="panel form-panel" onSubmit={submitOneShot}>
               <h2>New one-shot</h2>
               <label>
@@ -919,24 +876,7 @@ export function PlanningSections({
           ) : (
             <Empty>No allowances yet.</Empty>
           )}
-          {!allowFormOpen ? (
-            <div className="row controls">
-              <button
-                type="button"
-                onClick={() => {
-                  if (onNewAllowance) {
-                    onNewAllowance();
-                    return;
-                  }
-                  setEditingAllowance(null);
-                  setAllowFormOpen(true);
-                }}
-              >
-                <Plus size={16} />
-                New allowance
-              </button>
-            </div>
-          ) : (
+          {allowFormOpen && (
             <AllowanceForm
               key={editingAllowance?.id ?? 'new'}
               className="panel form-panel"
