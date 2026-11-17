@@ -753,7 +753,13 @@ void preelock_activate_app(void) {
 static BOOL vyIsOurGuiInstance(NSRunningApplication *app) {
     if (app == nil || app.terminated) return NO;
     NSString *ident = vyBundleIdentifier();
-    if (ident.length > 0 && ![app.bundleIdentifier isEqualToString:ident]) return NO;
+    // Unbundled (dev) binaries have no bundle id: with nothing to verify
+    // against, never match by activation policy alone — the scan would
+    // otherwise return the first Regular app (Finder, a browser) as "our
+    // GUI", activation would report success, and no GUI would ever spawn
+    // (force-quit relaunch dead in dev).
+    if (ident.length == 0) return NO;
+    if (![app.bundleIdentifier isEqualToString:ident]) return NO;
     if (app.activationPolicy != NSApplicationActivationPolicyRegular) return NO;
     return YES;
 }
@@ -767,7 +773,18 @@ static NSRunningApplication *vyFindLiveGui(BOOL requireRegular) {
     if (pid > 0 && pid != getpid()) {
         NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
         if (app != nil && !app.terminated) {
-            BOOL identityOk = [app.bundleIdentifier isEqualToString:vyBundleIdentifier()];
+            NSString *ident = vyBundleIdentifier();
+            BOOL identityOk;
+            if (ident.length > 0) {
+                identityOk = [app.bundleIdentifier isEqualToString:ident];
+            } else {
+                // Unbundled (dev): no bundle id exists (a live dev GUI
+                // has bundleIdentifier nil, so the check above could
+                // never match it). Identify our GUI by executable name
+                // instead; the PID comes from gui.lock, which only
+                // Preelock writes.
+                identityOk = [[app.executableURL.lastPathComponent lowercaseString] isEqualToString:@"preelock"];
+            }
             if (identityOk && (!requireRegular || app.activationPolicy == NSApplicationActivationPolicyRegular)) {
                 return app;
             }
@@ -812,6 +829,26 @@ int preelock_activate_existing_gui(void) {
         activated = 1;
     });
     return activated;
+}
+
+// Read-only liveness probe for the --background supervisor. Returns the pid
+// of the live GUI, if any, or 0 when no GUI is live. This is the SAME
+// determination preelock_activate_existing_gui makes (vyFindLiveGui: gui.lock
+// pid verified by bundle id / executable name, then the running-application
+// scan), so the supervisor can no longer miss a live GUI just because
+// gui.lock is stale — the disagreement that made the supervisor fire nine
+// gui_requests in 24 s on 2026-11-17 while a GUI was alive.
+// It never spawns, never activates, and never creates an NSApplication:
+// vyFindLiveGui only reads gui.lock and NSWorkspace.runningApplications,
+// the same AppKit surface preelock_request_gui_activation already uses from
+// --background. A headless process stays headless (commit 2df233f).
+pid_t preelock_live_gui_pid(void) {
+    __block pid_t pid = 0;
+    onMain(^{
+        NSRunningApplication *gui = vyFindLiveGui(NO);
+        if (gui != nil) pid = gui.processIdentifier;
+    });
+    return pid;
 }
 
 // THE single GUI entry point for every process mode. Returns:

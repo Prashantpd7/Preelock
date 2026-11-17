@@ -16,6 +16,7 @@ unsafe extern "C" {
     fn preelock_activate_app();
     fn preelock_activate_existing_gui() -> i32;
     fn preelock_request_gui_activation(source: *const c_char, correlation: *const c_char) -> i32;
+    fn preelock_live_gui_pid() -> i32;
     fn preelock_install_notification_delegate();
     fn preelock_approve_quit();
     fn preelock_web_sample() -> *mut c_char;
@@ -102,6 +103,20 @@ pub fn activate_app() {
 /// Activate the running GUI, if one exists. Returns whether it did.
 pub fn activate_existing_instance() -> bool {
     unsafe { preelock_activate_existing_gui() == 1 }
+}
+
+/// Pid of the live GUI, if any, by the SAME determination the activation path
+/// uses (`vyFindLiveGui` in `native/macos.m`). Read-only probe for the
+/// `--background` supervisor: it never spawns, activates, or creates an
+/// `NSApplication`, so calling it from a headless process is safe (see
+/// `platform::probe_live_gui`).
+pub fn live_gui_pid() -> Option<u32> {
+    let pid = unsafe { preelock_live_gui_pid() };
+    if pid > 0 {
+        Some(pid as u32)
+    } else {
+        None
+    }
 }
 
 /// The one GUI entry point on macOS (see `native/macos.m`): activate a verified

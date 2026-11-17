@@ -84,6 +84,48 @@ impl GuiActivation {
     }
 }
 
+/// Result of asking the OS whether a Preelock GUI is live right now.
+///
+/// This is the supervisor's shared liveness check: on macOS it is the SAME
+/// determination `preelock_activate_existing_gui` makes
+/// (`vyFindLiveGui` in `native/macos.m` — `gui.lock` pid verified by bundle
+/// id / executable name, then the running-application scan), so the
+/// supervisor and the activation path can no longer disagree about whether
+/// a GUI is alive when `gui.lock` is stale. `Unknown` means this platform
+/// has no native probe; the supervisor then falls back to `gui.lock` +
+/// desktop heartbeat only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeGuiProbe {
+    /// No native liveness source on this platform.
+    Unknown,
+    /// The native scan found no live GUI.
+    Absent,
+    /// The native scan found a live GUI with this pid.
+    Present(u32),
+}
+
+/// Ask the OS whether a GUI is live, using the activation path's own check.
+///
+/// macOS only: `preelock_live_gui_pid` reads `NSWorkspace.runningApplications`
+/// and `gui.lock` — the same AppKit surface `preelock_request_gui_activation`
+/// already uses from `--background`. It never creates an `NSApplication`
+/// (the second-identity hazard from commit 2df233f is specifically
+/// `[NSApplication sharedApplication]`, which this path never calls), so a
+/// headless process stays headless.
+pub fn probe_live_gui() -> NativeGuiProbe {
+    #[cfg(target_os = "macos")]
+    {
+        match macos::live_gui_pid() {
+            Some(pid) => NativeGuiProbe::Present(pid),
+            None => NativeGuiProbe::Absent,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        NativeGuiProbe::Unknown
+    }
+}
+
 pub mod permissions;
 pub use permissions::{PermissionManager, PermissionStatus};
 

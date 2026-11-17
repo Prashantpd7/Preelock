@@ -45,6 +45,14 @@ const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
 pub const RELAUNCH_DELAY_MS: u64 = 1_000;
 pub const RELAUNCH_COOLDOWN_MS: u64 = 3_000;
+/// Grace window after a supervisor launch (2026-11-17 loop fix). Once the
+/// supervisor fires a launch, `evaluate` must not fire another one until
+/// this window has elapsed — a freshly spawned GUI needs time to take
+/// `gui.lock` / heartbeat before the next poll can see it, and the old
+/// 3 s cooldown alone was short enough to fire 9 launches in 24 s while
+/// every spawned copy died instantly. The window ends early as soon as any
+/// liveness evidence reports the GUI alive (`poll_ui_alive` clears it).
+pub const LAUNCH_GRACE_MS: u64 = 10_000;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -865,6 +873,11 @@ pub struct UiRelaunchSupervisor {
     ui_exiting_at: Option<u64>,
     ui_missing_since: Option<u64>,
     last_relaunch_at: Option<u64>,
+    /// End of the in-flight launch grace window (`LAUNCH_GRACE_MS` after
+    /// the last launch `evaluate` authorised). While set and unexpired,
+    /// `evaluate` never fires again — a previous launch is still in flight
+    /// and the new GUI has not had time to register yet.
+    pending_launch_until_ms: Option<u64>,
 }
 
 impl UiRelaunchSupervisor {
@@ -885,44 +898,84 @@ impl UiRelaunchSupervisor {
         self.known_ui_pid
     }
 
-    /// Reconcile known PID + heartbeat state into a boolean `ui_alive`.
+    /// Reconcile known PID + native scan + gui.lock + heartbeat into a
+    /// boolean `ui_alive`, using the same liveness determination the
+    /// activation path uses. Any ONE piece of live evidence wins: a live GUI
+    /// is never missed because one source is stale.
     pub fn poll_ui_alive(&mut self, data_dir: &Path) -> bool {
+        self.poll_ui_alive_with_probe(data_dir, platform::probe_live_gui())
+    }
+
+    /// `poll_ui_alive` with an explicit native probe, so tests can drive the
+    /// macOS scan result on any platform (CI runs on Linux, where the probe
+    /// is `NativeGuiProbe::Unknown`).
+    pub fn poll_ui_alive_with_probe(
+        &mut self,
+        data_dir: &Path,
+        native: platform::NativeGuiProbe,
+    ) -> bool {
+        // 1. The pid we already know: alive at OS level means alive, even
+        //    while it is still shutting down cleanly — wait for PID exit.
         if let Some(pid) = self.known_ui_pid {
             if process_alive(pid) {
-                // Process still shutting down cleanly, or alive at OS level:
-                // either way, consider it alive and wait for PID exit.
+                self.pending_launch_until_ms = None;
                 return true;
             }
             self.known_ui_pid = None;
             self.ui_exiting_at = None;
-            clear_desktop_heartbeat(data_dir);
-            // Fall through to the gui.lock check below instead of returning
-            // false: a new GUI may already have taken the lock during a
-            // handover (old GUI dead, new GUI starting but not yet
-            // heartbeating). Returning false here made the supervisor launch
-            // a duplicate GUI, whose Dock tile then stuck as a ghost icon.
+            // Fall through: a new GUI may already have taken the lock
+            // during a handover. Deliberately do NOT clear the desktop
+            // heartbeat here — a fresh heartbeat is itself evidence of a
+            // live GUI (only the GUI touches it, every 1 s), and clearing
+            // it would turn a handover into a false "dead" verdict.
         }
-        // If known_ui_pid is None, check gui.lock to see if a GUI process is alive
+        // 2. The native scan — the SAME check `preelock_activate_existing_gui`
+        //    makes (gui.lock pid verified by bundle id / executable name,
+        //    then the running-application scan). A live GUI is found here
+        //    even when gui.lock still points at a dead pid (stale lock
+        //    after a translocated / force-quit GUI), which is exactly the
+        //    disagreement that caused the 2026-11-17 relaunch loop. An
+        //    `Absent` verdict does NOT by itself mean dead: a GUI that has
+        //    just taken gui.lock may not yet appear in the scan, so the
+        //    lock and heartbeat checks below still run.
+        if let platform::NativeGuiProbe::Present(pid) = native {
+            if pid != 0 && pid != std::process::id() {
+                self.known_ui_pid = Some(pid);
+                self.pending_launch_until_ms = None;
+                return true;
+            }
+        }
+        // 3. gui.lock: a live pid wins. A DEAD pid, however, must never by
+        //    itself declare the UI dead — fall through to the heartbeat
+        //    instead. (The old code returned false here, so a stale lock
+        //    masked a live, heartbeating GUI and the supervisor kept
+        //    launching copies that died instantly.)
         if let Ok(content) = std::fs::read_to_string(data_dir.join("gui.lock")) {
             if let Ok(pid) = content.trim().parse::<u32>() {
-                if pid != 0 && pid != std::process::id() {
-                    if process_alive(pid) {
-                        self.known_ui_pid = Some(pid);
-                        return true;
-                    } else {
-                        clear_desktop_heartbeat(data_dir);
-                        return false;
-                    }
+                if pid != 0 && pid != std::process::id() && process_alive(pid) {
+                    self.known_ui_pid = Some(pid);
+                    self.pending_launch_until_ms = None;
+                    return true;
                 }
             }
         }
-        desktop_alive(data_dir)
+        // 4. Desktop heartbeat: only the GUI touches it (setup + its 1 s
+        //    heartbeat thread via `UiHeartbeat`), so a fresh one means a
+        //    GUI is alive even if every pid source above is stale.
+        if desktop_alive(data_dir) {
+            self.pending_launch_until_ms = None;
+            return true;
+        }
+        false
     }
 
     /// Evaluate whether the UI should be relaunched at `now_ms`.
     /// CRITICAL INVARIANT: returns `true` ONLY when `strict_active == true`,
-    /// `ui_alive == false`, `shutting_down == false`, missing duration >= 5s,
-    /// and cooldown since previous relaunch has elapsed.
+    /// `ui_alive == false`, `shutting_down == false`, missing duration >= 1s,
+    /// cooldown since previous relaunch has elapsed, AND no launch is still
+    /// in flight inside its grace window (`LAUNCH_GRACE_MS`). Authorising a
+    /// launch arms the grace window, so the supervisor can never fire a
+    /// second `gui_request` while the first launch is still in flight.
     pub fn evaluate(
         &mut self,
         now_ms: u64,
@@ -932,13 +985,26 @@ impl UiRelaunchSupervisor {
     ) -> bool {
         if shutting_down || !strict_active {
             self.ui_missing_since = None;
+            self.pending_launch_until_ms = None;
             return false;
         }
         if ui_alive {
             self.ui_missing_since = None;
+            self.pending_launch_until_ms = None;
             return false;
         }
+        // Start (or keep) the missing clock BEFORE the grace check: the UI
+        // has been missing throughout the grace window, so the 1 s delay
+        // must be measured from when it first went missing — not restarted
+        // when the window expires, or a relaunch would always slip a
+        // further second after every grace window.
         let since = *self.ui_missing_since.get_or_insert(now_ms);
+        if self
+            .pending_launch_until_ms
+            .is_some_and(|until| now_ms < until)
+        {
+            return false;
+        }
         if now_ms.saturating_sub(since) < RELAUNCH_DELAY_MS {
             return false;
         }
@@ -950,6 +1016,7 @@ impl UiRelaunchSupervisor {
         }
         self.last_relaunch_at = Some(now_ms);
         self.ui_missing_since = None;
+        self.pending_launch_until_ms = Some(now_ms.saturating_add(LAUNCH_GRACE_MS));
         true
     }
 }
@@ -1427,12 +1494,25 @@ mod tests {
 
         // Reaches 1s missing -> relaunches once!
         assert!(sup.evaluate(31_000, true, false, false));
-        // Cooldown prevents duplicate spawns while GUI is booting.
+        // In-flight grace window (10 s) prevents duplicate spawns while the
+        // GUI is booting — this is what stopped the 2026-11-17 loop, where
+        // the old 3 s cooldown alone fired 9 launches in 24 s.
         assert!(!sup.evaluate(31_500, true, false, false));
         assert!(!sup.evaluate(33_999, true, false, false));
+        assert!(!sup.evaluate(34_000, true, false, false));
+        assert!(!sup.evaluate(40_999, true, false, false));
 
-        // After cooldown passes, if UI still not alive, can relaunch.
-        assert!(sup.evaluate(34_000, true, false, false));
+        // After the grace window passes, if UI still not alive, can relaunch.
+        assert!(sup.evaluate(41_000, true, false, false));
+
+        // A launch that registers (UI seen alive) ends the grace early:
+        // the next disappearance still needs its own 1 s missing delay,
+        // but no 10 s grace blocks it.
+        assert!(!sup.evaluate(41_500, true, true, false));
+        assert!(!sup.evaluate(42_500, true, false, false));
+        // Still inside the 3 s cooldown from the 41_000 launch.
+        assert!(!sup.evaluate(43_500, true, false, false));
+        assert!(sup.evaluate(44_000, true, false, false));
 
         // OS shutdown suppresses relaunch even in active strict.
         assert!(!sup.evaluate(50_000, true, false, true));
@@ -1444,18 +1524,33 @@ mod tests {
     }
 
     #[test]
-    fn poll_ui_alive_detects_dead_pid_in_gui_lock_immediately() {
+    fn poll_ui_alive_stale_gui_lock_alone_never_declares_ui_dead() {
+        // 2026-11-17 loop: gui.lock pointed at a dead pid while a GUI was
+        // alive and heartbeating, and the old code returned false on the
+        // dead lock pid alone — so the supervisor kept launching copies
+        // that died instantly. A stale lock must never by itself declare
+        // the UI dead while fresher evidence (here: the heartbeat) says
+        // a GUI is alive.
         let dir = tempfile::tempdir().unwrap();
         let mut sup = UiRelaunchSupervisor::default();
-        // Write a dead PID into gui.lock (e.g. 99999999)
         std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
-        // Also touch desktop-heartbeat to simulate a recent heartbeat
         touch_desktop(dir.path());
         assert!(desktop_alive(dir.path()));
 
-        // poll_ui_alive should detect the PID is dead, clear desktop-heartbeat, and return false
-        assert!(!sup.poll_ui_alive(dir.path()));
+        assert!(sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent,));
+    }
+
+    #[test]
+    fn poll_ui_alive_dead_lock_and_no_heartbeat_is_dead() {
+        // The complement: when NOTHING says a GUI is alive — dead lock pid,
+        // native scan absent, no heartbeat — poll must still report dead,
+        // so a genuinely quit GUI is relaunched (once, under the grace
+        // window) instead of being missed forever.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
         assert!(!desktop_alive(dir.path()));
+        assert!(!sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent,));
     }
 
     #[test]
@@ -1505,6 +1600,122 @@ mod tests {
         std::fs::write(dir.path().join("gui.lock"), format!("{live_pid}\n")).unwrap();
         assert!(sup.poll_ui_alive(dir.path()));
         assert_eq!(sup.known_ui_pid(), Some(live_pid));
+
+        #[cfg(windows)]
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    #[test]
+    fn poll_ui_alive_native_scan_finds_gui_with_stale_gui_lock() {
+        // Shared liveness (2026-11-17): the supervisor knows a dead pid and
+        // gui.lock still points at it, but the native scan — the same check
+        // the activation path makes — finds a live GUI. Poll must report
+        // alive and adopt the live pid, never launch on the stale lock.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        #[cfg(unix)]
+        let live_pid = unsafe { libc::getppid() as u32 };
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+            .spawn()
+            .expect("spawn test process");
+        #[cfg(windows)]
+        let live_pid = child.id();
+
+        sup.mark_ui_alive(99999999);
+        std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
+        assert!(
+            sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Present(live_pid),)
+        );
+        assert_eq!(sup.known_ui_pid(), Some(live_pid));
+
+        #[cfg(windows)]
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    #[test]
+    fn supervisor_never_double_spawns_within_one_tick_or_window() {
+        // The exact 2026-11-17 failure, at the supervisor level: polls run
+        // every 200 ms and the old 3 s cooldown let a second launch fire
+        // while the first was still in flight (two GUIs spawned in the same
+        // millisecond at 19:39:49). After one authorised launch, every
+        // evaluate inside the grace window must refuse — even across many
+        // rapid ticks — until the window expires or the GUI registers.
+        let mut sup = UiRelaunchSupervisor::default();
+        assert!(!sup.evaluate(1_000, true, false, false));
+        assert!(sup.evaluate(2_000, true, false, false));
+        for t in [2_000, 2_100, 2_200, 2_500, 3_000, 5_000, 9_999, 11_999] {
+            assert!(
+                !sup.evaluate(t, true, false, false),
+                "second launch fired at {t} ms, inside the grace window"
+            );
+        }
+        assert!(sup.evaluate(12_000, true, false, false));
+    }
+
+    #[test]
+    fn supervisor_loop_scenario_from_2026_11_17_log_does_not_recur() {
+        // Replay of the log timeline (19:39:25–19:39:49 UTC): strict session
+        // active, GUI alive but gui.lock stale (translocated copy), native
+        // scan finds the live GUI, heartbeat fresh. The supervisor must
+        // fire ZERO launches. Then the GUI truly dies (scan absent, lock
+        // dead, heartbeat stale): exactly ONE launch, and no second one
+        // while it is in flight.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        #[cfg(unix)]
+        let live_pid = unsafe { libc::getppid() as u32 };
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+            .spawn()
+            .expect("spawn test process");
+        #[cfg(windows)]
+        let live_pid = child.id();
+
+        // Confused state, as in the log: stale lock, live GUI.
+        std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
+        touch_desktop(dir.path());
+        let mut launches = 0;
+        for t in (0..=25_000).step_by(200) {
+            let alive = sup
+                .poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Present(live_pid));
+            assert!(alive, "poll said dead at {t} ms while GUI was live");
+            if sup.evaluate(t as u64, true, alive, false) {
+                launches += 1;
+            }
+        }
+        assert_eq!(launches, 0, "supervisor launched while GUI was live");
+
+        // GUI truly gone: no heartbeat (remove the heartbeat file), lock
+        // dead, scan absent. The supervisor's known pid is reset to a dead
+        // pid to model the live GUI process actually exiting.
+        sup.mark_ui_alive(99999999);
+        let _ = std::fs::remove_file(dir.path().join("desktop-heartbeat"));
+        // A genuinely dead GUI must still be relaunched — but at the grace
+        // cadence (one launch per 10 s window), never the 3 s burst of the
+        // 2026-11-17 log (9 launches in 24 s). Over 25 s that is exactly
+        // three launches, spaced 10 s apart.
+        let mut launch_at: Vec<u64> = Vec::new();
+        for t in (0..=25_000).step_by(200) {
+            let alive = sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent);
+            assert!(!alive, "poll said alive at {t} ms with all evidence dead");
+            if sup.evaluate(t as u64, true, alive, false) {
+                launch_at.push(t as u64);
+            }
+        }
+        assert_eq!(
+            launch_at,
+            vec![1_000, 11_000, 21_000],
+            "expected one relaunch per grace window, got {launch_at:?}"
+        );
 
         #[cfg(windows)]
         {
