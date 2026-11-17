@@ -105,7 +105,8 @@ pub fn activate_existing_instance() -> bool {
 }
 
 /// The one GUI entry point on macOS (see `native/macos.m`): activate a verified
-/// live GUI, otherwise launch the bundle through LaunchServices.
+/// live GUI, otherwise spawn the bundled executable directly — never through
+/// LaunchServices, so a losing second instance leaves no Dock tile.
 pub fn request_gui_activation(source: &str, correlation: &str) -> super::GuiActivation {
     let source = std::ffi::CString::new(source).unwrap_or_default();
     let correlation = std::ffi::CString::new(correlation).unwrap_or_default();

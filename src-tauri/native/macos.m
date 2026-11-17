@@ -818,14 +818,23 @@ int preelock_activate_existing_gui(void) {
 //   3 = this process is the GUI (a click arrived while it owns gui.lock; the
 //       startup path consumes notification-click.json and shows the window),
 //   1 = an existing GUI was activated,
-//   2 = a fresh GUI was launched through LaunchServices,
+//   2 = a fresh GUI was launched by spawning the bundled executable,
 //   0 = nothing could be done (not inside an .app bundle, launch failed).
 //
-// Only one mechanism launches the GUI. LaunchServices is asked for
-// `createsNewApplicationInstance` because another mode of this bundle (a tray
-// icon) may be the running instance; that cannot produce two GUIs because
-// gui.lock is acquired before any AppKit initialization and a loser exits
-// without ever touching AppKit.
+// Only one mechanism launches the GUI: the bundled executable is spawned
+// directly. LaunchServices (`/usr/bin/open -a`, especially `open -n`) is
+// deliberately NOT used: it creates a new application instance — and a Dock
+// tile — before the new process can prove it will win gui.lock, so a launch
+// that loses the race leaves a bouncing Dock tile for a process that exits
+// before ever creating an NSApplication (Dock Quit then does nothing and
+// only Force Quit clears it). A directly spawned loser exits silently with
+// no tile at all, and a winner shows exactly one tile. Direct spawn also
+// keeps the PREELOCK_LAUNCH_SOURCE / PREELOCK_CORRELATION_ID handoff in the
+// child's environment, and survives a short-lived caller (--open-gui, the
+// notification delegate) exiting right after the spawn. gui.lock, taken
+// before AppKit exists, still guarantees the extra process can never become
+// a second GUI: a loser activates the winner and exits without an
+// NSApplication.
 int preelock_request_gui_activation(const char *source, const char *correlation) {
     __block int result = 0;
     NSString *corr = (correlation && correlation[0]) ? [NSString stringWithUTF8String:correlation] : @"";
@@ -837,14 +846,15 @@ int preelock_request_gui_activation(const char *source, const char *correlation)
         vyLifecycleLog(@"event=gui_request result=self source=%@ correlation=%@", sourceString, corr);
         return 3;
     }
-    NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
-    if (![bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) bundleURL = nil;
+    NSURL *executableURL = NSBundle.mainBundle.executableURL;
+    BOOL bundled = executableURL != nil &&
+        [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
     onMain(^{
         if (preelock_activate_existing_gui()) {
             result = 1;
             return;
         }
-        if (bundleURL == nil) {
+        if (!bundled) {
             vyLifecycleLog(@"event=gui_request result=unbundled source=%@ correlation=%@", sourceString, corr);
             return;
         }
@@ -852,30 +862,10 @@ int preelock_request_gui_activation(const char *source, const char *correlation)
             [NSProcessInfo.processInfo.environment mutableCopy];
         environment[@"PREELOCK_LAUNCH_SOURCE"] = sourceString;
         if (corr.length > 0) environment[@"PREELOCK_CORRELATION_ID"] = corr;
-        // LaunchServices is asked through /usr/bin/open — the documented client
-        // for it — rather than an in-process NSWorkspace request, because a
-        // short-lived caller (--open-gui) exits before an asynchronous request
-        // is serviced and the GUI then never appears. `open -n` is used ONLY
-        // when another non-GUI instance of this bundle is already running (a
-        // tray icon), where a plain `open -a` would activate that instance
-        // instead of creating the GUI. gui.lock, taken before AppKit exists,
-        // guarantees the extra process can never become a second GUI: a loser
-        // activates the winner and exits without an NSApplication.
-        BOOL otherInstanceRunning = NO;
-        for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
-            if (app.processIdentifier != getpid() &&
-                [app.bundleIdentifier isEqualToString:vyBundleIdentifier()]) {
-                otherInstanceRunning = YES;
-                break;
-            }
-        }
-        NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObjects:@"-a", bundleURL.path, nil];
-        if (otherInstanceRunning) [arguments insertObject:@"-n" atIndex:0];
-        vyLifecycleLog(@"event=gui_launch bundle=%@ source=%@ correlation=%@ new_instance=%d",
-                       bundleURL.path, sourceString, corr, otherInstanceRunning);
+        vyLifecycleLog(@"event=gui_launch bundle=%@ source=%@ correlation=%@",
+                       NSBundle.mainBundle.bundleURL.path, sourceString, corr);
         NSTask *task = [NSTask new];
-        task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
-        task.arguments = arguments;
+        task.executableURL = executableURL;
         task.environment = environment;
         task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
         task.standardError = [NSFileHandle fileHandleWithNullDevice];
@@ -883,16 +873,12 @@ int preelock_request_gui_activation(const char *source, const char *correlation)
         if (![task launchAndReturnError:&spawnError]) {
             vyLifecycleLog(@"event=gui_launch_failed correlation=%@ error=%@",
                            corr,
-                           spawnError.localizedDescription ?: @"could not spawn open");
+                           spawnError.localizedDescription ?: @"could not spawn GUI executable");
             return;
         }
-        [task waitUntilExit];
-        if (task.terminationStatus != 0) {
-            vyLifecycleLog(@"event=gui_launch_failed correlation=%@ status=%d",
-                           corr,
-                           (int)task.terminationStatus);
-            return;
-        }
+        // Do NOT wait for the child: it is the GUI and runs for hours. The
+        // child is a real process, so it survives this (possibly short-lived)
+        // caller exiting right after the spawn.
         vyLifecycleLog(@"event=gui_launch_completed correlation=%@", corr);
         result = 2;
     });

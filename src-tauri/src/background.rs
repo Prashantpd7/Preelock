@@ -888,18 +888,19 @@ impl UiRelaunchSupervisor {
     /// Reconcile known PID + heartbeat state into a boolean `ui_alive`.
     pub fn poll_ui_alive(&mut self, data_dir: &Path) -> bool {
         if let Some(pid) = self.known_ui_pid {
-            if !process_alive(pid) {
-                self.known_ui_pid = None;
-                self.ui_exiting_at = None;
-                clear_desktop_heartbeat(data_dir);
-                return false;
-            }
-            if self.ui_exiting_at.is_some() {
-                // Process still shutting down cleanly; wait for PID exit.
+            if process_alive(pid) {
+                // Process still shutting down cleanly, or alive at OS level:
+                // either way, consider it alive and wait for PID exit.
                 return true;
             }
-            // If the process is alive at OS level, consider it alive.
-            return true;
+            self.known_ui_pid = None;
+            self.ui_exiting_at = None;
+            clear_desktop_heartbeat(data_dir);
+            // Fall through to the gui.lock check below instead of returning
+            // false: a new GUI may already have taken the lock during a
+            // handover (old GUI dead, new GUI starting but not yet
+            // heartbeating). Returning false here made the supervisor launch
+            // a duplicate GUI, whose Dock tile then stuck as a ghost icon.
         }
         // If known_ui_pid is None, check gui.lock to see if a GUI process is alive
         if let Ok(content) = std::fs::read_to_string(data_dir.join("gui.lock")) {
@@ -1474,6 +1475,36 @@ mod tests {
         std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
         assert!(sup.poll_ui_alive(dir.path()));
         assert_eq!(sup.known_ui_pid(), Some(test_pid));
+
+        #[cfg(windows)]
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    #[test]
+    fn poll_ui_alive_falls_through_to_gui_lock_when_known_pid_died() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        // Handover: the supervisor still knows the old (dead) GUI pid, but a
+        // new GUI has already taken gui.lock and is starting (no heartbeat
+        // yet). poll_ui_alive must report the UI alive, not launch a
+        // duplicate GUI whose Dock tile would stick as a ghost icon.
+        #[cfg(unix)]
+        let live_pid = unsafe { libc::getppid() as u32 };
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+            .spawn()
+            .expect("spawn test process");
+        #[cfg(windows)]
+        let live_pid = child.id();
+
+        sup.mark_ui_alive(99999999);
+        std::fs::write(dir.path().join("gui.lock"), format!("{live_pid}\n")).unwrap();
+        assert!(sup.poll_ui_alive(dir.path()));
+        assert_eq!(sup.known_ui_pid(), Some(live_pid));
 
         #[cfg(windows)]
         {
