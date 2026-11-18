@@ -22,15 +22,12 @@ static void onMain(dispatch_block_t work) {
 // MARK: - Application lifecycle identity
 //
 // One bundle, several process modes (GUI, --background, --tray,
-// --attention). LaunchServices identifies an application by bundle id, so a
-// headless mode that touches NSApplication registers a SECOND instance of
-// com.preelock.desktop next to the GUI (``lsappinfo`` reports it as
-// BackgroundOnly). macOS then resolves "Preelock" to that daemon: activation
-// and Apple Events are delivered to a process with no window and no run loop,
-// which is how `open -a Preelock.app` used to turn the background engine into a
-// frontmost, windowless, unquittable app. Headless modes therefore never
-// initialize NSApplication (see `preelock_set_activation_policy_prohibited`,
-// removed). This helper block is the single source of truth for that identity.
+// --attention). LaunchServices identifies an application by bundle id. Only
+// the GUI may own the notification delegate or use AppKit for application
+// identity/activation; doing so in a headless mode can register a second
+// com.preelock.desktop identity with no window to activate. The background
+// engine still uses native foreground sampling and enforcement APIs.
+// Headless launch/recovery paths use LaunchServices through /usr/bin/open.
 static NSString *vyBundleIdentifier(void) {
     return NSBundle.mainBundle.bundleIdentifier ?: @"";
 }
@@ -475,7 +472,6 @@ char *preelock_login(int enabled) {
         return strdup(message.UTF8String);
     }
 }
-int preelock_activate_existing_gui(void);
 int preelock_request_gui_activation(const char *source, const char *correlation);
 void preelock_install_notification_delegate(void);
 
@@ -517,10 +513,8 @@ void preelock_request_notification_authorization(void) {
         }
     }];
 }
-// Persist the click context (no user content) so a cold-launched GUI can
-// consume it exactly once. A click must never depend on a process that is
-// still running: this file, plus the correlation id in the launched
-// process's environment, is the whole handoff.
+// Persist the click context (no user content) so the GUI can consume it
+// exactly once after Notification Center has activated or cold-launched it.
 static void vyWritePendingNotificationClick(NSString *correlation, NSString *requestId, NSString *actionId, NSString *kind) {
     NSDictionary *payload = @{
         @"correlation": correlation ?: @"",
@@ -550,11 +544,9 @@ static void vyWritePendingNotificationClick(NSString *correlation, NSString *req
     (void)center; (void)notification;
     completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
 }
-// The response is handled in whatever process owns the delegate — the GUI when
-// it is alive, otherwise the background engine or tray that posted the
-// notification. `preelock_request_gui_activation` is the ONE launch/activate
-// entry point; it never relies on LaunchServices re-resolving this bundle to a
-// headless instance.
+// The GUI owns this delegate. Notification Center activates or cold-launches
+// the GUI before delivering the response, so the callback only persists the
+// click context for the GUI to consume.
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler {
     (void)center;
     NSString *correlation = NSUUID.UUID.UUIDString;
@@ -564,19 +556,15 @@ static void vyWritePendingNotificationClick(NSString *correlation, NSString *req
     vyLifecycleLog(@"event=notification_click pid=%d correlation=%@ request=%@ action=%@ kind=%@",
                    getpid(), correlation, request.identifier, response.actionIdentifier, kind);
     vyWritePendingNotificationClick(correlation, request.identifier, response.actionIdentifier, kind);
-    preelock_request_gui_activation("notification", correlation.UTF8String);
-    // Always complete the response: a click must never leave macOS waiting and
-    // must never block the notification centre.
+    // Always complete the response; a click must never block Notification Center.
     if (completionHandler) {
         completionHandler();
     }
 }
 @end
 
-// Install the delegate as early as possible in every bundled process that can
-// be running when a notification is clicked (GUI, background engine, tray).
-// The center queues responses until a delegate exists, so a cold launch still
-// receives the click that caused it.
+// Install before the GUI run loop starts so a cold-launch click is queued and
+// delivered after the GUI owns the application identity.
 void preelock_install_notification_delegate(void) {
     if (!vyIsBundledApp()) return;
     static VYAlerts *delegate;
@@ -606,7 +594,6 @@ void preelock_notify_ctx(const char *identifier, const char *kind, const char *t
         }
         return;
     }
-    preelock_install_notification_delegate();
     UNMutableNotificationContent *content = [UNMutableNotificationContent new];
     content.title = [NSString stringWithUTF8String:title ? title : "Preelock"];
     content.body = [NSString stringWithUTF8String:body ? body : ""];
@@ -746,134 +733,23 @@ void preelock_activate_app(void) {
     });
 }
 
-// True only for a process that really is this bundle's GUI: same bundle id,
-// same bundled executable, not terminated, and a Regular activation policy
-// (a window-owning app). A headless mode can never satisfy this now, and a
-// stale PID that the OS reused is rejected by the identity checks.
-static BOOL vyIsOurGuiInstance(NSRunningApplication *app) {
-    if (app == nil || app.terminated) return NO;
-    NSString *ident = vyBundleIdentifier();
-    // Unbundled (dev) binaries have no bundle id: with nothing to verify
-    // against, never match by activation policy alone — the scan would
-    // otherwise return the first Regular app (Finder, a browser) as "our
-    // GUI", activation would report success, and no GUI would ever spawn
-    // (force-quit relaunch dead in dev).
-    if (ident.length == 0) return NO;
-    if (![app.bundleIdentifier isEqualToString:ident]) return NO;
-    if (app.activationPolicy != NSApplicationActivationPolicyRegular) return NO;
-    return YES;
-}
-
-// The live GUI, if any. gui.lock is a hint (PID + flock), never proof: the PID
-// is only trusted when the process exists and is this bundle's GUI.
-static NSRunningApplication *vyFindLiveGui(BOOL requireRegular) {
-    NSString *lockPath = [vyDataDirectory() stringByAppendingPathComponent:@"gui.lock"];
-    NSString *content = [NSString stringWithContentsOfFile:lockPath encoding:NSUTF8StringEncoding error:nil];
-    pid_t pid = (pid_t)[content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].intValue;
-    if (pid > 0 && pid != getpid()) {
-        NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-        if (app != nil && !app.terminated) {
-            NSString *ident = vyBundleIdentifier();
-            BOOL identityOk;
-            if (ident.length > 0) {
-                identityOk = [app.bundleIdentifier isEqualToString:ident];
-            } else {
-                // Unbundled (dev): no bundle id exists (a live dev GUI
-                // has bundleIdentifier nil, so the check above could
-                // never match it). Identify our GUI by executable name
-                // instead; the PID comes from gui.lock, which only
-                // Preelock writes.
-                identityOk = [[app.executableURL.lastPathComponent lowercaseString] isEqualToString:@"preelock"];
-            }
-            if (identityOk && (!requireRegular || app.activationPolicy == NSApplicationActivationPolicyRegular)) {
-                return app;
-            }
-            vyLifecycleLog(@"event=stale_gui_lock pid=%d bundle=%@ policy=%ld",
-                           pid, app.bundleIdentifier, (long)app.activationPolicy);
-        } else {
-            vyLifecycleLog(@"event=stale_gui_lock pid=%d alive=0", pid);
-        }
-    }
-    for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
-        if (app.processIdentifier == getpid()) continue;
-        if (vyIsOurGuiInstance(app)) return app;
-    }
-    return nil;
-}
-
-// Activate the existing GUI window. NEVER spawns a new process. Returns 1 when
-// an instance was activated, 0 when there is no GUI to activate.
-int preelock_activate_existing_gui(void) {
-    __block int activated = 0;
-    onMain(^{
-        NSRunningApplication *gui = vyFindLiveGui(NO);
-        if (gui == nil) return;
-        [gui unhide];
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [gui activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-#pragma clang diagnostic pop
-        // `applicationShouldHandleReopen` restores a hidden/closed window even
-        // for an instance that is still starting up.
-        pid_t pid = gui.processIdentifier;
-        AEAddressDesc target;
-        if (AECreateDesc(typeKernelProcessID, &pid, sizeof(pid), &target) == noErr) {
-            AppleEvent reopenEvent;
-            if (AECreateAppleEvent(kCoreEventClass, kAEReopenApplication, &target, kAutoGenerateReturnID, kAnyTransactionID, &reopenEvent) == noErr) {
-                AESendMessage(&reopenEvent, NULL, kAENoReply, kAEDefaultTimeout);
-                AEDisposeDesc(&reopenEvent);
-            }
-            AEDisposeDesc(&target);
-        }
-        vyLifecycleLog(@"event=gui_activated pid=%d", pid);
-        activated = 1;
-    });
-    return activated;
-}
-
-// Read-only liveness probe for the --background supervisor. Returns the pid
-// of the live GUI, if any, or 0 when no GUI is live. This is the SAME
-// determination preelock_activate_existing_gui makes (vyFindLiveGui: gui.lock
-// pid verified by bundle id / executable name, then the running-application
-// scan), so the supervisor can no longer miss a live GUI just because
-// gui.lock is stale — the disagreement that made the supervisor fire nine
-// gui_requests in 24 s on 2026-11-17 while a GUI was alive.
-// It never spawns, never activates, and never creates an NSApplication:
-// vyFindLiveGui only reads gui.lock and NSWorkspace.runningApplications,
-// the same AppKit surface preelock_request_gui_activation already uses from
-// --background. A headless process stays headless (commit 2df233f).
-pid_t preelock_live_gui_pid(void) {
-    __block pid_t pid = 0;
-    onMain(^{
-        NSRunningApplication *gui = vyFindLiveGui(NO);
-        if (gui != nil) pid = gui.processIdentifier;
-    });
-    return pid;
+// Notification Center launches the app itself for a cold default-action
+// click. Its delegate must not race that LaunchServices launch with NSTask.
+int preelock_gui_request_allows_cold_launch(const char *source) {
+    NSString *sourceString = source ? [NSString stringWithUTF8String:source] : nil;
+    return ![sourceString isEqualToString:@"notification"];
 }
 
 // THE single GUI entry point for every process mode. Returns:
-//   3 = this process is the GUI (a click arrived while it owns gui.lock; the
-//       startup path consumes notification-click.json and shows the window),
-//   1 = an existing GUI was activated,
-//   2 = a fresh GUI was launched by spawning the bundled executable,
+//   1 = legacy activated result,
+//   2 = LaunchServices accepted an open/activate request,
+//   4 = Notification Center owns the cold launch after a notification click,
 //   0 = nothing could be done (not inside an .app bundle, launch failed).
 //
-// Only one mechanism launches the GUI: the bundled executable is spawned
-// directly. LaunchServices (`/usr/bin/open -a`, especially `open -n`) is
-// deliberately NOT used: it creates a new application instance — and a Dock
-// tile — before the new process can prove it will win gui.lock, so a launch
-// that loses the race leaves a bouncing Dock tile for a process that exits
-// before ever creating an NSApplication (Dock Quit then does nothing and
-// only Force Quit clears it). A directly spawned loser exits silently with
-// no tile at all, and a winner shows exactly one tile. Direct spawn also
-// keeps the PREELOCK_LAUNCH_SOURCE / PREELOCK_CORRELATION_ID handoff in the
-// child's environment, and survives a short-lived caller (--open-gui, the
-// notification delegate) exiting right after the spawn. gui.lock, taken
-// before AppKit exists, still guarantees the extra process can never become
-// a second GUI: a loser activates the winner and exits without an
-// NSApplication.
+// Use the system's normal app-open path so LaunchServices coalesces concurrent
+// requests from the Dock, notification center, tray, CLI, and supervisor.
+// Headless callers must not query NSWorkspace to discover or activate the GUI.
 int preelock_request_gui_activation(const char *source, const char *correlation) {
-    __block int result = 0;
     NSString *corr = (correlation && correlation[0]) ? [NSString stringWithUTF8String:correlation] : @"";
     NSString *sourceString = (source && source[0]) ? [NSString stringWithUTF8String:source] : @"unknown";
     NSString *lockPath = [vyDataDirectory() stringByAppendingPathComponent:@"gui.lock"];
@@ -883,43 +759,51 @@ int preelock_request_gui_activation(const char *source, const char *correlation)
         vyLifecycleLog(@"event=gui_request result=self source=%@ correlation=%@", sourceString, corr);
         return 3;
     }
-    NSURL *executableURL = NSBundle.mainBundle.executableURL;
-    BOOL bundled = executableURL != nil &&
-        [NSBundle.mainBundle.bundleURL.pathExtension.lowercaseString isEqualToString:@"app"];
-    onMain(^{
-        if (preelock_activate_existing_gui()) {
-            result = 1;
-            return;
-        }
-        if (!bundled) {
-            vyLifecycleLog(@"event=gui_request result=unbundled source=%@ correlation=%@", sourceString, corr);
-            return;
-        }
-        NSMutableDictionary<NSString *, NSString *> *environment =
-            [NSProcessInfo.processInfo.environment mutableCopy];
-        environment[@"PREELOCK_LAUNCH_SOURCE"] = sourceString;
-        if (corr.length > 0) environment[@"PREELOCK_CORRELATION_ID"] = corr;
-        vyLifecycleLog(@"event=gui_launch bundle=%@ source=%@ correlation=%@",
-                       NSBundle.mainBundle.bundleURL.path, sourceString, corr);
-        NSTask *task = [NSTask new];
-        task.executableURL = executableURL;
-        task.environment = environment;
-        task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
-        task.standardError = [NSFileHandle fileHandleWithNullDevice];
-        NSError *spawnError = nil;
-        if (![task launchAndReturnError:&spawnError]) {
-            vyLifecycleLog(@"event=gui_launch_failed correlation=%@ error=%@",
-                           corr,
-                           spawnError.localizedDescription ?: @"could not spawn GUI executable");
-            return;
-        }
-        // Do NOT wait for the child: it is the GUI and runs for hours. The
-        // child is a real process, so it survives this (possibly short-lived)
-        // caller exiting right after the spawn.
-        vyLifecycleLog(@"event=gui_launch_completed correlation=%@", corr);
-        result = 2;
-    });
-    return result;
+    if (!preelock_gui_request_allows_cold_launch(sourceString.UTF8String)) {
+        vyLifecycleLog(@"event=gui_request result=deferred_to_system source=%@ correlation=%@",
+                       sourceString, corr);
+        return 4;
+    }
+    NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
+    if (bundleURL == nil ||
+        ![bundleURL.pathExtension.lowercaseString isEqualToString:@"app"]) {
+        vyLifecycleLog(@"event=gui_request result=unbundled source=%@ correlation=%@",
+                       sourceString, corr);
+        return 0;
+    }
+    NSTask *task = [NSTask new];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithArray:@[
+        @"--env", [NSString stringWithFormat:@"PREELOCK_LAUNCH_SOURCE=%@", sourceString],
+        @"-a", bundleURL.path
+    ]];
+    if (corr.length > 0) {
+        [arguments insertObjects:@[@"--env", [NSString stringWithFormat:@"PREELOCK_CORRELATION_ID=%@", corr]]
+                         atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(2, 2)]];
+    }
+    NSString *dataDirectory = NSProcessInfo.processInfo.environment[@"PREELOCK_DATA_DIR"];
+    if (dataDirectory.length > 0) {
+        [arguments insertObjects:@[@"--env", [NSString stringWithFormat:@"PREELOCK_DATA_DIR=%@", dataDirectory]]
+                         atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(2, 2)]];
+    }
+    task.arguments = arguments;
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    NSError *spawnError = nil;
+    if (![task launchAndReturnError:&spawnError]) {
+        vyLifecycleLog(@"event=gui_launch_failed correlation=%@ error=%@",
+                       corr, spawnError.localizedDescription ?: @"could not start LaunchServices request");
+        return 0;
+    }
+    [task waitUntilExit];
+    if (task.terminationStatus != 0) {
+        vyLifecycleLog(@"event=gui_launch_failed correlation=%@ status=%d",
+                       corr, task.terminationStatus);
+        return 0;
+    }
+    vyLifecycleLog(@"event=gui_request result=launched source=%@ correlation=%@",
+                   sourceString, corr);
+    return 2;
 }
 
 // Screen Time row icons: the app's real icon as a base64 PNG string

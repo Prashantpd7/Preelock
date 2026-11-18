@@ -515,11 +515,9 @@ pub fn run() {
         .unwrap_or_else(|| background::data_dir().unwrap_or_default());
     let _ = std::fs::create_dir_all(&dir);
 
-    // Single-instance enforcement BEFORE initializing Tauri / AppKit.
-    // A loser never initializes NSApplication: doing so (even with a Prohibited
-    // policy) registers a second com.preelock.desktop identity with
-    // LaunchServices, which is what let macOS activate a windowless process
-    // instead of the GUI after a notification click.
+    // Single-instance enforcement BEFORE initializing Tauri / AppKit. A
+    // losing launch asks LaunchServices to activate the winner, then exits
+    // without creating another application instance.
     let gui_lock = match GuiLock::try_acquire(&dir) {
         Some(lock) => lock,
         None => {
@@ -530,8 +528,8 @@ pub fn run() {
             platform::deactivate_and_exit();
         }
     };
-    // The delegate must exist before the run loop starts so a click that caused
-    // this launch is delivered, not dropped.
+    // The GUI owns the delegate before its run loop starts so a cold-launch
+    // notification response is delivered, not dropped.
     platform::install_notification_delegate();
     let setup_dir = dir.clone();
 

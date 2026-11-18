@@ -14,9 +14,7 @@ unsafe extern "C" {
     fn preelock_hide_from_dock();
     fn preelock_pump_runloop(seconds: f64);
     fn preelock_activate_app();
-    fn preelock_activate_existing_gui() -> i32;
     fn preelock_request_gui_activation(source: *const c_char, correlation: *const c_char) -> i32;
-    fn preelock_live_gui_pid() -> i32;
     fn preelock_install_notification_delegate();
     fn preelock_approve_quit();
     fn preelock_web_sample() -> *mut c_char;
@@ -83,9 +81,7 @@ pub fn app_icon(identity: &str) -> Option<String> {
 pub fn hide_from_dock() {
     unsafe { preelock_hide_from_dock() };
 }
-/// Install the notification-centre delegate in this process. Safe to call in
-/// every mode: it is what lets a click be handled (and the GUI activated or
-/// launched) even when the click arrives in the background engine.
+/// Install the notification-centre delegate in the GUI process.
 pub fn install_notification_delegate() {
     unsafe { preelock_install_notification_delegate() }
 }
@@ -100,28 +96,14 @@ pub fn activate_app() {
     }
 }
 
-/// Activate the running GUI, if one exists. Returns whether it did.
+/// Ask LaunchServices to activate the existing GUI after a second-instance
+/// launch. The OS coalesces this request with the running application.
 pub fn activate_existing_instance() -> bool {
-    unsafe { preelock_activate_existing_gui() == 1 }
+    request_gui_activation("second_instance", "") != super::GuiActivation::Failed
 }
 
-/// Pid of the live GUI, if any, by the SAME determination the activation path
-/// uses (`vyFindLiveGui` in `native/macos.m`). Read-only probe for the
-/// `--background` supervisor: it never spawns, activates, or creates an
-/// `NSApplication`, so calling it from a headless process is safe (see
-/// `platform::probe_live_gui`).
-pub fn live_gui_pid() -> Option<u32> {
-    let pid = unsafe { preelock_live_gui_pid() };
-    if pid > 0 {
-        Some(pid as u32)
-    } else {
-        None
-    }
-}
-
-/// The one GUI entry point on macOS (see `native/macos.m`): activate a verified
-/// live GUI, otherwise spawn the bundled executable directly — never through
-/// LaunchServices, so a losing second instance leaves no Dock tile.
+/// Ask LaunchServices to open the GUI without using `NSWorkspace` to locate
+/// the Preelock instance from a headless process.
 pub fn request_gui_activation(source: &str, correlation: &str) -> super::GuiActivation {
     let source = std::ffi::CString::new(source).unwrap_or_default();
     let correlation = std::ffi::CString::new(correlation).unwrap_or_default();
@@ -129,6 +111,7 @@ pub fn request_gui_activation(source: &str, correlation: &str) -> super::GuiActi
         3 => super::GuiActivation::SelfProcess,
         1 => super::GuiActivation::Activated,
         2 => super::GuiActivation::Launched,
+        4 => super::GuiActivation::DeferredToSystem,
         _ => super::GuiActivation::Failed,
     }
 }

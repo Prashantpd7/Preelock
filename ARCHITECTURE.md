@@ -66,13 +66,14 @@ flowchart TD
 
 ### 2.1a macOS Application Identity (single LaunchServices entry)
 
-LaunchServices identifies an application by bundle identifier, not by process. The GUI and the headless modes (`--background`, `--attention`, and the brief `--tray` handover) all execute `Preelock.app/Contents/MacOS/preelock`, so **only the GUI may create an `NSApplication`**. Initializing AppKit in a headless mode registers a second `com.preelock.desktop` instance (`lsappinfo`: `BackgroundOnly`) beside the GUI, and macOS then resolves "Preelock" to that daemon: activation, Apple Events and notification clicks are delivered to a windowless process with no run loop. That produced the reported failure (an "application is not open anymore" alert, then a windowless Preelock icon that stole focus and had to be Force Quit).
+LaunchServices identifies an application by bundle identifier, not by process. The GUI and the headless modes (`--background`, `--attention`, and the brief `--tray` handover) all execute `Preelock.app/Contents/MacOS/preelock`, so **only the GUI may own the notification delegate or use AppKit to locate/activate Preelock itself**. Those operations can register a second `com.preelock.desktop` identity beside the GUI; macOS may then deliver activation and notification responses to a windowless process. The background engine continues using native foreground sampling and enforcement APIs.
 
 Rules that keep one identity:
 
-- Headless modes never call `[NSApplication sharedApplication]` and never set an activation policy. A process that never connects to the window server is invisible to LaunchServices.
-- Every GUI activation request — notification click, second instance, tray timer, supervisor relaunch, `preelock --open-gui` — goes through one coordinator (`preelock_request_gui_activation` in `native/macos.m`): activate a **verified** live GUI (bundle id, bundled executable, Regular policy, alive) or launch the bundle through `NSWorkspace`. LaunchServices' `open -a` on the bundle is never used to activate; while a headless instance exists it resolves to that instance and launches nothing.
-- `gui.lock` is a hard singleton acquired before AppKit exists: a second GUI activates the winner and exits without touching AppKit, so requesting a new instance cannot create a duplicate.
+- Headless modes never install the notification delegate or use `NSWorkspace` to locate/activate Preelock. Notifications can still be posted by the background engine; only the GUI receives click responses. Notification Center activates or cold-launches the GUI, which persists the click context for the UI to consume.
+- Tray, CLI, second-instance, and supervisor launch requests use the normal LaunchServices open path (`/usr/bin/open -a`), which coalesces concurrent requests instead of racing a direct child process against a Dock or notification launch.
+- The supervisor uses the exclusive `gui.lock` and GUI-written heartbeat as liveness evidence; it does not query AppKit from the headless process.
+- `gui.lock` is acquired before Tauri/AppKit initialization. A losing second GUI sends an OS open request for the bundle and exits without initializing AppKit.
 - Notification clicks preserve a correlation id and a non-sensitive `kind` (`reminder`, `warning`, `general`) in `notification-click.json`, consumed exactly once by the GUI. The response callback is always completed.
 
 ### 2.1b Lifecycle Diagnostics
@@ -82,6 +83,7 @@ Every process start, singleton decision, activation attempt, window presentation
 ### 2.2 Force-Quit Recovery & Re-Launch Supervisor
 
 - During an active strict focus session or active strict app/website block, if the GUI is terminated (macOS Force Quit or Windows Task Manager), the background daemon detects GUI termination and automatically relaunches Preelock GUI within 1-5 seconds.
+- The supervisor treats the exclusive `gui.lock` file lock—not its persisted PID text—as proof that a GUI is alive, so a stale PID reused by another process cannot suppress recovery. A fresh GUI heartbeat is the handover fallback when the lock file is stale.
 - Outside of strict mode, quitting the GUI leaves the background engine running quietly in the background.
 
 ---

@@ -293,7 +293,6 @@ fn show_gui() -> Result<(), String> {
 pub fn run() -> i32 {
     crate::lifecycle_log::init();
     crate::lifecycle_log::log_process_start("tray");
-    crate::platform::install_notification_delegate();
     let Ok(dir) = background::data_dir() else {
         return 1;
     };

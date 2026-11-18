@@ -898,26 +898,16 @@ impl UiRelaunchSupervisor {
         self.known_ui_pid
     }
 
-    /// Reconcile known PID + native scan + gui.lock + heartbeat into a
-    /// boolean `ui_alive`, using the same liveness determination the
-    /// activation path uses. Any ONE piece of live evidence wins: a live GUI
-    /// is never missed because one source is stale.
+    /// Reconcile the known PID, gui.lock, and heartbeat into a boolean
+    /// `ui_alive`. The headless supervisor must not query AppKit: doing so can
+    /// register this process as a LaunchServices application.
     pub fn poll_ui_alive(&mut self, data_dir: &Path) -> bool {
-        self.poll_ui_alive_with_probe(data_dir, platform::probe_live_gui())
-    }
-
-    /// `poll_ui_alive` with an explicit native probe, so tests can drive the
-    /// macOS scan result on any platform (CI runs on Linux, where the probe
-    /// is `NativeGuiProbe::Unknown`).
-    pub fn poll_ui_alive_with_probe(
-        &mut self,
-        data_dir: &Path,
-        native: platform::NativeGuiProbe,
-    ) -> bool {
-        // 1. The pid we already know: alive at OS level means alive, even
-        //    while it is still shutting down cleanly — wait for PID exit.
+        let (gui_lock_held, gui_lock_pid) = gui_lock_status(data_dir);
+        // A known PID counts only while it still owns gui.lock. PID
+        //    existence alone is not proof: the OS can reuse a force-quit
+        //    GUI's PID for an unrelated process.
         if let Some(pid) = self.known_ui_pid {
-            if process_alive(pid) {
+            if gui_lock_held && gui_lock_pid == Some(pid) && process_alive(pid) {
                 self.pending_launch_until_ms = None;
                 return true;
             }
@@ -929,37 +919,16 @@ impl UiRelaunchSupervisor {
             // live GUI (only the GUI touches it, every 1 s), and clearing
             // it would turn a handover into a false "dead" verdict.
         }
-        // 2. The native scan — the SAME check `preelock_activate_existing_gui`
-        //    makes (gui.lock pid verified by bundle id / executable name,
-        //    then the running-application scan). A live GUI is found here
-        //    even when gui.lock still points at a dead pid (stale lock
-        //    after a translocated / force-quit GUI), which is exactly the
-        //    disagreement that caused the 2026-11-17 relaunch loop. An
-        //    `Absent` verdict does NOT by itself mean dead: a GUI that has
-        //    just taken gui.lock may not yet appear in the scan, so the
-        //    lock and heartbeat checks below still run.
-        if let platform::NativeGuiProbe::Present(pid) = native {
-            if pid != 0 && pid != std::process::id() {
-                self.known_ui_pid = Some(pid);
-                self.pending_launch_until_ms = None;
-                return true;
-            }
+        // The file lock is authoritative. Its text PID may be stale or
+        //    reused after Force Quit, but a held exclusive lock proves a GUI
+        //    still owns the singleton; a stale file without the lock does not.
+        if gui_lock_held {
+            self.known_ui_pid = gui_lock_pid
+                .filter(|pid| *pid != 0 && *pid != std::process::id() && process_alive(*pid));
+            self.pending_launch_until_ms = None;
+            return true;
         }
-        // 3. gui.lock: a live pid wins. A DEAD pid, however, must never by
-        //    itself declare the UI dead — fall through to the heartbeat
-        //    instead. (The old code returned false here, so a stale lock
-        //    masked a live, heartbeating GUI and the supervisor kept
-        //    launching copies that died instantly.)
-        if let Ok(content) = std::fs::read_to_string(data_dir.join("gui.lock")) {
-            if let Ok(pid) = content.trim().parse::<u32>() {
-                if pid != 0 && pid != std::process::id() && process_alive(pid) {
-                    self.known_ui_pid = Some(pid);
-                    self.pending_launch_until_ms = None;
-                    return true;
-                }
-            }
-        }
-        // 4. Desktop heartbeat: only the GUI touches it (setup + its 1 s
+        // Desktop heartbeat: only the GUI touches it (setup + its 1 s
         //    heartbeat thread via `UiHeartbeat`), so a fresh one means a
         //    GUI is alive even if every pid source above is stale.
         if desktop_alive(data_dir) {
@@ -1021,6 +990,31 @@ impl UiRelaunchSupervisor {
     }
 }
 
+fn gui_lock_status(data_dir: &Path) -> (bool, Option<u32>) {
+    let path = data_dir.join("gui.lock");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    else {
+        return (false, None);
+    };
+
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = file.unlock();
+            (false, None)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            let pid = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|content| content.trim().parse::<u32>().ok());
+            (true, pid)
+        }
+        Err(_) => (false, None),
+    }
+}
+
 fn process_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -1054,17 +1048,11 @@ fn process_alive(pid: u32) -> bool {
 }
 
 fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let gui = crate::launch::gui_executable(&exe);
-
-    // macOS: the same single coordinator every other launch request uses.
-    // `/usr/bin/open -a` used to be used here; it never launched a GUI while a
-    // headless instance of the bundle existed, because LaunchServices treats
-    // that instance as "the application".
+    // macOS: route through LaunchServices so a supervisor launch coalesces
+    // with a concurrent Dock or notification launch.
     #[cfg(target_os = "macos")]
     {
+        let _ = spawned;
         let correlation = crate::lifecycle_log::new_correlation("supervisor");
         let outcome = crate::platform::request_gui_activation("supervisor", &correlation);
         log::info!(
@@ -1074,42 +1062,83 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
         if outcome != crate::platform::GuiActivation::Failed {
             return;
         }
-        log::warn!("Could not relaunch the Preelock GUI through LaunchServices; trying the executable directly.");
+        #[cfg(debug_assertions)]
+        if let Ok(exe) = std::env::current_exe() {
+            let bundled = exe.ancestors().any(|path| {
+                path.extension().is_some_and(|extension| extension == "app")
+                    && path.join("Contents").join("Info.plist").exists()
+            });
+            if !bundled {
+                if std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], 1420)),
+                    Duration::from_millis(150),
+                )
+                .is_err()
+                {
+                    log::warn!(
+                        "Vite dev server is unreachable at 127.0.0.1:1420; skipping raw debug GUI relaunch."
+                    );
+                    return;
+                }
+                let mut cmd = Command::new(exe);
+                cmd.stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                match cmd.spawn() {
+                    Ok(child) => *spawned = Some(child),
+                    Err(error) => {
+                        log::warn!("Could not relaunch the debug Preelock UI: {error}");
+                    }
+                }
+                return;
+            }
+        }
+        log::error!("Could not request a Preelock GUI launch through LaunchServices.");
     }
 
-    // In development debug builds, Tauri loads the UI from the Vite dev server (127.0.0.1:1420).
-    // If Vite is not running, launching the raw debug binary results in a blank white window.
-    // Guard against launching the unbundled debug binary if the dev server is unreachable.
-    #[cfg(debug_assertions)]
+    #[cfg(not(target_os = "macos"))]
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    #[cfg(not(target_os = "macos"))]
+    let gui = crate::launch::gui_executable(&exe);
+
+    #[cfg(not(target_os = "macos"))]
     {
-        if std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], 1420)),
-            Duration::from_millis(150),
-        )
-        .is_err()
+        // In development debug builds, Tauri loads the UI from the Vite dev server (127.0.0.1:1420).
+        // If Vite is not running, launching the raw debug binary results in a blank white window.
+        // Guard against launching the unbundled debug binary if the dev server is unreachable.
+        #[cfg(debug_assertions)]
         {
-            log::warn!(
+            if std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], 1420)),
+                Duration::from_millis(150),
+            )
+            .is_err()
+            {
+                log::warn!(
                 "Vite dev server is unreachable at 127.0.0.1:1420; skipping raw debug GUI relaunch to avoid white window."
             );
-            return;
+                return;
+            }
         }
-    }
 
-    let mut cmd = Command::new(&gui);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
-    }
-    match cmd.spawn() {
-        Ok(child) => {
-            *spawned = Some(child);
+        let mut cmd = Command::new(&gui);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
         }
-        Err(error) => {
-            log::warn!("Could not relaunch Preelock UI {}: {error}", gui.display());
+        match cmd.spawn() {
+            Ok(child) => {
+                *spawned = Some(child);
+            }
+            Err(error) => {
+                log::warn!("Could not relaunch Preelock UI {}: {error}", gui.display());
+            }
         }
     }
 }
@@ -1242,12 +1271,9 @@ pub fn run() -> i32 {
     crate::lifecycle_log::init();
     let correlation = crate::lifecycle_log::log_process_start("background");
     install_shutdown_handler();
-    // Deliberately NO NSApplication / activation-policy call here. A headless
-    // mode that initializes AppKit registers a second com.preelock.desktop
-    // instance with LaunchServices; macOS then sends activation, Apple Events
-    // and notification clicks to this daemon instead of the GUI (the ghost Dock
-    // icon + "application is not open anymore"). See native/macos.m.
-    crate::platform::install_notification_delegate();
+    // The headless process must not install a notification delegate or query
+    // AppKit to locate/activate Preelock. Notification Center launches the GUI
+    // for clicks; only that GUI owns the delegate and application identity.
     let _ = correlation;
     #[cfg(target_os = "windows")]
     if let Ok(exe) = std::env::current_exe() {
@@ -1432,6 +1458,21 @@ pub fn run() -> i32 {
 mod tests {
     use super::*;
 
+    fn hold_gui_lock(data_dir: &Path, pid: u32) -> File {
+        use std::io::Write;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(data_dir.join("gui.lock"))
+            .unwrap();
+        writeln!(file, "{pid}").unwrap();
+        file.try_lock_exclusive().unwrap();
+        file
+    }
+
     #[test]
     fn launch_agent_plist_registers_a_supervised_login_agent() {
         let plist = launch_agent_plist(
@@ -1537,20 +1578,33 @@ mod tests {
         touch_desktop(dir.path());
         assert!(desktop_alive(dir.path()));
 
-        assert!(sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent,));
+        assert!(sup.poll_ui_alive(dir.path()));
     }
 
     #[test]
     fn poll_ui_alive_dead_lock_and_no_heartbeat_is_dead() {
         // The complement: when NOTHING says a GUI is alive — dead lock pid,
-        // native scan absent, no heartbeat — poll must still report dead,
+        // no heartbeat — poll must still report dead,
         // so a genuinely quit GUI is relaunched (once, under the grace
         // window) instead of being missed forever.
         let dir = tempfile::tempdir().unwrap();
         let mut sup = UiRelaunchSupervisor::default();
         std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
         assert!(!desktop_alive(dir.path()));
-        assert!(!sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent,));
+        assert!(!sup.poll_ui_alive(dir.path()));
+    }
+
+    #[test]
+    fn poll_ui_alive_does_not_trust_a_live_pid_without_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        std::fs::write(
+            dir.path().join("gui.lock"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+
+        assert!(!sup.poll_ui_alive(dir.path()));
     }
 
     #[test]
@@ -1567,7 +1621,7 @@ mod tests {
         #[cfg(windows)]
         let test_pid = child.id();
 
-        std::fs::write(dir.path().join("gui.lock"), format!("{test_pid}\n")).unwrap();
+        let _lock = hold_gui_lock(dir.path(), test_pid);
         assert!(sup.poll_ui_alive(dir.path()));
         assert_eq!(sup.known_ui_pid(), Some(test_pid));
 
@@ -1597,40 +1651,8 @@ mod tests {
         let live_pid = child.id();
 
         sup.mark_ui_alive(99999999);
-        std::fs::write(dir.path().join("gui.lock"), format!("{live_pid}\n")).unwrap();
+        let _lock = hold_gui_lock(dir.path(), live_pid);
         assert!(sup.poll_ui_alive(dir.path()));
-        assert_eq!(sup.known_ui_pid(), Some(live_pid));
-
-        #[cfg(windows)]
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    #[test]
-    fn poll_ui_alive_native_scan_finds_gui_with_stale_gui_lock() {
-        // Shared liveness (2026-11-17): the supervisor knows a dead pid and
-        // gui.lock still points at it, but the native scan — the same check
-        // the activation path makes — finds a live GUI. Poll must report
-        // alive and adopt the live pid, never launch on the stale lock.
-        let dir = tempfile::tempdir().unwrap();
-        let mut sup = UiRelaunchSupervisor::default();
-        #[cfg(unix)]
-        let live_pid = unsafe { libc::getppid() as u32 };
-        #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
-            .spawn()
-            .expect("spawn test process");
-        #[cfg(windows)]
-        let live_pid = child.id();
-
-        sup.mark_ui_alive(99999999);
-        std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
-        assert!(
-            sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Present(live_pid),)
-        );
         assert_eq!(sup.known_ui_pid(), Some(live_pid));
 
         #[cfg(windows)]
@@ -1662,31 +1684,18 @@ mod tests {
 
     #[test]
     fn supervisor_loop_scenario_from_2026_11_17_log_does_not_recur() {
-        // Replay of the log timeline (19:39:25–19:39:49 UTC): strict session
-        // active, GUI alive but gui.lock stale (translocated copy), native
-        // scan finds the live GUI, heartbeat fresh. The supervisor must
-        // fire ZERO launches. Then the GUI truly dies (scan absent, lock
-        // dead, heartbeat stale): exactly ONE launch, and no second one
-        // while it is in flight.
+        // A fresh heartbeat keeps the supervisor from launching while the
+        // lock PID is stale. Once the heartbeat disappears, relaunches are
+        // bounded by the in-flight grace window.
         let dir = tempfile::tempdir().unwrap();
         let mut sup = UiRelaunchSupervisor::default();
-        #[cfg(unix)]
-        let live_pid = unsafe { libc::getppid() as u32 };
-        #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
-            .spawn()
-            .expect("spawn test process");
-        #[cfg(windows)]
-        let live_pid = child.id();
 
-        // Confused state, as in the log: stale lock, live GUI.
+        // Stale lock, live GUI heartbeat.
         std::fs::write(dir.path().join("gui.lock"), "99999999\n").unwrap();
         touch_desktop(dir.path());
         let mut launches = 0;
         for t in (0..=25_000).step_by(200) {
-            let alive = sup
-                .poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Present(live_pid));
+            let alive = sup.poll_ui_alive(dir.path());
             assert!(alive, "poll said dead at {t} ms while GUI was live");
             if sup.evaluate(t as u64, true, alive, false) {
                 launches += 1;
@@ -1695,8 +1704,8 @@ mod tests {
         assert_eq!(launches, 0, "supervisor launched while GUI was live");
 
         // GUI truly gone: no heartbeat (remove the heartbeat file), lock
-        // dead, scan absent. The supervisor's known pid is reset to a dead
-        // pid to model the live GUI process actually exiting.
+        // dead. The supervisor's known pid is reset to a dead pid to model
+        // the live GUI process actually exiting.
         sup.mark_ui_alive(99999999);
         let _ = std::fs::remove_file(dir.path().join("desktop-heartbeat"));
         // A genuinely dead GUI must still be relaunched — but at the grace
@@ -1705,7 +1714,7 @@ mod tests {
         // three launches, spaced 10 s apart.
         let mut launch_at: Vec<u64> = Vec::new();
         for t in (0..=25_000).step_by(200) {
-            let alive = sup.poll_ui_alive_with_probe(dir.path(), platform::NativeGuiProbe::Absent);
+            let alive = sup.poll_ui_alive(dir.path());
             assert!(!alive, "poll said alive at {t} ms with all evidence dead");
             if sup.evaluate(t as u64, true, alive, false) {
                 launch_at.push(t as u64);
@@ -1716,12 +1725,6 @@ mod tests {
             vec![1_000, 11_000, 21_000],
             "expected one relaunch per grace window, got {launch_at:?}"
         );
-
-        #[cfg(windows)]
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 
     #[test]
