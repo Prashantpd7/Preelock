@@ -990,6 +990,34 @@ impl UiRelaunchSupervisor {
     }
 }
 
+/// Win32 `ERROR_LOCK_VIOLATION` (33): what `LockFileEx` reports when a file
+/// is already locked.
+#[cfg(windows)]
+const ERROR_LOCK_VIOLATION: i32 = 33;
+
+/// Whether `error` means "another process holds the file lock".
+///
+/// `fs2::FileExt::try_lock_exclusive` reports contention differently per OS:
+/// Unix `flock` fails with `EWOULDBLOCK` (`ErrorKind::WouldBlock`), but
+/// Windows `LockFileEx` fails with `ERROR_LOCK_VIOLATION`, which `std`
+/// maps to `ErrorKind::Uncategorized` — never `WouldBlock` (see
+/// `std::sys::io::error::windows::decode_error_kind`). Checking only
+/// `WouldBlock` therefore reports a held lock as free on Windows, and
+/// `poll_ui_alive` wrongly declares the UI dead during a handover. `std`'s
+/// own `File::try_lock` works around the same gap by checking the raw OS
+/// error, and this does the same.
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    // Windows only: `LockFileEx` contention is `ERROR_LOCK_VIOLATION`,
+    // which `std` maps to `ErrorKind::Uncategorized`.
+    #[cfg(windows)]
+    return error.raw_os_error() == Some(ERROR_LOCK_VIOLATION);
+    #[cfg(not(windows))]
+    false
+}
+
 fn gui_lock_status(data_dir: &Path) -> (bool, Option<u32>) {
     let path = data_dir.join("gui.lock");
     let Ok(file) = std::fs::OpenOptions::new()
@@ -1005,7 +1033,7 @@ fn gui_lock_status(data_dir: &Path) -> (bool, Option<u32>) {
             let _ = file.unlock();
             (false, None)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error) if is_lock_contention(&error) => {
             let pid = std::fs::read_to_string(path)
                 .ok()
                 .and_then(|content| content.trim().parse::<u32>().ok());
@@ -1605,6 +1633,21 @@ mod tests {
         .unwrap();
 
         assert!(!sup.poll_ui_alive(dir.path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lock_violation_error_is_lock_contention() {
+        // `LockFileEx` reports a held lock as `ERROR_LOCK_VIOLATION` (33),
+        // and `std` maps it to `ErrorKind::Uncategorized` — never
+        // `WouldBlock`. `gui_lock_status` must still read it as "held", or
+        // `poll_ui_alive` wrongly declares the UI dead on Windows (the
+        // 2026-11-18 CI failure: both lock-based tests failed while the
+        // identical code passed on Linux, where `flock` reports
+        // `EWOULDBLOCK`).
+        let error = std::io::Error::from_raw_os_error(33);
+        assert_eq!(error.kind(), std::io::ErrorKind::Uncategorized);
+        assert!(is_lock_contention(&error));
     }
 
     #[test]
