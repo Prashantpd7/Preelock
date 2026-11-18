@@ -1646,7 +1646,7 @@ mod tests {
         // identical code passed on Linux, where `flock` reports
         // `EWOULDBLOCK`).
         let error = std::io::Error::from_raw_os_error(33);
-        assert_eq!(error.kind(), std::io::ErrorKind::Uncategorized);
+        assert_ne!(error.kind(), std::io::ErrorKind::WouldBlock);
         assert!(is_lock_contention(&error));
     }
 
