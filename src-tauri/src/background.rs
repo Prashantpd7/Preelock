@@ -1666,6 +1666,12 @@ mod tests {
 
         let _lock = hold_gui_lock(dir.path(), test_pid);
         assert!(sup.poll_ui_alive(dir.path()));
+        // The pid inside gui.lock is only readable where locks are
+        // advisory (Unix). On Windows the lock is mandatory: a read from
+        // a different handle fails with ERROR_LOCK_VIOLATION, so
+        // `gui_lock_status` reports the lock held but no pid — and the
+        // supervisor still (correctly) reports the UI alive.
+        #[cfg(unix)]
         assert_eq!(sup.known_ui_pid(), Some(test_pid));
 
         #[cfg(windows)]
@@ -1696,6 +1702,10 @@ mod tests {
         sup.mark_ui_alive(99999999);
         let _lock = hold_gui_lock(dir.path(), live_pid);
         assert!(sup.poll_ui_alive(dir.path()));
+        // Pid readable only where locks are advisory (Unix); on Windows
+        // the mandatory lock blocks the read (see above), so only the
+        // liveness verdict is asserted there.
+        #[cfg(unix)]
         assert_eq!(sup.known_ui_pid(), Some(live_pid));
 
         #[cfg(windows)]
