@@ -1153,37 +1153,37 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) -> bool {
         // If Vite is not running, launching the raw debug binary results in a blank white window.
         // Guard against launching the unbundled debug binary if the dev server is unreachable.
         #[cfg(debug_assertions)]
-        {
-            if std::net::TcpStream::connect_timeout(
-                &std::net::SocketAddr::from(([127, 0, 0, 1], 1420)),
-                Duration::from_millis(150),
-            )
-            .is_err()
-            {
-                log::warn!(
+        let dev_server_unreachable = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 1420)),
+            Duration::from_millis(150),
+        )
+        .is_err();
+        #[cfg(not(debug_assertions))]
+        let dev_server_unreachable = false;
+        if dev_server_unreachable {
+            log::warn!(
                 "Vite dev server is unreachable at 127.0.0.1:1420; skipping raw debug GUI relaunch to avoid white window."
             );
-                return false;
+            false
+        } else {
+            let mut cmd = Command::new(&gui);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
             }
-        }
-
-        let mut cmd = Command::new(&gui);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
-        }
-        match cmd.spawn() {
-            Ok(child) => {
-                *spawned = Some(child);
-                return true;
-            }
-            Err(error) => {
-                log::warn!("Could not relaunch Preelock UI {}: {error}", gui.display());
-                return false;
+            match cmd.spawn() {
+                Ok(child) => {
+                    *spawned = Some(child);
+                    true
+                }
+                Err(error) => {
+                    log::warn!("Could not relaunch Preelock UI {}: {error}", gui.display());
+                    false
+                }
             }
         }
     }
