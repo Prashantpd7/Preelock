@@ -6,6 +6,7 @@ import { countdown } from '../services/analytics';
 import {
   isLiveSessionStatus,
   liveSession,
+  pomodoroBreak,
   sessionNeedsBrowser,
 } from '../services/activeSession';
 import { ActiveSessionDetailsModal } from './ActiveSessionDetailsModal';
@@ -54,6 +55,10 @@ export function ActiveSessionBanner() {
       : 0;
   const inGrace = graceRemainingSecs > 0;
   if (!session) return null;
+  // Pomodoro break, if one is on: the kicker suffix stays, and the
+  // break timer on the right replaces the old sentence — no long
+  // text on this card anymore.
+  const breakInfo = pomodoroBreak(session);
   // Pause/Stop follow the SessionCard rules exactly: Pause only for a
   // running flexible session that allows it, Stop only when early
   // ending is allowed, and neither for a strict or frozen session.
@@ -123,6 +128,7 @@ export function ActiveSessionBanner() {
           {session.status === 'preparing' && ' · waiting for browser'}
           {session.status === 'paused' && ' · paused'}
           {inGrace && ' · starting soon'}
+          {breakInfo && ' · on break'}
         </p>
         <div className="active-session-main">
           <div>
@@ -131,14 +137,86 @@ export function ActiveSessionBanner() {
                 ? `Starts in ${graceRemainingSecs}s`
                 : countdown(session.remaining_ms)}
             </p>
-            <p className="small muted">
-              {inGrace
-                ? 'Blocking begins when the countdown ends. Finish up — nothing is blocked yet.'
-                : session.status === 'preparing'
-                  ? 'Waiting for the browser extension to connect…'
-                  : 'Distracting apps and websites stay blocked until this session ends.'}
-            </p>
+            {!breakInfo && (
+              <p className="small muted">
+                {inGrace
+                  ? 'Blocking begins when the countdown ends. Finish up — nothing is blocked yet.'
+                  : session.status === 'preparing'
+                    ? 'Waiting for the browser extension to connect…'
+                    : 'Distracting apps and websites stay blocked until this session ends.'}
+              </p>
+            )}
           </div>
+          {breakInfo && (
+            <div className="break-timer" role="timer" aria-label="Break timer">
+              <p className="break-timer-label">BREAK TIMER</p>
+              <p className="break-timer-time">
+                <svg
+                  className="break-timer-clock"
+                  viewBox="0 0 24 24"
+                  width="26"
+                  height="26"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="break-timer-clock-face"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                  />
+                  <line
+                    className="break-timer-clock-tick"
+                    x1="12"
+                    y1="2.8"
+                    x2="12"
+                    y2="4.6"
+                  />
+                  <line
+                    className="break-timer-clock-tick"
+                    x1="21.2"
+                    y1="12"
+                    x2="19.4"
+                    y2="12"
+                  />
+                  <line
+                    className="break-timer-clock-tick"
+                    x1="12"
+                    y1="21.2"
+                    x2="12"
+                    y2="19.4"
+                  />
+                  <line
+                    className="break-timer-clock-tick"
+                    x1="2.8"
+                    y1="12"
+                    x2="4.6"
+                    y2="12"
+                  />
+                  <line
+                    className="break-timer-clock-hand-short"
+                    x1="12"
+                    y1="12"
+                    x2="15.5"
+                    y2="12"
+                  />
+                  <line
+                    className="break-timer-clock-hand"
+                    x1="12"
+                    y1="12"
+                    x2="12"
+                    y2="5"
+                  />
+                  <circle
+                    className="break-timer-clock-pin"
+                    cx="12"
+                    cy="12"
+                    r="1.1"
+                  />
+                </svg>
+                {countdown(breakInfo.remainingMs)}
+              </p>
+            </div>
+          )}
           {(canPause || canResume || canEnd) && (
             <div className="row controls active-session-controls">
               {canPause && (

@@ -1115,6 +1115,7 @@ mod tests {
             start_notified: false,
             complete_notified: false,
             inactivity_notified: false,
+            break_notified: false,
         };
         snapshot.sessions.push(session.clone());
         let text = format_status(&snapshot, 1000);
@@ -1184,6 +1185,7 @@ mod tests {
             start_notified: false,
             complete_notified: false,
             inactivity_notified: false,
+            break_notified: false,
         };
         snapshot.sessions.push(session.clone());
         database.save(&snapshot).unwrap();

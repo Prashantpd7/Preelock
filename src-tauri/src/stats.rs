@@ -215,6 +215,7 @@ mod tests {
             start_notified: false,
             complete_notified: false,
             inactivity_notified: false,
+            break_notified: false,
         };
         one.report.distracting_ms = 60_000;
         let (productive, distracted, total, completed) = sessions_summary(&[one]);

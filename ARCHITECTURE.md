@@ -80,11 +80,11 @@ Rules that keep one identity:
 
 Every process start, singleton decision, activation attempt, window presentation, notification click and shutdown writes one `key=value` line (`src/lifecycle_log.rs`) to `~/Library/Logs/Preelock/lifecycle.log` and to stderr. `bash scripts/collect-macos-diagnostics.sh` bundles those logs with the LaunchServices, process, LaunchAgent and signature state needed to diagnose activation problems. Notification text is never logged.
 
-### 2.2 Force-Quit Recovery & Re-Launch Supervisor
+### 2.2 Active-Session Recovery & Re-Launch Supervisor
 
-- During an active strict focus session or active strict app/website block, if the GUI is terminated (macOS Force Quit or Windows Task Manager), the background daemon detects GUI termination and automatically relaunches Preelock GUI within 1-5 seconds.
+- During any active session, if the GUI is terminated (macOS Force Quit or Windows Task Manager), the background daemon detects GUI termination and requests GUI activation after a 500 ms confirmed-missing delay. Operating-system scheduling can add launch time.
 - The supervisor treats the exclusive `gui.lock` file lock—not its persisted PID text—as proof that a GUI is alive, so a stale PID reused by another process cannot suppress recovery. A fresh GUI heartbeat is the handover fallback when the lock file is stale.
-- Outside of strict mode, quitting the GUI leaves the background engine running quietly in the background.
+- Closing the window during an active session keeps it visible. When idle, the existing close-to-tray behavior remains; quitting the UI leaves the background engine running.
 
 ---
 

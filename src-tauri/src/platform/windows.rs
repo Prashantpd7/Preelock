@@ -4,7 +4,10 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM},
     System::{
         SystemInformation::GetTickCount,
-        Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+        Threading::{
+            GetCurrentProcess, OpenProcess, QueryFullProcessImageNameW,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        },
     },
     UI::{
         Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
@@ -87,6 +90,22 @@ fn identity(hwnd: HWND) -> Option<(String, u32)> {
 }
 fn file_name(path: &str) -> &str {
     path.rsplit(&['\\', '/'][..]).next().unwrap_or(path)
+}
+fn current_package_family_name() -> Option<String> {
+    let process = unsafe { GetCurrentProcess() } as isize;
+    let mut length = 0u32;
+    let status = unsafe { GetPackageFamilyName(process, &mut length, std::ptr::null_mut()) };
+    if status != 122 || length < 2 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; length as usize];
+    let status = unsafe { GetPackageFamilyName(process, &mut length, buffer.as_mut_ptr()) };
+    (status == 0).then(|| {
+        String::from_utf16_lossy(&buffer)
+            .trim_end_matches('\0')
+            .to_string()
+    })
 }
 fn is_application_frame_host(exe_path: &str) -> bool {
     file_name(exe_path).eq_ignore_ascii_case("ApplicationFrameHost.exe")
@@ -594,9 +613,8 @@ pub fn request_web_permission() {}
 pub fn activate_app() {
     activate_existing_instance();
 }
-/// Bring the GUI window forward. Returns whether a window was found — Windows
-/// has no bundle-level application identity that a headless process could
-/// hijack, so activation is a plain window lookup plus a PID fallback.
+/// Bring an existing GUI window forward using title lookup and a GUI-lock PID
+/// fallback. Cold MSIX activation is handled by `request_gui_activation`.
 pub fn activate_existing_instance() -> bool {
     let mut activated = false;
     unsafe {
@@ -651,15 +669,32 @@ pub fn activate_existing_instance() -> bool {
     activated
 }
 
-/// Windows equivalent of the macOS launch coordinator. The existing single
-/// instance architecture is preserved: activate the running GUI when there is
-/// one, otherwise report honestly that nothing was activated (the background
-/// supervisor / app-restart registration owns the cold-launch path).
+/// Activate the running GUI, or use the package activation URI for an MSIX
+/// cold launch. Unpackaged cold launches remain owned by their caller.
 pub fn request_gui_activation(_source: &str, _correlation: &str) -> super::GuiActivation {
     if activate_existing_instance() {
-        super::GuiActivation::Activated
-    } else {
-        super::GuiActivation::Failed
+        return super::GuiActivation::Activated;
+    }
+
+    if !crate::platform::packaged() {
+        return super::GuiActivation::Failed;
+    }
+
+    let Some(package_family_name) = current_package_family_name() else {
+        log::error!("Could not resolve the MSIX package family name for GUI activation.");
+        return super::GuiActivation::Failed;
+    };
+    let activation_uri =
+        crate::platform::packaging::apps_folder_activation_uri(&package_family_name);
+    match std::process::Command::new("explorer.exe")
+        .arg(activation_uri)
+        .spawn()
+    {
+        Ok(_) => super::GuiActivation::Launched,
+        Err(error) => {
+            log::error!("Could not activate the packaged Preelock GUI: {error}");
+            super::GuiActivation::Failed
+        }
     }
 }
 

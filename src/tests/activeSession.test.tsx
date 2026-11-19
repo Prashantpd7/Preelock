@@ -14,6 +14,7 @@ import {
   formatHMS,
   liveSession,
   liveTimeStats,
+  pomodoroBreak,
   scheduledEndMs,
   sessionTypeLabel,
   typeOfWorkLabel,
@@ -348,6 +349,37 @@ describe('activeSession helpers', () => {
     expect(typeOfWorkLabel('lecture')).toBe('Watching a lesson');
     expect(typeOfWorkLabel('other')).toBe('General work');
   });
+
+  it('reports the live remaining time of a Pomodoro break', () => {
+    const shortBreak = makeSession({
+      pomodoro: {
+        phase: 'short_break',
+        phase_remaining_ms: 300_000,
+        completed_focus_cycles: 1,
+      },
+    });
+    expect(pomodoroBreak(shortBreak)).toEqual({ remainingMs: 300_000 });
+    const longBreak = makeSession({
+      pomodoro: {
+        phase: 'long_break',
+        phase_remaining_ms: 900_000,
+        completed_focus_cycles: 4,
+      },
+    });
+    expect(pomodoroBreak(longBreak)).toEqual({ remainingMs: 900_000 });
+  });
+
+  it('has no Pomodoro break state during focus or without Pomodoro state', () => {
+    const focus = makeSession({
+      pomodoro: {
+        phase: 'focus',
+        phase_remaining_ms: 1_500_000,
+        completed_focus_cycles: 0,
+      },
+    });
+    expect(pomodoroBreak(focus)).toBeNull();
+    expect(pomodoroBreak(makeSession({}))).toBeNull();
+  });
 });
 
 describe('ActiveSessionBanner', () => {
@@ -410,6 +442,112 @@ describe('ActiveSessionBanner', () => {
     renderBanner();
     expect(screen.getByText(/Starts in \d+s/)).toBeInTheDocument();
     expect(screen.getByText(/· starting soon/)).toBeInTheDocument();
+  });
+
+  it('shows a live break timer on the card during a Pomodoro break', () => {
+    setData({
+      sessions: [
+        makeSession({
+          pomodoro: {
+            phase: 'short_break',
+            phase_remaining_ms: 300_000,
+            completed_focus_cycles: 1,
+          },
+        }),
+      ],
+    });
+    renderBanner();
+    expect(screen.getByText(/· on break/)).toBeInTheDocument();
+    expect(screen.getByText('BREAK TIMER')).toBeInTheDocument();
+    expect(screen.getByText('05:00')).toBeInTheDocument();
+    // The old long sentence is gone, and the blocked line must not
+    // show while everything is unblocked.
+    expect(
+      screen.queryByText(/everything unblocked until the break ends/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Distracting apps and websites stay blocked until this session ends.',
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it('counts the break down live as the remaining time shrinks', () => {
+    const session = makeSession({
+      pomodoro: {
+        phase: 'short_break',
+        phase_remaining_ms: 300_000,
+        completed_focus_cycles: 1,
+      },
+    });
+    setData({ sessions: [session] });
+    renderBanner();
+    expect(screen.getByText('05:00')).toBeInTheDocument();
+    act(() => {
+      useAppStore.setState((s) => ({
+        data: {
+          ...s.data,
+          sessions: [
+            {
+              ...session,
+              pomodoro: {
+                phase: 'short_break',
+                phase_remaining_ms: 299_000,
+                completed_focus_cycles: 1,
+              },
+            },
+          ],
+        },
+      }));
+    });
+    expect(screen.getByText('04:59')).toBeInTheDocument();
+  });
+
+  it('shows the long break timer, and hides it when focus resumes', () => {
+    const session = makeSession(
+      {
+        pomodoro: {
+          phase: 'long_break',
+          phase_remaining_ms: 900_000,
+          completed_focus_cycles: 4,
+        },
+      },
+      {
+        pomodoro: {
+          ...defaultFocus.pomodoro!,
+          enabled: true,
+          long_break_minutes: 15,
+        },
+      },
+    );
+    setData({ sessions: [session] });
+    renderBanner();
+    expect(screen.getByText('BREAK TIMER')).toBeInTheDocument();
+    expect(screen.getByText('15:00')).toBeInTheDocument();
+    act(() => {
+      useAppStore.setState((s) => ({
+        data: {
+          ...s.data,
+          sessions: [
+            {
+              ...session,
+              pomodoro: {
+                phase: 'focus',
+                phase_remaining_ms: 1_500_000,
+                completed_focus_cycles: 4,
+              },
+            },
+          ],
+        },
+      }));
+    });
+    expect(screen.queryByText('BREAK TIMER')).not.toBeInTheDocument();
+    expect(screen.queryByText('15:00')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Distracting apps and websites stay blocked until this session ends.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('disappears when the session completes', () => {

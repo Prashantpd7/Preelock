@@ -297,6 +297,7 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
                 start_notified: false,
                 complete_notified: false,
                 inactivity_notified: false,
+                break_notified: false,
             });
         }
         // Reject the old IPC command as well as removing its UI. Keep the
@@ -939,6 +940,10 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             // it keeps no grace from its previous run.
             s.grace_until_ms = None;
             s.grace_notified = false;
+            // A restarted session is a fresh manual run — it keeps no
+            // break notification from its previous run either (its
+            // Pomodoro state is reset to a fresh Focus phase below).
+            s.break_notified = false;
             s.status = Status::Ready;
             s.started_at = None;
             s.ended_at = None;

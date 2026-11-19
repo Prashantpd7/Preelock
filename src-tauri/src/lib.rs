@@ -330,29 +330,55 @@ fn blocked_quit(app: &tauri::AppHandle) {
         "Finish your focus session before closing Preelock.",
     );
 }
+
+fn active_session_for_quit(data_dir: &std::path::Path) -> bool {
+    let db_path = crate::cli::db_path(data_dir);
+    match crate::cli::load_snapshot_readonly(&db_path) {
+        Ok(snapshot) => {
+            return !snapshot.preferences.paused
+                && snapshot.sessions.iter().any(|session| {
+                    matches!(
+                        session.status,
+                        models::Status::Running
+                            | models::Status::Paused
+                            | models::Status::Preparing
+                    )
+                });
+        }
+        Err(error) => {
+            log::warn!("Could not read session state while evaluating GUI quit: {error}");
+        }
+    }
+
+    crate::lifecycle::read_checkpoint(&db_path.with_extension("lifecycle.json"))
+        .and_then(|checkpoint| checkpoint.active_session)
+        .is_some_and(|session| {
+            matches!(session.status.as_str(), "running" | "paused" | "preparing")
+        })
+}
+
 /// Authoritative UI Quit handler (Cmd+Q / Dock Quit / Tray Quit):
 /// `--background` owns the session engine and remains running independently.
 /// Therefore quitting the GUI exits only the GUI process cleanly (`ExitUiOnly`),
 /// notifies `--background` (`ui_exiting`), and returns immediately:
-/// - If a strict session is live, `--background` automatically relaunches the
-///   Preelock UI ~5 seconds later and reconnects it to the intact session.
-/// - If no strict session is live, `--background` continues background tracking
-///   and schedules silently without reopening the UI.
+/// - If any session is live, `--background` automatically relaunches the
+///   Preelock UI and reconnects it to the intact session.
+/// - If no session is live, `--background` continues background tracking and
+///   schedules silently without reopening the UI.
 fn quit(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let client = app.state::<IpcClient>().inner().clone();
         let ping = client.ping();
-        let (reachable, has_active_strict) = match &ping {
-            Ok(info) => (true, info.has_active_strict),
+        let (reachable, has_active) = match &ping {
+            Ok(info) => (true, info.has_active),
             Err(_) => {
-                let strict_in_store =
-                    !crate::cli::uninstall_check_in_dir(client.data_dir()).allowed;
+                let active_in_store = active_session_for_quit(client.data_dir());
                 let _ = background::ensure_running_headless(client.data_dir());
-                (false, strict_in_store)
+                (false, active_in_store)
             }
         };
-        let decision = crate::quit::gui_quit_action(reachable, has_active_strict);
+        let decision = crate::quit::gui_quit_action(reachable, has_active);
         match decision {
             crate::quit::QuitDecision::CloseUiOnly => {
                 let _ = background::ensure_running_headless(client.data_dir());
@@ -771,6 +797,25 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_fallback_treats_checkpointed_live_session_as_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let lifecycle_path = crate::cli::db_path(dir.path()).with_extension("lifecycle.json");
+        crate::lifecycle::write(
+            &lifecycle_path,
+            &crate::lifecycle::Checkpoint {
+                active_session: Some(crate::lifecycle::SessionCheckpoint {
+                    status: "running".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(active_session_for_quit(dir.path()));
+    }
 
     #[test]
     fn gui_lock_single_instance_acquisition_and_release() {

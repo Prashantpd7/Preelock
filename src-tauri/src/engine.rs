@@ -2220,6 +2220,7 @@ impl Engine {
                     start_notified: false,
                     complete_notified: false,
                     inactivity_notified: false,
+                    break_notified: false,
                 };
                 session.report.event(
                     now,
@@ -2385,6 +2386,7 @@ impl Engine {
                 start_notified: false,
                 complete_notified: false,
                 inactivity_notified: false,
+                break_notified: false,
             };
             session.report.event(
                 now,
@@ -2843,6 +2845,40 @@ impl Engine {
                     s.inactivity_notified = false;
                     session_changed = true;
                 }
+            }
+
+            // 4. Pomodoro break alert: a break phase started — notify
+            // once per break, and clear the marker when focus resumes
+            // so the next break notifies again. The marker persists
+            // with the session, so restarts and GUI/background
+            // handovers never duplicate it; a tick that cannot
+            // deliver (notifications off) leaves it clear so a later
+            // tick retries while the break is still on. A paused
+            // session keeps its marker: pausing pauses the break too,
+            // and resuming does not re-notify for the break already
+            // announced. A session that completes during a break gets
+            // the completion alert above, never this one.
+            if s.status == Status::Running && crate::pomodoro::in_break(s) {
+                if !s.break_notified && p.notifications_enabled {
+                    let long = s.pomodoro.phase == crate::pomodoro::Phase::LongBreak;
+                    let minutes = if long {
+                        s.focus.pomodoro.long_break_minutes
+                    } else {
+                        s.focus.pomodoro.short_break_minutes
+                    };
+                    crate::desktop_settings::notify(
+                        "Break time",
+                        &crate::notifications::pomodoro_break_body(long, minutes),
+                    );
+                    if p.notifications_sound {
+                        crate::desktop_settings::sound(p.volume);
+                    }
+                    s.break_notified = true;
+                    session_changed = true;
+                }
+            } else if s.pomodoro.phase == crate::pomodoro::Phase::Focus && s.break_notified {
+                s.break_notified = false;
+                session_changed = true;
             }
         }
 
@@ -5455,6 +5491,15 @@ mod tests {
         // A live standard session does not lock.
         e.data.sessions.push(running_session("standard"));
         assert!(!e.has_active_strict());
+        assert!(e.has_active());
+        let mut supervisor = crate::background::UiRelaunchSupervisor::default();
+        assert!(!supervisor.evaluate(0, e.has_active(), false, false));
+        assert!(supervisor.evaluate(
+            crate::background::RELAUNCH_DELAY_MS,
+            e.has_active(),
+            false,
+            false
+        ));
         // A live strict session locks (Running, Paused, Preparing).
         let mut strict = running_session("strict");
         strict.focus.mode = Mode::Strict;
@@ -5643,6 +5688,7 @@ mod tests {
             start_notified: false,
             complete_notified: false,
             inactivity_notified: false,
+            break_notified: false,
         }
     }
 
@@ -6159,6 +6205,114 @@ mod tests {
         assert!(!session.grace_notified);
     }
 
+    /// A running session with Pomodoro on, already in a break phase
+    /// (the phase transition itself is covered by pomodoro.rs unit
+    /// tests; here the tick only has to notice the break).
+    fn pomodoro_break_session(
+        id: &str,
+        phase: crate::pomodoro::Phase,
+        minutes: u32,
+    ) -> crate::models::Session {
+        let mut s = running_session(id);
+        s.focus.pomodoro.enabled = true;
+        s.focus.pomodoro.short_break_minutes = 5;
+        s.focus.pomodoro.long_break_minutes = 15;
+        s.pomodoro.phase = phase;
+        s.pomodoro.phase_remaining_ms = u64::from(minutes) * 60_000;
+        s.pomodoro.completed_focus_cycles = 1;
+        s
+    }
+
+    #[test]
+    fn pomodoro_break_notification_fires_once_per_break() {
+        // Short and long breaks both notify exactly once: the first
+        // tick during the break flips the marker, and later ticks
+        // (and a restart, which reloads the persisted marker) never
+        // re-fire for the same break.
+        for (phase, minutes) in [
+            (crate::pomodoro::Phase::ShortBreak, 5),
+            (crate::pomodoro::Phase::LongBreak, 15),
+        ] {
+            let label = if phase == crate::pomodoro::Phase::LongBreak {
+                "long"
+            } else {
+                "short"
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let mut engine =
+                Engine::open(&dir.path().join("pomodoro-break-notify.sqlite")).unwrap();
+            engine
+                .data
+                .sessions
+                .push(pomodoro_break_session("break", phase, minutes));
+            assert!(!engine.data.sessions[0].break_notified);
+            engine.tick().unwrap();
+            assert!(
+                engine.data.sessions[0].break_notified,
+                "a {label} break must notify on the first tick"
+            );
+            assert_eq!(engine.data.sessions[0].status, Status::Running);
+            engine.tick().unwrap();
+            assert!(engine.data.sessions[0].break_notified);
+        }
+    }
+
+    #[test]
+    fn pomodoro_focus_phase_never_notifies_a_break() {
+        // A focus phase is not a break: no notification, no marker,
+        // however many ticks run.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("pomodoro-focus-notify.sqlite")).unwrap();
+        engine.data.sessions.push(pomodoro_break_session(
+            "focus",
+            crate::pomodoro::Phase::Focus,
+            25,
+        ));
+        engine.tick().unwrap();
+        assert!(!engine.data.sessions[0].break_notified);
+        engine.tick().unwrap();
+        assert!(!engine.data.sessions[0].break_notified);
+    }
+
+    #[test]
+    fn pomodoro_break_marker_clears_when_focus_resumes() {
+        // The marker clears once the phase is Focus again, so the
+        // next break notifies again. The phase change itself is
+        // driven by pomodoro.rs (advance_break ends the break); here
+        // the session is put back in Focus directly to test the
+        // reset branch deterministically.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("pomodoro-break-reset.sqlite")).unwrap();
+        let mut session = pomodoro_break_session("break", crate::pomodoro::Phase::ShortBreak, 5);
+        session.break_notified = true;
+        engine.data.sessions.push(session);
+        engine.tick().unwrap();
+        assert!(engine.data.sessions[0].break_notified);
+        engine.data.sessions[0].pomodoro.phase = crate::pomodoro::Phase::Focus;
+        engine.tick().unwrap();
+        assert!(
+            !engine.data.sessions[0].break_notified,
+            "focus resuming must clear the marker for the next break"
+        );
+    }
+
+    #[test]
+    fn pomodoro_break_notification_respects_master_toggle() {
+        // With notifications off, the break never notifies — and the
+        // marker stays clear, so turning notifications back on
+        // mid-break still notifies on a later tick.
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("pomodoro-break-toggle.sqlite")).unwrap();
+        engine.data.preferences.notifications_enabled = false;
+        engine.data.sessions.push(pomodoro_break_session(
+            "break",
+            crate::pomodoro::Phase::ShortBreak,
+            5,
+        ));
+        engine.tick().unwrap();
+        assert!(!engine.data.sessions[0].break_notified);
+    }
+
     #[test]
     fn restart_during_grace_resumes_with_remaining_or_as_running() {
         let dir = tempfile::tempdir().unwrap();
@@ -6626,6 +6780,7 @@ mod tests {
             assert!(!session.focus.attention.enabled);
             session.focused_ms = 5 * 60_000;
             session.remaining_ms = 20 * 60_000;
+            session.started_at = Some(clock::now() - 3 * 24 * 60 * 60 * 1_000);
             engine.data.sessions.push(session);
             engine.db.save(&engine.data).unwrap();
             drop(engine);

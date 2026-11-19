@@ -8,6 +8,8 @@
 
 /// TaskId declared by `desktop:StartupTask` in the MSIX manifest.
 pub const STARTUP_TASK_ID: &str = "Preelock";
+/// Application Id declared in the MSIX manifest.
+pub const APPLICATION_ID: &str = "Preelock";
 /// Legacy TaskId from prior versions (before standardization on Preelock),
 /// retained strictly for migration / cleanup on upgrade.
 pub const LEGACY_STARTUP_TASK_ID: &str = "VYSTRIQ";
@@ -82,6 +84,10 @@ pub fn is_packaged_exe(path: &str) -> bool {
     path.to_ascii_lowercase().contains(r"\windowsapps\")
 }
 
+pub fn apps_folder_activation_uri(package_family_name: &str) -> String {
+    format!(r"shell:AppsFolder\{package_family_name}!{APPLICATION_ID}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +111,14 @@ mod tests {
         assert_eq!(STARTUP_TASK_ID, "Preelock");
         assert_eq!(LEGACY_STARTUP_TASK_ID, "VYSTRIQ");
         assert_eq!(GUI_EXE_FILE_NAME, "Preelock.exe");
+    }
+
+    #[test]
+    fn apps_folder_uri_targets_the_packaged_gui_application_id() {
+        assert_eq!(
+            apps_folder_activation_uri("Preelock.LocalTest_abcd1234"),
+            r"shell:AppsFolder\Preelock.LocalTest_abcd1234!Preelock"
+        );
     }
 
     #[test]

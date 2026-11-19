@@ -134,7 +134,6 @@
     }, 30000);
   }
 
-  const closeBtn = document.getElementById('close-btn');
   const dismiss = () => {
     if (window.history.length > 1) {
       window.history.back();
@@ -142,7 +141,6 @@
       window.close();
     }
   };
-  if (closeBtn) closeBtn.addEventListener('click', dismiss);
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') dismiss();
   });

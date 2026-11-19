@@ -242,6 +242,35 @@ mod tests {
         assert!(!startup(&path, Some("boot-b".into())).unwrap());
     }
     #[test]
+    fn multi_day_shutdown_keeps_the_active_session_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lifecycle.json");
+        let session = SessionCheckpoint {
+            session_id: "long-offline".into(),
+            status: "running".into(),
+            mode: "standard".into(),
+            remaining_ms: 15 * 60_000,
+            last_checkpoint_ms: 1,
+            ..Default::default()
+        };
+        write(
+            &path,
+            &Checkpoint {
+                boot: Some("old-boot".into()),
+                updated_at_ms: 1,
+                active_session: Some(session.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(startup(&path, Some("new-boot".into())).unwrap());
+        assert_eq!(
+            read_checkpoint(&path).unwrap().active_session,
+            Some(session)
+        );
+    }
+    #[test]
     fn orderly_shutdown_marker_is_consumed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lifecycle.json");

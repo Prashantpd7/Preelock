@@ -135,6 +135,17 @@ pub struct Session {
     /// True when the user has been notified of inactivity during this session.
     #[serde(default)]
     pub inactivity_notified: bool,
+    /// Pomodoro break-start notification: true once the engine has
+    /// told the user (one OS notification) that this session entered
+    /// a Pomodoro break phase. Persisted with the session, so a later
+    /// engine — GUI takeover after the background engine fired, or a
+    /// restart resuming a break — never notifies twice, while an
+    /// undelivered tick (notifications off, no channel yet) leaves it
+    /// false so a later tick retries while the break is still on.
+    /// Cleared when focus resumes, so the next break notifies again,
+    /// and by RestartSession, like the grace marker.
+    #[serde(default)]
+    pub break_notified: bool,
     /// Durable persistence metadata: intended end wall-clock timestamp,
     /// per-occurrence schedule key (anti-duplicate restart guard),
     /// last durable checkpoint & enforcement confirmation timestamps,

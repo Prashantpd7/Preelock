@@ -895,6 +895,75 @@ td:first-child {
 .active-session-controls {
   flex-shrink: 0;
 }
+/* Pomodoro break timer on the right of the active-session card:
+ * a small label over a live MM:SS countdown with a clock face
+ * whose long hand turns once a minute. margin-left auto pushes
+ * it against the Pause/Stop buttons without moving them.
+ * The kicker sits above the flex row, so align-items: center
+ * alone leaves the timer ~14px too low against the whole left
+ * column (kicker + main timer): the negative top margin is half
+ * the kicker's height (13px at 1.5 line-height + 8px margin),
+ * pulling the block up so both sides share one vertical centre. */
+.break-timer {
+  margin-left: auto;
+  margin-top: -14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.break-timer-label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+.break-timer-time {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.break-timer-clock {
+  flex-shrink: 0;
+}
+.break-timer-clock-face {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.break-timer-clock-tick {
+  stroke: var(--muted);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+.break-timer-clock-hand {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: break-clock-hand 60s linear infinite;
+}
+.break-timer-clock-hand-short {
+  stroke: var(--text);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.break-timer-clock-pin {
+  fill: var(--accent);
+}
+@keyframes break-clock-hand {
+  to {
+    transform: rotate(360deg);
+  }
+}
 /* The global banner opens the session details popup, so the
  * whole card is clickable. */
 .active-session-banner.clickable {

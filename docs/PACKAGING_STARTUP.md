@@ -88,6 +88,9 @@ from, and reopens, the GUI executable (`launch::gui_executable`).
   packaged builds only) and the main task only through the user's
   own "Open at login" choice or the session/schedule rule
   (`platform::settings_windows`).
+- When the active-session supervisor needs a cold GUI launch, it activates
+  `shell:AppsFolder\<PackageFamilyName>!Preelock` through Explorer rather
+  than starting `Preelock.exe` by package path.
 - **No Windows Service.** There is no privileged-enforcement
   service in this build: everything needing the interactive
   desktop, the camera, or the browser runs as the per-user

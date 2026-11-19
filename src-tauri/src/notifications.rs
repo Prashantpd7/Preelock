@@ -198,6 +198,22 @@ pub fn grace_body(title: &str, secs: u64) -> String {
     )
 }
 
+/// Body for the Pomodoro break-start notification: the break kind
+/// and its configured length in minutes. The notification fires
+/// once when a break phase starts; the title is fixed ("Break
+/// time") and the body carries the break length, so a 5-minute
+/// short break and a 15-minute long break read differently. The
+/// unblocked line is literal: during a break the engine publishes
+/// no network policy and never hides apps (see `pomodoro.rs` and
+/// `Engine::publish`), so everything is open until focus resumes.
+pub fn pomodoro_break_body(long_break: bool, minutes: u32) -> String {
+    let minute_word = if minutes == 1 { "minute" } else { "minutes" };
+    format!(
+        "Time for a {} break — {minutes} {minute_word}. Everything is unblocked until the break ends.",
+        if long_break { "long" } else { "short" },
+    )
+}
+
 /// Minutes until a block starts, rounded UP, for warning text.
 /// Only called when `now < start`, so the result is at least 1.
 pub fn minutes_until(start_ms: i64, now_ms: i64) -> u64 {
@@ -678,6 +694,23 @@ mod tests {
         assert_eq!(
             grace_body("Evening block", 1),
             "Evening block starts in 1 second. Blocking begins when the countdown ends — finish up, nothing is blocked yet."
+        );
+    }
+
+    #[test]
+    fn pomodoro_break_body_states_kind_and_minutes() {
+        assert_eq!(
+            pomodoro_break_body(false, 5),
+            "Time for a short break — 5 minutes. Everything is unblocked until the break ends."
+        );
+        assert_eq!(
+            pomodoro_break_body(true, 15),
+            "Time for a long break — 15 minutes. Everything is unblocked until the break ends."
+        );
+        // One minute is singular.
+        assert_eq!(
+            pomodoro_break_body(false, 1),
+            "Time for a short break — 1 minute. Everything is unblocked until the break ends."
         );
     }
 }

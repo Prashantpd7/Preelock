@@ -8,10 +8,10 @@
 //! - The GUI process connects over authenticated loopback IPC (`crate::ipc`)
 //!   and renders the window, tray, and overlays. Closing or quitting the UI
 //!   leaves `--background` operational.
-//! - During an active strict focus session (`has_active_strict()`), if the UI
-//!   exits (Cmd+Q, macOS Force Quit, or Windows Task Manager), the supervisor
-//!   relaunches the Preelock GUI after ~5 seconds in the user's interactive
-//!   session. Outside strict sessions, UI exit is never reopened.
+//! - During any active session (`has_active()`), if the UI exits (Cmd+Q,
+//!   macOS Force Quit, or Windows Task Manager), the supervisor relaunches
+//!   the Preelock GUI in the user's interactive session. When idle, UI exit
+//!   is never reopened.
 
 use crate::{
     attention_agent,
@@ -43,7 +43,7 @@ const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
-pub const RELAUNCH_DELAY_MS: u64 = 1_000;
+pub const RELAUNCH_DELAY_MS: u64 = 500;
 pub const RELAUNCH_COOLDOWN_MS: u64 = 3_000;
 /// Grace window after a supervisor launch (2026-11-17 loop fix). Once the
 /// supervisor fires a launch, `evaluate` must not fire another one until
@@ -903,6 +903,7 @@ impl UiRelaunchSupervisor {
     /// register this process as a LaunchServices application.
     pub fn poll_ui_alive(&mut self, data_dir: &Path) -> bool {
         let (gui_lock_held, gui_lock_pid) = gui_lock_status(data_dir);
+        let mut known_ui_process_died = false;
         // A known PID counts only while it still owns gui.lock. PID
         //    existence alone is not proof: the OS can reuse a force-quit
         //    GUI's PID for an unrelated process.
@@ -911,13 +912,13 @@ impl UiRelaunchSupervisor {
                 self.pending_launch_until_ms = None;
                 return true;
             }
+            known_ui_process_died = !process_alive(pid);
             self.known_ui_pid = None;
             self.ui_exiting_at = None;
             // Fall through: a new GUI may already have taken the lock
-            // during a handover. Deliberately do NOT clear the desktop
-            // heartbeat here — a fresh heartbeat is itself evidence of a
-            // live GUI (only the GUI touches it, every 1 s), and clearing
-            // it would turn a handover into a false "dead" verdict.
+            // during a handover. Keep the heartbeat as a fallback unless
+            // this known GUI process has actually died; then its fresh
+            // heartbeat is only stale shutdown residue.
         }
         // The file lock is authoritative. Its text PID may be stale or
         //    reused after Force Quit, but a held exclusive lock proves a GUI
@@ -931,7 +932,7 @@ impl UiRelaunchSupervisor {
         // Desktop heartbeat: only the GUI touches it (setup + its 1 s
         //    heartbeat thread via `UiHeartbeat`), so a fresh one means a
         //    GUI is alive even if every pid source above is stale.
-        if desktop_alive(data_dir) {
+        if !known_ui_process_died && desktop_alive(data_dir) {
             self.pending_launch_until_ms = None;
             return true;
         }
@@ -939,20 +940,17 @@ impl UiRelaunchSupervisor {
     }
 
     /// Evaluate whether the UI should be relaunched at `now_ms`.
-    /// CRITICAL INVARIANT: returns `true` ONLY when `strict_active == true`,
-    /// `ui_alive == false`, `shutting_down == false`, missing duration >= 1s,
-    /// cooldown since previous relaunch has elapsed, AND no launch is still
-    /// in flight inside its grace window (`LAUNCH_GRACE_MS`). Authorising a
-    /// launch arms the grace window, so the supervisor can never fire a
-    /// second `gui_request` while the first launch is still in flight.
+    /// Returns `true` only for an active session with no live UI, outside
+    /// shutdown, after the missing delay and cooldown, and with no earlier
+    /// launch still in flight inside `LAUNCH_GRACE_MS`.
     pub fn evaluate(
         &mut self,
         now_ms: u64,
-        strict_active: bool,
+        active_session: bool,
         ui_alive: bool,
         shutting_down: bool,
     ) -> bool {
-        if shutting_down || !strict_active {
+        if shutting_down || !active_session {
             self.ui_missing_since = None;
             self.pending_launch_until_ms = None;
             return false;
@@ -1075,7 +1073,7 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
+fn spawn_gui_in_user_session(spawned: &mut Option<Child>) -> bool {
     // macOS: route through LaunchServices so a supervisor launch coalesces
     // with a concurrent Dock or notification launch.
     #[cfg(target_os = "macos")]
@@ -1088,7 +1086,7 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
             outcome.as_str()
         );
         if outcome != crate::platform::GuiActivation::Failed {
-            return;
+            return true;
         }
         #[cfg(debug_assertions)]
         if let Ok(exe) = std::env::current_exe() {
@@ -1106,27 +1104,45 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
                     log::warn!(
                         "Vite dev server is unreachable at 127.0.0.1:1420; skipping raw debug GUI relaunch."
                     );
-                    return;
+                    return false;
                 }
                 let mut cmd = Command::new(exe);
                 cmd.stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
                 match cmd.spawn() {
-                    Ok(child) => *spawned = Some(child),
+                    Ok(child) => {
+                        *spawned = Some(child);
+                        return true;
+                    }
                     Err(error) => {
                         log::warn!("Could not relaunch the debug Preelock UI: {error}");
+                        return false;
                     }
                 }
-                return;
             }
         }
         log::error!("Could not request a Preelock GUI launch through LaunchServices.");
     }
 
+    #[cfg(target_os = "windows")]
+    if crate::platform::packaged() {
+        let _ = spawned;
+        let correlation = crate::lifecycle_log::new_correlation("supervisor");
+        let outcome = crate::platform::request_gui_activation("supervisor", &correlation);
+        log::info!(
+            "lifecycle event=gui_request result={} source=supervisor correlation={correlation}",
+            outcome.as_str()
+        );
+        if outcome == crate::platform::GuiActivation::Failed {
+            log::error!("Could not request a packaged Preelock GUI launch.");
+        }
+        return outcome != crate::platform::GuiActivation::Failed;
+    }
+
     #[cfg(not(target_os = "macos"))]
     let Ok(exe) = std::env::current_exe() else {
-        return;
+        return false;
     };
     #[cfg(not(target_os = "macos"))]
     let gui = crate::launch::gui_executable(&exe);
@@ -1147,7 +1163,7 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
                 log::warn!(
                 "Vite dev server is unreachable at 127.0.0.1:1420; skipping raw debug GUI relaunch to avoid white window."
             );
-                return;
+                return false;
             }
         }
 
@@ -1163,11 +1179,18 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) {
         match cmd.spawn() {
             Ok(child) => {
                 *spawned = Some(child);
+                return true;
             }
             Err(error) => {
                 log::warn!("Could not relaunch Preelock UI {}: {error}", gui.display());
+                return false;
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        false
     }
 }
 
@@ -1432,16 +1455,17 @@ pub fn run() -> i32 {
             next_supervisor_check = now_instant + Duration::from_millis(200);
 
             let ui_alive = supervisor.poll_ui_alive(&dir);
-            if !ui_alive && engine.has_active() && !engine.has_active_strict() {
-                let _ = crate::tray::ensure_running(&dir);
-            }
             if supervisor.evaluate(
                 crate::clock::continuous_ms(),
-                engine.has_active_strict(),
+                engine.has_active(),
                 ui_alive,
                 shutdown_requested(),
-            ) {
-                spawn_gui_in_user_session(&mut spawned_gui);
+            ) && !spawn_gui_in_user_session(&mut spawned_gui)
+                && engine.has_active()
+            {
+                if let Err(error) = crate::tray::ensure_running(&dir) {
+                    log::warn!("Could not start tray after GUI launch failure: {error}");
+                }
             }
         }
 
@@ -1546,50 +1570,64 @@ mod tests {
     }
 
     #[test]
-    fn ui_relaunch_supervisor_only_relaunches_after_1s_during_active_strict() {
+    fn ui_relaunch_supervisor_relaunches_active_sessions_after_half_a_second() {
         let mut sup = UiRelaunchSupervisor::default();
 
-        // Idle or non-strict never relaunches regardless of elapsed absence.
+        // Idle never relaunches regardless of elapsed absence.
         assert!(!sup.evaluate(1_000, false, false, false));
         assert!(!sup.evaluate(20_000, false, false, false));
 
-        // UI alive during strict clears missing timer and does not relaunch.
+        // UI alive during an active session clears the missing timer.
         sup.mark_ui_alive(1234);
         assert!(!sup.evaluate(25_000, true, true, false));
 
-        // Cmd+Q / Force Quit -> missing for < 1s does not relaunch early.
+        // Cmd+Q / Force Quit -> wait 500 ms after confirmed disappearance.
         assert!(!sup.evaluate(30_000, true, false, false));
-        assert!(!sup.evaluate(30_999, true, false, false));
+        assert!(!sup.evaluate(30_499, true, false, false));
 
-        // Reaches 1s missing -> relaunches once!
-        assert!(sup.evaluate(31_000, true, false, false));
+        assert!(sup.evaluate(30_500, true, false, false));
         // In-flight grace window (10 s) prevents duplicate spawns while the
         // GUI is booting — this is what stopped the 2026-11-17 loop, where
         // the old 3 s cooldown alone fired 9 launches in 24 s.
-        assert!(!sup.evaluate(31_500, true, false, false));
-        assert!(!sup.evaluate(33_999, true, false, false));
-        assert!(!sup.evaluate(34_000, true, false, false));
-        assert!(!sup.evaluate(40_999, true, false, false));
+        assert!(!sup.evaluate(30_500, true, false, false));
+        assert!(!sup.evaluate(30_999, true, false, false));
+        assert!(!sup.evaluate(40_499, true, false, false));
 
         // After the grace window passes, if UI still not alive, can relaunch.
-        assert!(sup.evaluate(41_000, true, false, false));
+        assert!(sup.evaluate(40_500, true, false, false));
 
         // A launch that registers (UI seen alive) ends the grace early:
-        // the next disappearance still needs its own 1 s missing delay,
+        // the next disappearance still needs its own 500 ms missing delay,
         // but no 10 s grace blocks it.
-        assert!(!sup.evaluate(41_500, true, true, false));
-        assert!(!sup.evaluate(42_500, true, false, false));
-        // Still inside the 3 s cooldown from the 41_000 launch.
-        assert!(!sup.evaluate(43_500, true, false, false));
-        assert!(sup.evaluate(44_000, true, false, false));
+        assert!(!sup.evaluate(40_600, true, true, false));
+        assert!(!sup.evaluate(40_700, true, false, false));
+        // Still inside the 3 s cooldown from the 40_500 launch.
+        assert!(!sup.evaluate(41_200, true, false, false));
+        assert!(sup.evaluate(43_500, true, false, false));
 
-        // OS shutdown suppresses relaunch even in active strict.
+        // OS shutdown suppresses relaunch even during an active session.
         assert!(!sup.evaluate(50_000, true, false, true));
 
-        // Strict ends before 1s elapses -> timer cancelled, never relaunches.
+        // The session ends -> timer is cancelled, never relaunches.
         assert!(!sup.evaluate(60_000, true, false, false));
         assert!(!sup.evaluate(60_500, false, false, false));
         assert!(!sup.evaluate(70_000, false, false, false));
+    }
+
+    #[test]
+    fn dead_known_gui_pid_does_not_get_a_grace_period_from_its_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        sup.mark_ui_alive(0);
+        touch_desktop(dir.path());
+
+        let ui_alive = sup.poll_ui_alive(dir.path());
+        assert!(
+            !ui_alive,
+            "a fresh heartbeat from a previously known, dead GUI is stale"
+        );
+        assert!(!sup.evaluate(0, true, ui_alive, false));
+        assert!(sup.evaluate(RELAUNCH_DELAY_MS, true, ui_alive, false));
     }
 
     #[test]
@@ -1775,7 +1813,7 @@ mod tests {
         }
         assert_eq!(
             launch_at,
-            vec![1_000, 11_000, 21_000],
+            vec![600, 10_600, 20_600],
             "expected one relaunch per grace window, got {launch_at:?}"
         );
     }
@@ -1895,8 +1933,8 @@ mod tests {
         drop(server);
 
         let t0 = crate::clock::continuous_ms();
-        assert!(!supervisor.evaluate(t0, engine.has_active_strict(), false, false));
-        assert!(supervisor.evaluate(t0 + 1_001, engine.has_active_strict(), false, false));
+        assert!(!supervisor.evaluate(t0, engine.has_active(), false, false));
+        assert!(supervisor.evaluate(t0 + 500, engine.has_active(), false, false));
 
         // Verify CLI check-uninstall reflects active strict state inside dir.
         let cli_check = crate::cli::uninstall_check_in_dir(dir.path());

@@ -403,6 +403,7 @@ mod tests {
             start_notified: false,
             complete_notified: false,
             inactivity_notified: false,
+            break_notified: false,
         }
     }
 

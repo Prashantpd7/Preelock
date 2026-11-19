@@ -24,23 +24,6 @@ main {
   position: relative;
   box-sizing: border-box;
 }
-.close-btn {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  background: none;
-  border: none;
-  color: #a3afa6;
-  font-size: 16px;
-  cursor: pointer;
-  padding: 6px 10px;
-  border-radius: 6px;
-  line-height: 1;
-}
-.close-btn:hover {
-  color: #e5e9e3;
-  background: rgba(255, 255, 255, 0.08);
-}
 h1 {
   font-size: 1.85rem;
   margin: 1.25rem 0 1rem;

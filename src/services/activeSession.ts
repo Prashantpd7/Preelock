@@ -36,6 +36,19 @@ export function sessionTypeLabel(session: Session): string {
   }
 }
 
+/** Live Pomodoro break state for the global banner: null unless the
+ *  session is on a break right now. The remaining time is the
+ *  backend's phase_remaining_ms, which the store refreshes every
+ *  second, so the banner countdown ticks live. No text is built
+ *  here — the banner renders the timer itself. */
+export function pomodoroBreak(
+  session: Session,
+): { remainingMs: number } | null {
+  const phase = session.pomodoro?.phase;
+  if (phase !== 'short_break' && phase !== 'long_break') return null;
+  return { remainingMs: session.pomodoro?.phase_remaining_ms ?? 0 };
+}
+
 /** Live focus totals for a session, from the same fields
  *  SessionCard's "Time so far" / "Final result" uses: the
  *  productive time the engine credits plus the attention
