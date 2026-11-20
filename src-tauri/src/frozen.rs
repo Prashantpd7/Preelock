@@ -44,8 +44,10 @@
 //! are rejected in `sessions::apply` — a frozen session is
 //! implicitly maximally locked, on top of any step-10 lock it also
 //! carries, and there is NO emergency unlock button. The bound is
-//! the timer itself: natural expiry always lifts the lock. When
-//! the session completes, or its schedule window ends, the session
+//! the timer itself: natural expiry always lifts the lock. Frozen
+//! wall time pauses across engine shutdown/recovery; recovery
+//! re-anchors the timer at the last durable checkpoint. When the
+//! session completes, or its schedule window ends, the session
 //! ends, the overlay is destroyed by the sync (see `OverlayAction`
 //! below), and the policy is restored (publish finds no live
 //! session). On startup recovery (`engine::open_recovery`), a
@@ -53,13 +55,13 @@
 //! completed, never resumed; a frozen session with time left
 //! resumes exactly like any other live session (step 11), and the
 //! overlay re-appears on the first sync tick. The timer itself is
-//! wall-clock time (`wall_expired`): a frozen session ends after
-//! its duration in real minutes even if no productive time was
-//! recorded, unlike ordinary attention sessions, which complete on
-//! productive time. Without this, a frozen session whose allowed
-//! apps never earned productive time could never expire — the
-//! wall-clock bound is what makes "never a permanent lockout"
-//! literally true. OS shutdown/restart
+//! wall-clock time while the engine is running (`wall_expired`): a
+//! frozen session ends after its duration in active real minutes
+//! even if no productive time was recorded, unlike ordinary
+//! attention sessions, which complete on productive time. Without
+//! this, a frozen session whose allowed apps never earned
+//! productive time could never expire — the wall-clock bound is
+//! what makes "never a permanent lockout" literally true. OS shutdown/restart
 //! is never intercepted: the app cannot and does not block power
 //! actions, and a killed app can never produce a permanent lockout
 //! because the timer is the only lock and it always expires.
@@ -239,14 +241,15 @@ pub fn overlay_action(
 
 /// Wall-clock expiry for frozen sessions (the failsafe that makes
 /// the safety bound real): a frozen session ends `duration_minutes`
-/// of wall-clock time after it started, even if no productive time
-/// was recorded. Ordinary attention sessions complete on productive
-/// time, which could strand a frozen session forever if the user
-/// never did productive work in an allowed app — a frozen lock
-/// must never depend on productive accounting to lift. `None`
+/// of active wall-clock time after it started, even if no productive
+/// time was recorded. Ordinary attention sessions complete on
+/// productive time, which could strand a frozen session forever if
+/// the user never did productive work in an allowed app — a frozen
+/// lock must never depend on productive accounting to lift. `None`
 /// (never started) never expires; a session that has not started
-/// cannot lock anything. Schedule sessions start at window entry,
-/// so their wall expiry coincides with their window end.
+/// cannot lock anything. Recovery advances `started_at` by engine
+/// downtime, so that time does not consume the Frozen timer.
+/// Schedule sessions still end when their schedule window closes.
 pub fn wall_expired(started_at: Option<i64>, duration_minutes: u32, now_ms: i64) -> bool {
     match started_at {
         None => false,

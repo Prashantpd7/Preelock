@@ -314,25 +314,40 @@ impl Engine {
         // were already Interrupted stay Interrupted; nothing here
         // resurrects a finished session.
         for s in &mut data.sessions {
-            // Step 12 Frozen Turkey, recovery: a frozen session
-            // whose wall-clock timer already passed while the app
-            // was closed is completed, never resumed — the lock
-            // lifts on expiry even across a kill/restart, and the
-            // overlay must not re-appear for it. A frozen session
-            // with no remaining productive time is likewise done.
-            // Anything else frozen resumes below, like any live
-            // session, and the overlay re-appears on the first
-            // sync tick (see `lib.rs`).
+            let recovery_now = clock::now();
+            let is_live = matches!(
+                s.status,
+                Status::Running | Status::Preparing | Status::Paused
+            );
+            // Frozen wall time pauses while the engine is down. Its
+            // productive remaining_ms is a separate target, so re-anchor
+            // the wall timer from the last durable checkpoint.
+            if s.focus.frozen.enabled && is_live {
+                if let (Some(started_at), Some(checkpoint_at)) =
+                    (s.started_at, s.durability.last_checkpoint_at_ms)
+                {
+                    if checkpoint_at >= started_at {
+                        let offline_ms = recovery_now.saturating_sub(checkpoint_at).max(0);
+                        if offline_ms > 0 {
+                            s.started_at = Some(started_at.saturating_add(offline_ms));
+                            s.durability.intended_end_at_ms = s
+                                .durability
+                                .intended_end_at_ms
+                                .map(|end| end.saturating_add(offline_ms));
+                        }
+                    }
+                }
+            }
+            // Time elapsed before the last checkpoint still counts toward
+            // the Frozen safety bound; an exhausted productive target is
+            // also complete. Remaining sessions resume below.
             if s.focus.frozen.enabled
-                && matches!(
-                    s.status,
-                    Status::Running | Status::Preparing | Status::Paused
-                )
+                && is_live
                 && (s.remaining_ms == 0
-                    || crate::frozen::wall_expired(s.started_at, s.duration_minutes, clock::now()))
+                    || crate::frozen::wall_expired(s.started_at, s.duration_minutes, recovery_now))
             {
                 s.status = Status::Completed;
-                s.ended_at = Some(clock::now());
+                s.ended_at = Some(recovery_now);
                 s.deadline_ms = None;
                 s.grace_until_ms = None;
                 s.attention.state = State::Idle;
@@ -341,9 +356,9 @@ impl Engine {
                 s.report.camera_status = "off".into();
                 s.report.enforcement = "Frozen lock expired; monitoring stopped".into();
                 s.report.event(
-                    clock::now(),
+                    recovery_now,
                     "frozen_expired",
-                    "Frozen lock lifted on expiry during restart recovery; the timer had already run out.",
+                    "Frozen lock lifted on recovery; its active-time timer had run out.",
                 );
                 continue;
             }
@@ -5389,6 +5404,54 @@ mod tests {
         assert_eq!(s.status, Status::Running);
         assert_eq!(s.remaining_ms, 100_000);
         assert!(s.focus.frozen.enabled);
+    }
+
+    #[test]
+    fn frozen_recovery_does_not_count_multi_day_engine_downtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frozen-offline-pause.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        engine
+            .execute(Action::CreateSession {
+                title: "Frozen".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: frozen_focus(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+
+        let checkpoint_at = clock::now() - 3 * 24 * 60 * 60_000;
+        let started_at = checkpoint_at - 10 * 60_000;
+        let session = &mut engine.data.sessions[0];
+        session.status = Status::Running;
+        session.started_at = Some(started_at);
+        session.remaining_ms = 25 * 60_000;
+        session.durability.last_checkpoint_at_ms = Some(checkpoint_at);
+        session.durability.intended_end_at_ms = Some(started_at + 25 * 60_000);
+        engine.db.save(&engine.data).unwrap();
+        drop(engine);
+
+        let recovered = Engine::open_recovery(&path, false, true, false).unwrap();
+        let session = &recovered.data.sessions[0];
+        let now = clock::now();
+        let resumed_started_at = session.started_at.unwrap();
+        let elapsed_before_shutdown = now - resumed_started_at;
+
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.remaining_ms, 25 * 60_000);
+        assert!((elapsed_before_shutdown - 10 * 60_000).abs() < 2_000);
+        assert!(!crate::frozen::wall_expired(
+            session.started_at,
+            session.duration_minutes,
+            now
+        ));
+        let wall_time_remaining = session.durability.intended_end_at_ms.unwrap() - now;
+        assert!(
+            (wall_time_remaining - 15 * 60_000).abs() < 2_000,
+            "recovery should retain the 15 active minutes left before shutdown"
+        );
     }
 
     #[test]
