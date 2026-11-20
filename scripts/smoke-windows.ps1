@@ -16,8 +16,10 @@ if ((Test-Path $legacyDatabase) -or (Test-Path $database)) {
     throw "Refusing to use existing app data"
 }
 # Exercise a real previous installer, then upgrade in place with seeded state.
+# Pin to a release that still exists on GitHub with its Windows Setup asset:
+# the old v0.5.2 release was deleted, which broke this download.
 $legacyDir = Join-Path $env:RUNNER_TEMP "legacy-installer"
-gh release download v0.5.2 --repo Prashantpd7/Preelock --pattern 'Preelock_0.5.2_x64-setup.exe' --dir $legacyDir
+gh release download v0.5.13 --repo Prashantpd7/Preelock --pattern 'Preelock-Windows-Setup.exe' --dir $legacyDir
 if ($LASTEXITCODE -ne 0) { throw "Could not download the legacy release" }
 $legacyInstaller = @(Get-ChildItem $legacyDir/*.exe)[0]
 $legacySetup = Start-Process $legacyInstaller.FullName -ArgumentList "/S /D=$installDir" -PassThru
@@ -130,7 +132,7 @@ $approvalState = if ($null -ne $approval.Preelock) {
 if ($null -eq $approvalState -or $approvalState[0] -ne 3) {
     throw "Upgrade lost the disabled startup state"
 }
-Write-Output "Legacy v0.5.2 upgrade preserved the database, preference, pairing token and disabled startup state."
+Write-Output "Legacy v0.5.13 upgrade preserved the database, preference, pairing token and disabled startup state."
 $uninstallers = @(Get-ChildItem $installDir -Filter "*uninstall*.exe")
 if ($uninstallers.Count -ne 1) { throw "Expected one uninstaller" }
 $uninstall = Start-Process $uninstallers[0].FullName -ArgumentList "/S" -PassThru
