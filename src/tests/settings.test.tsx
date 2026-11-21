@@ -288,6 +288,31 @@ it('shows a stored warning list as one minute and saves one number', async () =>
     }),
   );
 });
+it('keeps a cleared numeric setting empty until retyped and blocks saving it empty', async () => {
+  const user = userEvent.setup();
+  render(<Settings />);
+  await user.click(screen.getByRole('button', { name: 'Focus' }));
+  const input = screen.getByRole('spinbutton', {
+    name: 'Default focus minutes',
+  });
+
+  await user.clear(input);
+  expect(input).toHaveValue(null);
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).not.toHaveBeenCalledWith(
+    expect.objectContaining({ type: 'update_preferences' }),
+  );
+
+  await user.type(input, '0120');
+  expect(input).toHaveValue(120);
+  await user.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(api.execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: 'update_preferences',
+      preferences: expect.objectContaining({ default_minutes: 120 }),
+    }),
+  );
+});
 it('keeps a saved off for the timer and sounds instead of the new defaults', async () => {
   const user = userEvent.setup();
   // A saved off stays off: defaults never override stored values.

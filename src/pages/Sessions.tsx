@@ -17,6 +17,7 @@ import {
   type ActivitySection,
 } from '../services/activitySection';
 import { Dropdown } from '../components/Dropdown';
+import { NumberInput } from '../components/NumberInput';
 import { BrowserSetup } from '../components/BrowserSetup';
 import { SafariBrowserNotice } from '../components/SafariBrowserNotice';
 import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
@@ -27,6 +28,7 @@ import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
 import { AllowanceForm } from '../components/AllowanceForm';
 import { Activity } from './Activity';
 import {
+  cleanAllowedDomain,
   cleanDomain,
   cleanYouTubeChannel,
   domainInputError,
@@ -190,6 +192,18 @@ export function Sessions() {
   }
   // One browser per session: shown when the user tries to pick a second.
   const [browserWarn, setBrowserWarn] = useState('');
+  // Warnings are transient: each one clears itself about 5 seconds
+  // after it appears. A new or different warning restarts the timer.
+  useEffect(() => {
+    if (!browserWarn) return;
+    const timer = setTimeout(() => setBrowserWarn(''), 5000);
+    return () => clearTimeout(timer);
+  }, [browserWarn]);
+  useEffect(() => {
+    if (!problem) return;
+    const timer = setTimeout(() => setProblem(''), 5000);
+    return () => clearTimeout(timer);
+  }, [problem]);
   // True while a browser chosen in the compatibility notice is being
   // opened and waited for.
   const [browserOpening, setBrowserOpening] = useState(false);
@@ -315,7 +329,10 @@ export function Sessions() {
     domains:
       blockMode !== 'none'
         ? splitDomains(blockSites).flatMap((entry) => {
-            const cleaned = cleanDomain(entry);
+            const cleaned =
+              blockMode === 'allowlist'
+                ? cleanAllowedDomain(entry)
+                : cleanDomain(entry);
             return cleaned ? [cleaned] : [];
           })
         : [],
@@ -455,6 +472,18 @@ export function Sessions() {
   if (problem === CAMERA_GUIDE && setup?.camera_permission === 'granted')
     visibleProblem = '';
   if (problem.includes('extension') && browserConnected) visibleProblem = '';
+  // The "pick at least one app" error is stale once the wizard now has
+  // a work app or website selected.
+  const hasWorkSelection =
+    (strict ? selected.apps : (selected.attention?.work_apps ?? [])).length >
+      0 ||
+    (selected.attention?.work_domains.length ?? 0) > 0 ||
+    (strict && selected.domains.length > 0);
+  if (
+    problem === 'Choose at least one work app or website.' &&
+    hasWorkSelection
+  )
+    visibleProblem = '';
   return (
     <>
       <PageHeading
@@ -623,13 +652,14 @@ export function Sessions() {
                   </label>
                   <label>
                     Focus time (minutes)
-                    <input
-                      type="number"
+                    <NumberInput
                       required
                       min={1}
                       max={480}
                       value={minutes}
-                      onChange={(e) => setMinutes(Number(e.target.value))}
+                      onValueChange={(value) => {
+                        if (value !== '') setMinutes(Number(value));
+                      }}
                     />
                   </label>
                 </div>
@@ -927,7 +957,10 @@ export function Sessions() {
                                 );
                               }}
                               onBlur={() => {
-                                const next = normalizeDomainInput(blockSites);
+                                const next = normalizeDomainInput(
+                                  blockSites,
+                                  blockMode === 'allowlist',
+                                );
                                 setBlockSites(next.text);
                                 setBlockSitesError(domainInputError(next.text));
                               }}
@@ -968,7 +1001,10 @@ export function Sessions() {
                                 );
                               }}
                               onBlur={() => {
-                                const next = normalizeDomainInput(blockSites);
+                                const next = normalizeDomainInput(
+                                  blockSites,
+                                  blockMode === 'allowlist',
+                                );
                                 setBlockSites(next.text);
                                 setBlockSitesError(domainInputError(next.text));
                               }}
@@ -977,8 +1013,8 @@ export function Sessions() {
                               }
                             />
                             <p className="small muted">
-                              One per line. Only these websites stay open —
-                              everything else is blocked.
+                              One per line. Only these websites stay open — URL
+                              paths are ignored.
                             </p>
                             {blockSitesError && (
                               <p className="error small" role="alert">
@@ -1144,58 +1180,64 @@ export function Sessions() {
                     <div className="simple-grid">
                       <label>
                         Focus (minutes)
-                        <input
-                          type="number"
+                        <NumberInput
+                          required
                           min={1}
                           max={180}
                           value={pomodoro.focus_minutes}
-                          onChange={(e) =>
-                            updatePomodoro({
-                              focus_minutes: Number(e.target.value),
-                            })
-                          }
+                          onValueChange={(value) => {
+                            if (value !== '') {
+                              updatePomodoro({ focus_minutes: Number(value) });
+                            }
+                          }}
                         />
                       </label>
                       <label>
                         Short break (minutes)
-                        <input
-                          type="number"
+                        <NumberInput
+                          required
                           min={1}
                           max={60}
                           value={pomodoro.short_break_minutes}
-                          onChange={(e) =>
-                            updatePomodoro({
-                              short_break_minutes: Number(e.target.value),
-                            })
-                          }
+                          onValueChange={(value) => {
+                            if (value !== '') {
+                              updatePomodoro({
+                                short_break_minutes: Number(value),
+                              });
+                            }
+                          }}
                         />
                       </label>
                       <label>
                         Long break (minutes)
-                        <input
-                          type="number"
+                        <NumberInput
+                          required
                           min={1}
                           max={90}
                           value={pomodoro.long_break_minutes}
-                          onChange={(e) =>
-                            updatePomodoro({
-                              long_break_minutes: Number(e.target.value),
-                            })
-                          }
+                          onValueChange={(value) => {
+                            if (value !== '') {
+                              updatePomodoro({
+                                long_break_minutes: Number(value),
+                              });
+                            }
+                          }}
                         />
                       </label>
                       <label>
                         Focus cycles before a long break
-                        <input
-                          type="number"
+                        <NumberInput
+                          required
                           min={2}
                           max={8}
                           value={pomodoro.cycles_before_long_break}
-                          onChange={(e) =>
-                            updatePomodoro({
-                              cycles_before_long_break: Number(e.target.value),
-                            })
-                          }
+                          onValueChange={(value) => {
+                            if (value !== '') {
+                              updatePomodoro({
+                                cycles_before_long_break: Number(value),
+                              });
+                            }
+                          }}
                         />
                       </label>
                     </div>

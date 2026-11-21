@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import {
+  cleanAllowedDomain,
   cleanDomain,
   domainInputError,
   isYouTubeBlockedByWebsiteRules,
@@ -30,6 +31,29 @@ test('cleanDomain rejects unusable input', () => {
   expect(cleanDomain('127.0.0.1')).toBe(null);
   expect(cleanDomain('')).toBe(null);
   expect(cleanDomain('   ')).toBe(null);
+});
+test('allowlisted page URLs resolve to the whole site', () => {
+  expect(cleanAllowedDomain('https://gemini.google.com/app?hl=en-IN')).toBe(
+    'gemini.google.com',
+  );
+  expect(cleanAllowedDomain('https://www.youtube.com/feed/subscriptions')).toBe(
+    'youtube.com',
+  );
+  expect(cleanAllowedDomain('*.example.com/path')).toBe('*.example.com');
+});
+test('allowlist input normalization removes pasted URL paths', () => {
+  expect(
+    normalizeDomainInput(
+      'https://gemini.google.com/app?hl=en-IN\nhttps://www.youtube.com/feed/subscriptions',
+      true,
+    ),
+  ).toEqual({
+    text: 'gemini.google.com\nyoutube.com',
+    errors: [],
+  });
+  expect(normalizeDomainInput('https://youtube.com/shorts').text).toBe(
+    'youtube.com/shorts',
+  );
 });
 test('normalizeDomainInput cleans lines and reports the bad ones', () => {
   const { text, errors } = normalizeDomainInput(

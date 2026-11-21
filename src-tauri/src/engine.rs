@@ -69,9 +69,9 @@ pub struct Engine {
 /// focus timer. `domains` is interpreted according to the session's
 /// website-blocking mode: in blocklist modes a domain is relevant when it
 /// is NOT blocked, in allowlist modes only when it is listed. Matching
-/// uses the shared `rule_matches()` (plain, wildcard and path rules;
-/// path rules are evaluated with an empty path here, since the engine
-/// only sees a host — see focus.rs for the exact consequences).
+/// uses the shared `rule_matches()` (plain, wildcard and path rules).
+/// Since the engine only sees a host, allowlist paths are stripped and
+/// represent the whole site; blocklist path rules remain path-specific.
 /// `block_adult` is the session's "Block adult content" toggle: when
 /// any website blocking is on, an adult-category host is never
 /// relevant, even if it is explicitly allowlisted (the toggle is a
@@ -132,6 +132,8 @@ fn browser_domain_relevant_with_exceptions(
     }
     let effective_blocklist = matches!(website_blocking, WebsiteBlocking::Blocklist)
         || (matches!(website_blocking, WebsiteBlocking::Auto) && matches!(mode, Mode::Standard));
+    let whole_site_allowlist = matches!(website_blocking, WebsiteBlocking::Allowlist)
+        || (matches!(website_blocking, WebsiteBlocking::Auto) && !matches!(mode, Mode::Standard));
     if effective_blocklist
         && exceptions
             .iter()
@@ -139,7 +141,14 @@ fn browser_domain_relevant_with_exceptions(
     {
         return true;
     }
-    let in_domains = domains.iter().any(|d| rule_matches(d, active_domain, ""));
+    let in_domains = domains.iter().any(|d| {
+        if whole_site_allowlist {
+            let host_rule = crate::focus::allowlist_host_rule(d);
+            rule_matches(&host_rule, active_domain, "")
+        } else {
+            rule_matches(d, active_domain, "")
+        }
+    });
     match website_blocking {
         WebsiteBlocking::Blocklist => !in_domains,
         WebsiteBlocking::Allowlist => in_domains,
@@ -2562,7 +2571,7 @@ impl Engine {
         if self.has_active() {
             return Ok(());
         }
-        // Screen Time limits remain active outside focus sessions. The app
+        // Screen Time limits remain active outside Focus Sessions. The app
         // budget is enforced by hiding the frontmost app; site limits are
         // pushed to the browser's observe-only policy below.
         let usage = crate::allowances::TickUsage {
@@ -2863,14 +2872,13 @@ impl Engine {
             }
 
             // 4. Pomodoro break alert: a break phase started — notify
-            // once per break, and clear the marker when focus resumes
-            // so the next break notifies again. The marker persists
-            // with the session, so restarts and GUI/background
-            // handovers never duplicate it; a tick that cannot
-            // deliver (notifications off) leaves it clear so a later
-            // tick retries while the break is still on. A paused
-            // session keeps its marker: pausing pauses the break too,
-            // and resuming does not re-notify for the break already
+            // once per break, and notify when the break ends and focus
+            // resumes. The marker persists with the session, so restarts
+            // and GUI/background handovers never duplicate it; a tick
+            // that cannot deliver (notifications off) leaves it clear
+            // so a later tick retries while the break is still on. A
+            // paused session keeps its marker: pausing pauses the break
+            // too, and resuming does not re-notify for the break already
             // announced. A session that completes during a break gets
             // the completion alert above, never this one.
             if s.status == Status::Running && crate::pomodoro::in_break(s) {
@@ -2892,6 +2900,15 @@ impl Engine {
                     session_changed = true;
                 }
             } else if s.pomodoro.phase == crate::pomodoro::Phase::Focus && s.break_notified {
+                if s.status == Status::Running && p.notifications_enabled {
+                    crate::desktop_settings::notify(
+                        "Break ended",
+                        &crate::notifications::pomodoro_break_end_body(),
+                    );
+                    if p.notifications_sound {
+                        crate::desktop_settings::sound(p.volume);
+                    }
+                }
                 s.break_notified = false;
                 session_changed = true;
             }
@@ -3685,7 +3702,7 @@ impl Engine {
             // sessions within the period. The browser_app clone
             // keeps this borrow disjoint from the session borrow.
             // Allowance usage is accrued by the independent Screen Time
-            // sampler above, so it continues outside focus sessions and is
+            // sampler above, so it continues outside Focus Sessions and is
             // counted exactly once per tick.
             s.report.browser_blocks = if s.focus.network_required() {
                 browser.blocks
@@ -4458,8 +4475,8 @@ mod tests {
             "github.com",
             false,
         ));
-        // Shared matcher: wildcard and path rules, evaluated with the
-        // host-only view the engine has.
+        // Blocklist path rules retain their path-specific enforcement, but
+        // allowlists treat a pasted URL as an allowance for the whole host.
         let rules = vec![
             "*.example.com".to_string(),
             "youtube.com/shorts".to_string(),
@@ -4485,11 +4502,18 @@ mod tests {
             "youtube.com",
             false,
         ));
-        assert!(!browser_domain_relevant(
+        assert!(browser_domain_relevant(
             &Mode::Strict,
             &WebsiteBlocking::Allowlist,
             &rules,
             "youtube.com",
+            false,
+        ));
+        assert!(browser_domain_relevant(
+            &Mode::Strict,
+            &WebsiteBlocking::Allowlist,
+            &rules,
+            "www.youtube.com",
             false,
         ));
         // Adult overlay: never relevant while blocking is on, even when
@@ -6357,6 +6381,26 @@ mod tests {
             !engine.data.sessions[0].break_notified,
             "focus resuming must clear the marker for the next break"
         );
+        engine.data.sessions[0].pomodoro.phase = crate::pomodoro::Phase::ShortBreak;
+        engine.tick().unwrap();
+        assert!(
+            engine.data.sessions[0].break_notified,
+            "subsequent break must notify again"
+        );
+    }
+
+    #[test]
+    fn pomodoro_break_end_respects_notifications_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine =
+            Engine::open(&dir.path().join("pomodoro-break-end-toggle.sqlite")).unwrap();
+        let mut session = pomodoro_break_session("break", crate::pomodoro::Phase::ShortBreak, 5);
+        session.break_notified = true;
+        engine.data.sessions.push(session);
+        engine.data.preferences.notifications_enabled = false;
+        engine.data.sessions[0].pomodoro.phase = crate::pomodoro::Phase::Focus;
+        engine.tick().unwrap();
+        assert!(!engine.data.sessions[0].break_notified);
     }
 
     #[test]
@@ -7356,5 +7400,126 @@ mod tests {
             !engine.bridge.as_ref().unwrap().adult_block_enabled(),
             "disabling adult blocking did not reach the browser synchronization API"
         );
+    }
+
+    #[test]
+    fn windows_active_strict_session_restores_remaining_time_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("strict_recovery.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+
+        // Create a 2-hour strict session with 1 hour remaining
+        let created = engine
+            .execute(Action::CreateSession {
+                title: "2-Hour Strict Session".into(),
+                minutes: 120,
+                allow_pause: false,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    domains: vec![],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = created.sessions[0].id.clone();
+        engine.execute(Action::StartSession { id }).unwrap();
+
+        // Simulate 1 hour elapsed (60 minutes = 3,600,000 ms remaining out of 7,200,000 ms)
+        engine.data.sessions[0].focused_ms = 60 * 60_000;
+        engine.data.sessions[0].remaining_ms = 60 * 60_000;
+        engine.data.sessions[0].durability.last_checkpoint_at_ms = Some(crate::clock::now());
+        engine.db.save(&engine.data).unwrap();
+        engine.save_checkpoint().unwrap();
+        drop(engine);
+
+        // Simulate Windows restart (recover after OS shutdown)
+        let recovered_engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(recovered_engine.has_active_strict());
+        assert!(recovered_engine.recovered_after_os_shutdown());
+
+        let session = &recovered_engine.data.sessions[0];
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.remaining_ms, 60 * 60_000);
+        assert_eq!(session.focused_ms, 60 * 60_000);
+        assert!(session.focus.apps.contains(&"com.microsoft.VSCode".into()));
+    }
+
+    #[test]
+    fn windows_next_day_recovery_preserves_remaining_session_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("next_day.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+
+        // Create a 2-hour strict session with 1 hour remaining
+        let created = engine
+            .execute(Action::CreateSession {
+                title: "Overnight Strict Session".into(),
+                minutes: 120,
+                allow_pause: false,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    domains: vec![],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = created.sessions[0].id.clone();
+        engine.execute(Action::StartSession { id }).unwrap();
+
+        engine.data.sessions[0].focused_ms = 60 * 60_000;
+        engine.data.sessions[0].remaining_ms = 60 * 60_000;
+        // Last checkpoint yesterday (24 hours ago)
+        let yesterday = crate::clock::now() - 24 * 60 * 60 * 1_000;
+        engine.data.sessions[0].durability.last_checkpoint_at_ms = Some(yesterday);
+        engine.db.save(&engine.data).unwrap();
+        engine.save_checkpoint().unwrap();
+        drop(engine);
+
+        // Open next day: offline time does NOT burn the remaining session time
+        let recovered_engine = Engine::open_recovery(&path, false, true, false).unwrap();
+        assert!(recovered_engine.has_active_strict());
+        let session = &recovered_engine.data.sessions[0];
+        assert_eq!(session.status, Status::Running);
+        assert_eq!(session.remaining_ms, 60 * 60_000);
+    }
+
+    #[test]
+    fn windows_session_expiration_stops_supervisor_relaunch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("expired.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+
+        let created = engine
+            .execute(Action::CreateSession {
+                title: "Expiring Strict Session".into(),
+                minutes: 1,
+                allow_pause: false,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Strict,
+                    apps: vec!["com.microsoft.VSCode".into()],
+                    domains: vec![],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = created.sessions[0].id.clone();
+        engine.execute(Action::StartSession { id }).unwrap();
+        assert!(engine.has_active_strict());
+
+        // Simulate session expiring
+        engine.data.sessions[0].remaining_ms = 0;
+        engine.data.sessions[0].status = Status::Ended;
+        engine.db.save(&engine.data).unwrap();
+
+        // Now has_active_strict is false
+        assert!(!engine.has_active_strict());
     }
 }

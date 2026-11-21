@@ -260,8 +260,14 @@ pub fn login(on: bool) -> Result<(), String> {
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         key.set_value("Preelock", &format!("\"{}\"", exe.display()))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        key.set_value(
+            "Preelock Background",
+            &format!("\"{}\" --background", exe.display()),
+        )
+        .map_err(|e| e.to_string())
     } else {
+        let _ = key.delete_value("Preelock Background");
         match key.delete_value("Preelock") {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

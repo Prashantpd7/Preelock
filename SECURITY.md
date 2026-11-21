@@ -23,7 +23,7 @@ Preelock is a local-first productivity, focus, and screen-time management applic
 - **Thin GUI Process:**
   - Runs Tauri 2.x and React 19.
   - Connects to `--background` via authenticated loopback IPC.
-  - Unprivileged: closing the GUI or restarting it never disrupts active focus sessions or blocking enforcement.
+  - Unprivileged: closing the GUI or restarting it never disrupts active Focus Sessions or blocking enforcement.
 
 ### 1.3 Local IPC Security Model
 

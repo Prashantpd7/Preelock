@@ -5,7 +5,7 @@ commands.allow = ["snapshot"]
 
 [[permission]]
 identifier = "change-state"
-description = "Mutate validated local tasks, preferences and focus sessions."
+description = "Mutate validated local tasks, preferences and Focus Sessions."
 commands.allow = ["execute"]
 
 [[permission]]

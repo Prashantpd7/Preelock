@@ -24,7 +24,7 @@ param(
     [string]$Publisher = "",
     [string]$PublisherDisplayName = "",
     [string]$DisplayName = "Preelock",
-    [string]$Description = "Local-first focus sessions, tasks and browser focus rules.",
+    [string]$Description = "Local-first Focus Sessions, tasks and browser focus rules.",
     [string]$BuiltExecutable = "",
     [string]$OutputDirectory = "",
     [switch]$Build,

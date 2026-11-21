@@ -134,6 +134,14 @@ impl FocusConfig {
             .cloned()
             .collect()
     }
+    /// Host-wide rules for an allowlist: pasted page paths are ignored,
+    /// and `www.example.com` is treated as the same site as `example.com`.
+    pub fn website_allowlist_host_rules(&self) -> Vec<String> {
+        self.website_host_rules()
+            .iter()
+            .map(|rule| allowlist_host_rule(rule))
+            .collect()
+    }
     pub fn network_required(&self) -> bool {
         !self.general_internet
             || !self.domains.is_empty()
@@ -255,6 +263,14 @@ fn normalize_id(id: &str) -> String {
 }
 fn id_filename(id: &str) -> &str {
     id.rsplit(['/', '\\']).next().unwrap_or(id)
+}
+pub fn allowlist_host_rule(rule: &str) -> String {
+    let rule = rule.trim().to_ascii_lowercase();
+    if is_keyword_rule(&rule) {
+        return rule;
+    }
+    let host = rule.split_once('/').map_or(rule.as_str(), |(host, _)| host);
+    host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 pub fn ids_match(a: &str, b: &str) -> bool {
     if a.is_empty() || b.is_empty() {
@@ -546,6 +562,8 @@ pub const ADULT_DOMAINS: &[&str] = &[
 /// - example.com/path: host rule as above, plus the URL path must equal
 ///   the rule path or start with it followed by / (youtube.com/shorts
 ///   matches /shorts and /shorts/abc, not /shortsabc and not /).
+/// - Allowlist policies use only the hostname, so pasting a page URL opens
+///   the whole site; blocklists keep path-specific matching.
 /// - search:<keyword>: never matches a host; only the extension enforces
 ///   it, blocking search-engine result pages whose query contains the
 ///   keyword (case-insensitive substring).

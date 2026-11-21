@@ -62,7 +62,7 @@ flowchart TD
 2. **Thin Desktop GUI (`preelock`):**
    - Renders the window, system tray menu, and modals.
    - Protected by `gui.lock` (single GUI instance, acquired before any AppKit initialization). If launched when a GUI is already running, brings the existing window to focus and exits without creating an `NSApplication`.
-   - Can be closed (`Cmd+W`, `Cmd+Q`, or minimized to tray) at any time without terminating or interrupting background focus sessions or blocking enforcement.
+   - Can be closed (`Cmd+W`, `Cmd+Q`, or minimized to tray) at any time without terminating or interrupting background Focus Sessions or blocking enforcement.
 
 ### 2.1a macOS Application Identity (single LaunchServices entry)
 

@@ -167,7 +167,13 @@ export function Dropdown({
                 role="option"
                 aria-selected={index === selectedIndex}
                 tabIndex={-1}
-                onClick={() => select(index)}
+                onClick={(event) => {
+                  // Stop the enclosing <label> from forwarding this click
+                  // to the trigger, which would re-open the list right
+                  // after select() closes it.
+                  event.preventDefault();
+                  select(index);
+                }}
                 onMouseEnter={() => setActiveIndex(index)}
               >
                 {option.label}

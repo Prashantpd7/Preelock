@@ -19,7 +19,7 @@ yourself.
 
 ## What Preelock stores on your computer
 
-- Focus sessions: title, duration, status, remaining and focused time, reports
+- Focus Sessions: title, duration, status, remaining and focused time, reports
   and event history.
 - Tasks you create, and preferences such as theme, reminders and daily goal.
 - Attention records created during sessions you start with activity tracking

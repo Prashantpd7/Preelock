@@ -634,7 +634,9 @@ pub fn activate_existing_instance() -> bool {
 
         // Fallback: search for top-level window by GUI lock PID
         if let Ok(dir) = crate::background::data_dir() {
-            if let Ok(content) = std::fs::read_to_string(dir.join("gui.lock")) {
+            let content = std::fs::read_to_string(dir.join("gui.pid"))
+                .or_else(|_| std::fs::read_to_string(dir.join("gui.lock")));
+            if let Ok(content) = content {
                 if let Ok(target_pid) = content.trim().parse::<u32>() {
                     struct EnumContext {
                         target_pid: u32,

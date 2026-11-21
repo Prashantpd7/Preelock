@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../state/store';
 import { Dropdown } from './Dropdown';
+import { NumberInput } from './NumberInput';
 import { RowIcon } from './AppIcon';
 import { Modal, Toggle } from './SettingsControls';
 import { localDayStart } from '../services/screenTimeWeek';
@@ -35,13 +36,6 @@ type PanelKind = 'apps' | 'sites' | 'adult';
 type LockMode = 'timed' | 'daily';
 
 type Execute = (action: Action) => Promise<boolean>;
-
-/** Strip leading zeros as the user types ("010" → "10"); keep "" and "0". */
-function normalizeMinutesInput(raw: string): string {
-  if (raw === '') return '';
-  const stripped = raw.replace(/^0+/, '');
-  return stripped === '' ? '0' : stripped;
-}
 
 /** App lock section of the Screen Time page: expandable "Block apps" /
  *  "Block websites" / "Block adult websites" panels, each with
@@ -337,15 +331,12 @@ function AppLockForm({
       </div>
       <label>
         Custom (minutes)
-        <input
-          type="number"
+        <NumberInput
           required
           min={1}
           max={maxMinutes}
           value={minutesText}
-          onChange={(e) =>
-            setMinutesText(normalizeMinutesInput(e.target.value))
-          }
+          onValueChange={setMinutesText}
         />
       </label>
       {problem && (

@@ -72,6 +72,11 @@ impl GuiLock {
                     let _ = f.seek(SeekFrom::Start(0));
                     let _ = writeln!(f, "{}", std::process::id());
                     let _ = f.flush();
+                    // On Windows, write the PID to an unlocked sidecar file (gui.pid)
+                    // so that monitoring processes can read the PID without triggering
+                    // mandatory byte-range lock violations (ERROR_LOCK_VIOLATION).
+                    let _ =
+                        std::fs::write(dir.join("gui.pid"), format!("{}\n", std::process::id()));
                     return Some(Self {
                         file: f,
                         path: lock_path,
@@ -88,6 +93,7 @@ impl Drop for GuiLock {
     fn drop(&mut self) {
         let _ = self.file.set_len(0);
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(self.path.with_file_name("gui.pid"));
     }
 }
 /// M6: whether the main window was auto-hidden at this launch
@@ -732,11 +738,24 @@ pub fn run() {
                 if lifecycle::ending() {
                     return;
                 }
-                let action = match window.app_handle().state::<IpcClient>().ping() {
-                    Ok(info) => crate::quit::close_action(info.has_active, true),
-                    Err(_) => crate::quit::close_action(false, false),
+                let ping = window.app_handle().state::<IpcClient>().ping();
+                let (has_active, _has_strict) = match &ping {
+                    Ok(info) => (info.has_active, info.has_active_strict),
+                    Err(_) => {
+                        let active_in_store = active_session_for_quit(window.app_handle().state::<IpcClient>().data_dir());
+                        (active_in_store, false)
+                    }
                 };
                 api.prevent_close();
+                #[cfg(target_os = "windows")]
+                if _has_strict {
+                    blocked_quit(window.app_handle());
+                    return;
+                }
+                let action = match &ping {
+                    Ok(info) => crate::quit::close_action(info.has_active, true),
+                    Err(_) => crate::quit::close_action(has_active, false),
+                };
                 match action {
                     crate::quit::WindowCloseAction::HideWindow => {
                         let _ = window.hide();
@@ -774,6 +793,23 @@ pub fn run() {
                     && !app.state::<ExitApproved>().0.load(Ordering::Acquire) =>
             {
                 api.prevent_exit();
+                #[cfg(target_os = "windows")]
+                {
+                    let has_strict = app
+                        .try_state::<IpcClient>()
+                        .and_then(|c| c.ping().ok().map(|p| p.has_active_strict))
+                        .unwrap_or_else(|| {
+                            active_session_for_quit(
+                                app.try_state::<IpcClient>()
+                                    .map(|c| c.data_dir())
+                                    .unwrap_or(std::path::Path::new("")),
+                            )
+                        });
+                    if has_strict {
+                        blocked_quit(app);
+                        return;
+                    }
+                }
                 quit(app);
             }
             tauri::RunEvent::ExitRequested { .. } => {
@@ -853,14 +889,19 @@ mod tests {
     fn gui_lock_cleans_up_file_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("gui.lock");
+        let pid_path = dir.path().join("gui.pid");
         let lock = GuiLock::try_acquire(dir.path()).expect("acquire");
         assert!(lock_path.exists());
+        assert!(pid_path.exists());
+        let pid_str = std::fs::read_to_string(&pid_path).unwrap();
+        assert_eq!(pid_str.trim(), std::process::id().to_string());
         #[cfg(unix)]
         {
-            let pid_str = std::fs::read_to_string(&lock_path).unwrap();
-            assert_eq!(pid_str.trim(), std::process::id().to_string());
+            let lock_pid_str = std::fs::read_to_string(&lock_path).unwrap();
+            assert_eq!(lock_pid_str.trim(), std::process::id().to_string());
         }
         drop(lock);
         assert!(!lock_path.exists(), "gui.lock must be removed on drop");
+        assert!(!pid_path.exists(), "gui.pid must be removed on drop");
     }
 }

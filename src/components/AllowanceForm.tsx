@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../state/store';
 import { Dropdown } from './Dropdown';
+import { NumberInput } from './NumberInput';
 import { cleanDomain } from '../services/domains';
 import { validateAllowanceForm } from '../services/allowances';
 import type { Allowance } from '../types';
@@ -139,13 +140,14 @@ export function AllowanceForm({
       <div className="simple-grid allowance-grid">
         <label>
           Allow in minutes
-          <input
-            type="number"
+          <NumberInput
             required
             min={1}
             max={period === 'day' ? 1440 : 10080}
             value={budget}
-            onChange={(e) => setBudget(Number(e.target.value))}
+            onValueChange={(value) => {
+              if (value !== '') setBudget(Number(value));
+            }}
           />
         </label>
         <label>

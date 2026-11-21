@@ -159,7 +159,7 @@ describe('activeSession helpers', () => {
     expect(liveSession([])).toBeUndefined();
   });
 
-  it('labels scheduled sessions and plain focus sessions', () => {
+  it('labels scheduled sessions and plain Focus Sessions', () => {
     expect(sessionTypeLabel(makeSession({ schedule_id: 'sched-1' }))).toBe(
       'Scheduled session',
     );

@@ -43,7 +43,7 @@ Key test coverage areas:
 - `src/tests/appLocks.test.tsx`: App locks, website locks, adult website blocking, strict mode 20-second countdown persistence, bypass prevention.
 - `src/tests/activeSession.test.tsx`: Focus session lifecycle, pause limits, deep focus, countdowns, emergency challenges.
 - `src/tests/screenTime.test.tsx`: Usage aggregation, categorization, day boundaries, opt-in privacy controls.
-- `src/tests/schedules.test.tsx`: Scheduled focus sessions, recurring window enforcement, lock rules.
+- `src/tests/schedules.test.tsx`: Scheduled Focus Sessions, recurring window enforcement, lock rules.
 - `src/tests/allowances.test.tsx`: Budget limits, accrual tracking, exhaustion triggers.
 - `src/tests/safariRestriction.test.tsx`: Safari-specific website blocking and domain normalization.
 - `browser-extension/*.test.js`: Extension worker routing, declarativeNetRequest rules, YouTube controls, pairing tokens.

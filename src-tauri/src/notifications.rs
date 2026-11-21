@@ -214,6 +214,12 @@ pub fn pomodoro_break_body(long_break: bool, minutes: u32) -> String {
     )
 }
 
+/// Body for the Pomodoro break-end notification: lets the user know
+/// the break is over and focus/blocking has resumed.
+pub fn pomodoro_break_end_body() -> String {
+    "Your break has ended. Focus has resumed and blocking is back in place.".into()
+}
+
 /// Minutes until a block starts, rounded UP, for warning text.
 /// Only called when `now < start`, so the result is at least 1.
 pub fn minutes_until(start_ms: i64, now_ms: i64) -> u64 {
@@ -711,6 +717,14 @@ mod tests {
         assert_eq!(
             pomodoro_break_body(false, 1),
             "Time for a short break — 1 minute. Everything is unblocked until the break ends."
+        );
+    }
+
+    #[test]
+    fn pomodoro_break_end_body_states_focus_resumed() {
+        assert_eq!(
+            pomodoro_break_end_body(),
+            "Your break has ended. Focus has resumed and blocking is back in place."
         );
     }
 }

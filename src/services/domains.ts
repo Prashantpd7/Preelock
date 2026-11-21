@@ -51,6 +51,15 @@ export function cleanDomain(raw: string): string | null {
   if (path && /[?#\s]/.test(path)) return null;
   return (wildcard ? '*.' : '') + host + path;
 }
+// An allowlisted page URL means the whole website stays open. Treat www as
+// the same site as its bare host so pasted YouTube feed URLs also allow home.
+export function cleanAllowedDomain(raw: string): string | null {
+  const cleaned = cleanDomain(raw);
+  if (cleaned === null || cleaned.startsWith('search:')) return cleaned;
+  const slash = cleaned.indexOf('/');
+  const host = slash === -1 ? cleaned : cleaned.slice(0, slash);
+  return host.startsWith('www.') ? host.slice(4) : host;
+}
 const YOUTUBE_WATCH_LATER_RULES = new Set([
   'youtube.com',
   'www.youtube.com',
@@ -84,14 +93,19 @@ export function isYouTubeBlockedByWebsiteRules(
 }
 // Normalize a multi-line textarea. Bad lines are left untouched so the user
 // can fix them; errors lists the offending lines.
-export function normalizeDomainInput(value: string): {
+// Allowlist entries represent whole sites; blocklist entries can remain
+// path-specific.
+export function normalizeDomainInput(
+  value: string,
+  wholeSites = false,
+): {
   text: string;
   errors: string[];
 } {
   const errors: string[] = [];
   const lines = value.split('\n').map((line) => {
     if (!line.trim()) return '';
-    const cleaned = cleanDomain(line);
+    const cleaned = wholeSites ? cleanAllowedDomain(line) : cleanDomain(line);
     if (cleaned === null) {
       errors.push(line.trim());
       return line;

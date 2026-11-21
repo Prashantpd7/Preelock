@@ -129,6 +129,7 @@ impl Policy {
             || has_youtube_rules;
         let domains = match &c.website_blocking {
             WebsiteBlocking::None => Vec::new(),
+            _ if policy_mode == "allowlist" => c.website_allowlist_host_rules(),
             _ => c.website_host_rules(),
         };
         // Step 12 Frozen Turkey: a frozen policy is an allowlist
@@ -1391,6 +1392,19 @@ mod tests {
         assert!(p.domains.is_empty());
         assert!(p.keywords.is_empty());
         assert!(p.extra_blocked.is_empty());
+    }
+    #[test]
+    fn allowlist_policy_opens_the_whole_pasted_site() {
+        let c = FocusConfig {
+            website_blocking: WebsiteBlocking::Allowlist,
+            domains: vec![
+                "gemini.google.com/app".into(),
+                "www.youtube.com/feed/subscriptions".into(),
+            ],
+            ..Default::default()
+        };
+        let p = Policy::new("s", &c, 60_000);
+        assert_eq!(p.domains, vec!["gemini.google.com", "youtube.com"]);
     }
     #[test]
     fn policy_appends_exhausted_allowance_rules_to_the_overlay() {

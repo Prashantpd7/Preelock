@@ -193,6 +193,20 @@ pub extern "C" fn system_shutdown() {
         ) {
             log::error!("Could not mark system shutdown: {error}");
         }
+    } else if let Ok(dir) = crate::background::data_dir() {
+        let path = dir.join("preelock.lifecycle.json");
+        let boot = boot_id();
+        let existing_session = read_checkpoint(&path).and_then(|c| c.active_session);
+        let _ = write(
+            &path,
+            &Checkpoint {
+                boot,
+                orderly: true,
+                updated_at_ms: crate::clock::now(),
+                corrupt_recovered: false,
+                active_session: existing_session,
+            },
+        );
     }
 }
 #[cfg(target_os = "macos")]

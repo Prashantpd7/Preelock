@@ -7,7 +7,7 @@ introducing new frameworks or storage systems.
 ## Product purpose
 
 Preelock is a local-first focus and productivity desktop application for macOS
-and Windows. Users create focus sessions, tasks, and optional focus policies.
+and Windows. Users create Focus Sessions, tasks, and optional focus policies.
 During a session the app can track productive time, monitor attention signals,
 hide or minimize distracting applications, and pair with a Chromium extension
 to filter browser sites.

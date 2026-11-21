@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Bell, BellOff } from 'lucide-react';
+import { NumberInput } from '../components/NumberInput';
 import { PermissionsPanel } from '../components/PermissionsPanel';
 import { PageHeading } from '../components/ui';
 import {
@@ -80,6 +81,9 @@ export function Settings({
     ),
   });
   const [dirty, setDirty] = useState(false);
+  const [emptyNumberFields, setEmptyNumberFields] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [notice, setNotice] = useState('');
   const [working, setWorking] = useState(false);
   const [info, setInfo] = useState<SettingsInfo>({});
@@ -114,7 +118,29 @@ export function Settings({
     setDirty(true);
     setNotice('');
   }
+  function updateNumberDraft(
+    field: string,
+    value: string,
+    updateValue: (value: number) => void,
+  ) {
+    setEmptyNumberFields((fields) => {
+      const next = new Set(fields);
+      if (value === '') next.add(field);
+      else next.delete(field);
+      return next;
+    });
+    if (value === '') {
+      setDirty(true);
+      setNotice('');
+      return;
+    }
+    updateValue(Number(value));
+  }
   async function save(next = draft) {
+    if (emptyNumberFields.size) {
+      setNotice('Enter a value for each numeric setting before saving.');
+      return false;
+    }
     if (await execute({ type: 'update_preferences', preferences: next })) {
       const saved = useAppStore.getState().data.preferences;
       setDraft({
@@ -124,6 +150,7 @@ export function Settings({
           saved.warning_minutes ?? preferenceDefaults.warning_minutes,
         ),
       });
+      setEmptyNumberFields(new Set());
       setDirty(false);
       setNotice('Saved');
       return true;
@@ -296,14 +323,16 @@ export function Settings({
               <h2>Focus</h2>
               <SettingRow title="Default focus time">
                 <label className="number-control">
-                  <input
+                  <NumberInput
                     aria-label="Default focus minutes"
-                    type="number"
+                    required
                     min={1}
                     max={480}
                     value={draft.default_minutes}
-                    onChange={(e) =>
-                      change('default_minutes', Number(e.target.value))
+                    onValueChange={(value) =>
+                      updateNumberDraft('default_minutes', value, (number) =>
+                        change('default_minutes', number),
+                      )
                     }
                   />{' '}
                   min
@@ -316,21 +345,32 @@ export function Settings({
                 <Toggle
                   label="Daily goal"
                   checked={draft.daily_goal > 0}
-                  onChange={(v) => change('daily_goal', v ? 120 : 0)}
+                  onChange={(v) => {
+                    change('daily_goal', v ? 120 : 0);
+                    if (!v) {
+                      setEmptyNumberFields((fields) => {
+                        const next = new Set(fields);
+                        next.delete('daily_goal');
+                        return next;
+                      });
+                    }
+                  }}
                   disabled={disabled}
                 />
               </SettingRow>
               {draft.daily_goal > 0 && (
                 <SettingRow title="Goal length">
                   <label className="number-control">
-                    <input
+                    <NumberInput
                       aria-label="Daily goal minutes"
-                      type="number"
+                      required
                       min={1}
                       max={1440}
                       value={draft.daily_goal}
-                      onChange={(e) =>
-                        change('daily_goal', Number(e.target.value))
+                      onValueChange={(value) =>
+                        updateNumberDraft('daily_goal', value, (number) =>
+                          change('daily_goal', number),
+                        )
                       }
                     />{' '}
                     min
@@ -504,15 +544,17 @@ export function Settings({
                 hint="Seconds after a scheduled or one-shot block starts before blocking begins. 0 turns grace off. Manual sessions start at once."
               >
                 <label className="number-control">
-                  <input
+                  <NumberInput
                     aria-label="Grace period seconds"
-                    type="number"
+                    required
                     min={0}
                     max={300}
                     value={draft.grace_seconds ?? 60}
                     disabled={disabled}
-                    onChange={(e) =>
-                      change('grace_seconds', Number(e.target.value))
+                    onValueChange={(value) =>
+                      updateNumberDraft('grace_seconds', value, (number) =>
+                        change('grace_seconds', number),
+                      )
                     }
                   />{' '}
                   sec
@@ -924,6 +966,7 @@ export function Settings({
                     ...preferenceDefaults,
                     ...useAppStore.getState().data.preferences,
                   });
+                  setEmptyNumberFields(new Set());
                   setDirty(false);
                   setConfirm(null);
                 }

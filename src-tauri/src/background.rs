@@ -513,17 +513,24 @@ fn register_startup(exe: &Path, data_dir: &Path) -> Result<bool, String> {
                 "scheduled_task_active",
                 "Task Scheduler active.",
             );
+            // Run the scheduled task immediately so it runs independently under svchost.exe
+            let _ = Command::new("schtasks.exe")
+                .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+                .creation_flags(0x08000000)
+                .output();
+            Ok(true)
         }
         Ok(out) => {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             log::warn!("schtasks registration fell back to Run key: {err}");
             write_service_health(data_dir, false, "scheduled_task_failed", &err);
+            Ok(false)
         }
         Err(error) => {
             write_service_health(data_dir, false, "scheduled_task_error", &error.to_string());
+            Ok(false)
         }
     }
-    Ok(false)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -836,8 +843,8 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-        command.creation_flags(0x08000000 | 0x00000200);
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS
+        command.creation_flags(0x08000000 | 0x00000200 | 0x01000000 | 0x00000008);
     }
     command
         .spawn()
@@ -908,7 +915,8 @@ impl UiRelaunchSupervisor {
         //    existence alone is not proof: the OS can reuse a force-quit
         //    GUI's PID for an unrelated process.
         if let Some(pid) = self.known_ui_pid {
-            if gui_lock_held && gui_lock_pid == Some(pid) && process_alive(pid) {
+            let pid_matches = gui_lock_pid.map(|p| p == pid).unwrap_or(true);
+            if gui_lock_held && pid_matches && process_alive(pid) {
                 self.pending_launch_until_ms = None;
                 return true;
             }
@@ -1032,7 +1040,8 @@ fn gui_lock_status(data_dir: &Path) -> (bool, Option<u32>) {
             (false, None)
         }
         Err(error) if is_lock_contention(&error) => {
-            let pid = std::fs::read_to_string(path)
+            let pid = std::fs::read_to_string(data_dir.join("gui.pid"))
+                .or_else(|_| std::fs::read_to_string(&path))
                 .ok()
                 .and_then(|content| content.trim().parse::<u32>().ok());
             (true, pid)
@@ -1167,6 +1176,9 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) -> bool {
             false
         } else {
             let mut cmd = Command::new(&gui);
+            if let Some(parent) = gui.parent() {
+                cmd.current_dir(parent);
+            }
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -1455,13 +1467,18 @@ pub fn run() -> i32 {
             next_supervisor_check = now_instant + Duration::from_millis(200);
 
             let ui_alive = supervisor.poll_ui_alive(&dir);
+            let should_supervise = if cfg!(target_os = "windows") {
+                engine.has_active_strict()
+            } else {
+                engine.has_active()
+            };
             if supervisor.evaluate(
                 crate::clock::continuous_ms(),
-                engine.has_active(),
+                should_supervise,
                 ui_alive,
                 shutdown_requested(),
             ) && !spawn_gui_in_user_session(&mut spawned_gui)
-                && engine.has_active()
+                && should_supervise
             {
                 if let Err(error) = crate::tray::ensure_running(&dir) {
                     log::warn!("Could not start tray after GUI launch failure: {error}");
@@ -1513,6 +1530,7 @@ mod tests {
     fn hold_gui_lock(data_dir: &Path, pid: u32) -> File {
         use std::io::Write;
 
+        let _ = std::fs::write(data_dir.join("gui.pid"), format!("{pid}\n"));
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -2009,5 +2027,85 @@ mod tests {
             &old,
             &std::env::current_exe().unwrap()
         ));
+    }
+
+    #[test]
+    fn windows_strict_session_relaunch_evaluates_correctly() {
+        let mut sup = UiRelaunchSupervisor::default();
+        let now = 10_000;
+
+        // When a strict session is active (supervise_active = true) and UI is dead (ui_alive = false),
+        // missing time starts at `now`.
+        assert!(!sup.evaluate(now, true, false, false));
+        // After RELAUNCH_DELAY_MS (500 ms), supervisor triggers relaunch.
+        assert!(
+            sup.evaluate(now + RELAUNCH_DELAY_MS, true, false, false),
+            "Supervisor must trigger relaunch during active strict session when UI dies"
+        );
+
+        // When no strict session is active (supervise_active = false) even if UI is dead,
+        // supervisor must evaluate to false (do NOT relaunch).
+        let mut sup2 = UiRelaunchSupervisor::default();
+        assert!(!sup2.evaluate(now, false, false, false));
+        assert!(
+            !sup2.evaluate(now + RELAUNCH_DELAY_MS, false, false, false),
+            "Supervisor must NOT trigger relaunch when no strict session is active"
+        );
+    }
+
+    #[test]
+    fn windows_gui_pid_sidecar_detects_dead_gui_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+
+        // Write a dead PID into gui.pid and touch heartbeat
+        let dead_pid = 99999999;
+        std::fs::write(dir.path().join("gui.pid"), format!("{dead_pid}\n")).unwrap();
+        touch_desktop(dir.path());
+
+        // Marking the GUI alive with dead_pid
+        sup.mark_ui_alive(dead_pid);
+
+        // poll_ui_alive must detect that dead_pid is not alive and return false
+        assert!(
+            !sup.poll_ui_alive(dir.path()),
+            "poll_ui_alive must detect dead PID from gui.pid immediately"
+        );
+    }
+
+    #[test]
+    fn windows_relaunch_grace_throttling_prevents_process_storms() {
+        let mut sup = UiRelaunchSupervisor::default();
+        let t0 = 1_000;
+
+        // Missing at t0, authorized after RELAUNCH_DELAY_MS
+        assert!(!sup.evaluate(t0, true, false, false));
+        assert!(sup.evaluate(t0 + RELAUNCH_DELAY_MS, true, false, false));
+
+        // Rapid subsequent evaluations inside the grace window (LAUNCH_GRACE_MS = 10_000)
+        // must all be rejected, preventing duplicate spawns / process storms.
+        let authorized_time = t0 + RELAUNCH_DELAY_MS;
+        for t in [
+            authorized_time + 100,
+            authorized_time + 1_000,
+            authorized_time + 5_000,
+            authorized_time + LAUNCH_GRACE_MS - 1,
+        ] {
+            assert!(
+                !sup.evaluate(t, true, false, false),
+                "Relaunch must be throttled during grace period at t={t}"
+            );
+        }
+
+        // After grace period expires and delay passes, next relaunch is allowed if GUI is still dead
+        assert!(
+            sup.evaluate(
+                authorized_time + LAUNCH_GRACE_MS + RELAUNCH_DELAY_MS,
+                true,
+                false,
+                false
+            ),
+            "Relaunch allowed after grace period has elapsed"
+        );
     }
 }

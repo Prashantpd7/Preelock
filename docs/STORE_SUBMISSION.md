@@ -287,7 +287,7 @@ Declared capabilities: `runFullTrust` only.
 
 Short description:
 
-> Local-first focus sessions, tasks, and productive-time tracking for Windows.
+> Local-first Focus Sessions, tasks, and productive-time tracking for Windows.
 
 Description:
 
@@ -309,7 +309,7 @@ Description:
 
 Feature list (verified in this source tree):
 
-- Focus sessions with pause policy and productive-time accounting.
+- Focus Sessions with pause policy and productive-time accounting.
 - Tasks and daily goal.
 - Activity and analytics history stored locally.
 - Session types with optional application minimisation (Windows foreground
