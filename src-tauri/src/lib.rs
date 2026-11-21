@@ -800,9 +800,9 @@ pub fn run() {
                         .and_then(|c| c.ping().ok().map(|p| p.has_active_strict))
                         .unwrap_or_else(|| {
                             active_session_for_quit(
-                                app.try_state::<IpcClient>()
-                                    .map(|c| c.data_dir())
-                                    .unwrap_or(std::path::Path::new("")),
+                                &app.try_state::<IpcClient>()
+                                    .map(|c| c.data_dir().to_path_buf())
+                                    .unwrap_or_default(),
                             )
                         });
                     if has_strict {
