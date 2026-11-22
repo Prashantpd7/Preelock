@@ -62,7 +62,7 @@ try {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
     Stop-InstalledProcesses
 }
-python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); p=json.loads(c.execute('select payload from preferences where id=1').fetchone()[0]); p['theme']='light'; c.execute('update preferences set payload=? where id=1',(json.dumps(p),)); c.commit()" $legacyDatabase
+python -c "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); row=c.execute('select payload from preferences where id=1').fetchone(); p=json.loads(row[0]) if row else {}; p['theme']='light'; c.execute('insert into preferences (id,payload) values (1,?) on conflict(id) do update set payload=excluded.payload',(json.dumps(p),)); c.commit()" $legacyDatabase
 if ($LASTEXITCODE -ne 0) { throw "Could not seed upgrade preference" }
 $token = Join-Path (Split-Path $legacyDatabase -Parent) "browser-token"
 $tokenHash = (Get-FileHash $token).Hash
