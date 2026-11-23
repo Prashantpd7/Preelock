@@ -58,6 +58,9 @@ try {
         throw "Legacy startup did not create database within 45 seconds"
     }
     Start-Sleep -Seconds 5
+    $tokenPath = Join-Path (Split-Path $legacyDatabase -Parent) "browser-token"
+    for ($i = 0; $i -lt 30 -and !(Test-Path $tokenPath); $i++) { Start-Sleep -Seconds 1 }
+    if (!(Test-Path $tokenPath)) { throw "Legacy startup did not create browser-token within 30 seconds" }
 } finally {
     if (!$legacyApp.HasExited) { Stop-Process -Id $legacyApp.Id; $legacyApp.WaitForExit(10000) | Out-Null }
     Stop-InstalledProcesses
