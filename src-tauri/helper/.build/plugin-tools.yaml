@@ -1,0 +1,66 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<preelock-helper-arm64-apple-macosx-release.exe>","<preelock-helper-arm64-apple-macosx-release.module>"]
+  "preelock-helper-arm64-apple-macosx-release.exe": ["<preelock-helper-arm64-apple-macosx-release.exe>"]
+  "preelock-helper-arm64-apple-macosx-release.module": ["<preelock-helper-arm64-apple-macosx-release.module>"]
+  "test": ["<preelock-helper-arm64-apple-macosx-release.exe>","<preelock-helper-arm64-apple-macosx-release.module>"]
+default: "main"
+nodes:
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/HostsManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/PFManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHosting.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHostingRanges.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SocketServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/StateStore.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/main.swift.o"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper.product/Objects.LinkFileList"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/HostsManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/PFManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SharedHosting.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SharedHostingRanges.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SocketServer.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/StateStore.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/main.swift"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/sources"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/sources"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<preelock-helper-arm64-apple-macosx-release.exe>":
+    tool: phony
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper"]
+    outputs: ["<preelock-helper-arm64-apple-macosx-release.exe>"]
+
+  "<preelock-helper-arm64-apple-macosx-release.module>":
+    tool: phony
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/HostsManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/PFManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHosting.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHostingRanges.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SocketServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/StateStore.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/Modules/preelock_helper.swiftmodule"]
+    outputs: ["<preelock-helper-arm64-apple-macosx-release.module>"]
+
+  "C.preelock-helper-arm64-apple-macosx-release.exe":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/HostsManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/PFManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHosting.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHostingRanges.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SocketServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/StateStore.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper.product/Objects.LinkFileList"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper"]
+    description: "Linking ./.build/arm64-apple-macosx/release/preelock-helper"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release","-o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper","-module-name","preelock_helper","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-dead_strip","-Xlinker","-alias","-Xlinker","_preelock_helper_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock-helper.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx13.0","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.preelock-helper-arm64-apple-macosx-release.module":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/HostsManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/PFManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SharedHosting.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SharedHostingRanges.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/SocketServer.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/StateStore.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/main.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/sources"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/HostsManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/PFManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHosting.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SharedHostingRanges.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/SocketServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/StateStore.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/Modules/preelock_helper.swiftmodule"]
+    description: "Compiling Swift Module 'preelock_helper' (7 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","preelock_helper","-emit-dependencies","-emit-module","-emit-module-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/Modules/preelock_helper.swiftmodule","-output-file-map","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/output-file-map.json","-whole-module-optimization","-num-threads","10","-c","@/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/preelock_helper.build/sources","-I","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/Modules","-target","arm64-apple-macosx13.0","-whole-module-optimization","-num-threads","10","-serialize-diagnostics","-O","-j10","-DSWIFT_PACKAGE","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/.build/arm64-apple-macosx/release/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","preelock_helper_main","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","helper"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Sources/preelock-helper/","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Package.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/helper/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

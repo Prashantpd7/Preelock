@@ -1,0 +1,103 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "PreelockDNSCommon-arm64-apple-macosx-debug.module": ["<PreelockDNSCommon-arm64-apple-macosx-debug.module>"]
+  "main": ["<PreelockDNSCommon-arm64-apple-macosx-debug.module>","<preelock-dns-proxy-arm64-apple-macosx-debug.exe>","<preelock-dns-proxy-arm64-apple-macosx-debug.module>"]
+  "preelock-dns-proxy-arm64-apple-macosx-debug.exe": ["<preelock-dns-proxy-arm64-apple-macosx-debug.exe>"]
+  "preelock-dns-proxy-arm64-apple-macosx-debug.module": ["<preelock-dns-proxy-arm64-apple-macosx-debug.module>"]
+  "test": ["<PreelockDNSCommon-arm64-apple-macosx-debug.module>","<preelock-dns-proxy-arm64-apple-macosx-debug.exe>","<preelock-dns-proxy-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/CLI/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy":
+    is-mutated: true
+commands:
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/BlocklistManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/ControlServer.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSCache.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSLogger.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSPacket.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/NetworkWatcher.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/Policy.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/UpstreamResolver.swift"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/sources"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/sources"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy-entitlement.plist"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy-entitlement.plist"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/BlocklistManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/ControlServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSCache.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSLogger.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSPacket.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/NetworkWatcher.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/Policy.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/UpstreamResolver.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swift.o"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy.product/Objects.LinkFileList"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/CLI/main.swift"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/sources"]
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/sources"
+
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<PreelockDNSCommon-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/BlocklistManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/ControlServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSCache.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSLogger.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSPacket.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/NetworkWatcher.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/Policy.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/UpstreamResolver.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/PreelockDNSCommon.swiftmodule"]
+    outputs: ["<PreelockDNSCommon-arm64-apple-macosx-debug.module>"]
+
+  "<preelock-dns-proxy-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<preelock-dns-proxy-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<preelock-dns-proxy-arm64-apple-macosx-debug.exe>"]
+
+  "<preelock-dns-proxy-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/preelock_dns_proxy.swiftmodule"]
+    outputs: ["<preelock-dns-proxy-arm64-apple-macosx-debug.module>"]
+
+  "C.PreelockDNSCommon-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/BlocklistManager.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/ControlServer.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSCache.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSLogger.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSPacket.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/NetworkWatcher.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/Policy.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/UpstreamResolver.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/sources"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/BlocklistManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/ControlServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSCache.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSLogger.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSPacket.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/NetworkWatcher.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/Policy.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/UpstreamResolver.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/PreelockDNSCommon.swiftmodule"]
+    description: "Compiling Swift Module 'PreelockDNSCommon' (8 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","PreelockDNSCommon","-emit-dependencies","-emit-module","-emit-module-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/PreelockDNSCommon.swiftmodule","-output-file-map","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/sources","-I","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx13.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/include/PreelockDNSCommon-Swift.h","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","dns_proxy"]
+
+  "C.preelock-dns-proxy-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/BlocklistManager.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/ControlServer.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSCache.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSLogger.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/DNSPacket.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/NetworkWatcher.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/Policy.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/UpstreamResolver.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy.product/Objects.LinkFileList"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/preelock-dns-proxy"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug","-o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy","-module-name","preelock_dns_proxy","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_preelock_dns_proxy_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx13.0","-Xlinker","-add_ast_path","-Xlinker","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/PreelockDNSCommon.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/preelock_dns_proxy.swiftmodule","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.preelock-dns-proxy-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy-entitlement.plist"]
+    outputs: ["<preelock-dns-proxy-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/preelock-dns-proxy"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy-entitlement.plist","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock-dns-proxy"]
+
+  "C.preelock-dns-proxy-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/CLI/main.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/PreelockDNSCommon.swiftmodule","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/sources"]
+    outputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swift.o","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/preelock_dns_proxy.swiftmodule"]
+    description: "Compiling Swift Module 'preelock_dns_proxy' (1 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","preelock_dns_proxy","-emit-dependencies","-emit-module","-emit-module-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules/preelock_dns_proxy.swiftmodule","-output-file-map","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/output-file-map.json","-incremental","-c","@/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/sources","-I","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx13.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","preelock_dns_proxy_main","-parse-as-library","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","dns_proxy"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/CLI/","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Package.swift","/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

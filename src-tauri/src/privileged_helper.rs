@@ -388,7 +388,7 @@ launchctl bootstrap system {HELPER_PLIST_PATH} 2>/dev/null || launchctl kickstar
     }
     #[cfg(target_os = "windows")]
     {
-        crate::windows_hosts::ensure_hosts_writable()
+        crate::windows_hosts::run_admin_setup()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -1122,7 +1122,11 @@ pub fn clear_block(owner: &str) -> Result<(), String> {
 /// Queries the live system-level blocking status from /etc/hosts, the privileged helper, and PF firewall.
 pub fn get_system_blocking_status() -> serde_json::Value {
     let mut hosts_entries = 0;
-    if let Ok(hosts) = std::fs::read_to_string("/etc/hosts") {
+    #[cfg(target_os = "windows")]
+    let hosts_path = crate::windows_hosts::DEFAULT_HOSTS_PATH;
+    #[cfg(not(target_os = "windows"))]
+    let hosts_path = "/etc/hosts";
+    if let Ok(hosts) = std::fs::read_to_string(hosts_path) {
         let mut in_block = false;
         for line in hosts.lines() {
             let trimmed = line.trim();

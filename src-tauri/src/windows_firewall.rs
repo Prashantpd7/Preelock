@@ -4,7 +4,22 @@
 //! Safely isolated behind conditional compilation for Windows targets.
 
 #[cfg(target_os = "windows")]
-use std::process::Command;
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::process::{Command, Stdio};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+fn run_netsh_silent(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("netsh")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+}
 
 pub const PREELOCK_FIREWALL_GROUP: &str = "PreelockFocusBlock";
 
@@ -42,38 +57,37 @@ pub fn apply_firewall_rules(domains: &[String]) -> Result<(), String> {
         let ip_list = ips.join(",");
 
         // 3. Add outbound TCP block rule
-        let tcp_status = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                &format!("name={PREELOCK_FIREWALL_GROUP}_TCP"),
-                "dir=out",
-                "action=block",
-                &format!("remoteip={ip_list}"),
-                "protocol=TCP",
-                "remoteport=80,443",
-            ])
-            .status()
-            .map_err(|e| format!("Failed to add Windows Firewall TCP rule: {e}"))?;
+        let tcp_rule_name = format!("name={PREELOCK_FIREWALL_GROUP}_TCP");
+        let remote_ip = format!("remoteip={ip_list}");
+        let tcp_status = run_netsh_silent(&[
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &tcp_rule_name,
+            "dir=out",
+            "action=block",
+            &remote_ip,
+            "protocol=TCP",
+            "remoteport=80,443",
+        ])
+        .map_err(|e| format!("Failed to add Windows Firewall TCP rule: {e}"))?;
 
         // 4. Add outbound UDP block rule (QUIC / HTTP3)
-        let udp_status = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                &format!("name={PREELOCK_FIREWALL_GROUP}_UDP"),
-                "dir=out",
-                "action=block",
-                &format!("remoteip={ip_list}"),
-                "protocol=UDP",
-                "remoteport=80,443,853",
-            ])
-            .status()
-            .map_err(|e| format!("Failed to add Windows Firewall UDP rule: {e}"))?;
+        let udp_rule_name = format!("name={PREELOCK_FIREWALL_GROUP}_UDP");
+        let udp_status = run_netsh_silent(&[
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &udp_rule_name,
+            "dir=out",
+            "action=block",
+            &remote_ip,
+            "protocol=UDP",
+            "remoteport=80,443,853",
+        ])
+        .map_err(|e| format!("Failed to add Windows Firewall UDP rule: {e}"))?;
 
         if !tcp_status.success() || !udp_status.success() {
             log::warn!("[WINDOWS_FIREWALL] Netsh rule creation returned non-zero exit code");
@@ -91,25 +105,11 @@ pub fn apply_firewall_rules(domains: &[String]) -> Result<(), String> {
 pub fn clear_firewall_rules() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={PREELOCK_FIREWALL_GROUP}_TCP"),
-            ])
-            .status();
+        let tcp_rule_name = format!("name={PREELOCK_FIREWALL_GROUP}_TCP");
+        let _ = run_netsh_silent(&["advfirewall", "firewall", "delete", "rule", &tcp_rule_name]);
 
-        let _ = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={PREELOCK_FIREWALL_GROUP}_UDP"),
-            ])
-            .status();
+        let udp_rule_name = format!("name={PREELOCK_FIREWALL_GROUP}_UDP");
+        let _ = run_netsh_silent(&["advfirewall", "firewall", "delete", "rule", &udp_rule_name]);
 
         Ok(())
     }

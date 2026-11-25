@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/primary.swiftdeps"
+  },
+  "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/CLI/main.swift": {
+    "dependencies": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.d",
+    "object": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swift.o",
+    "swiftmodule": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.swiftdeps",
+    "diagnostics": "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/preelock_dns_proxy.build/main.dia"
+  }
+}

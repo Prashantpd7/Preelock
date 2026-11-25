@@ -200,4 +200,59 @@ describe('Privileged Blocking Helper Enforcement', () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  it('InstallHelperModal uses Windows UAC copy and setupNativeBlocking on Windows', async () => {
+    vi.mocked(api.setupNativeBlocking).mockResolvedValue(undefined);
+    vi.mocked(api.isPrivilegedHelperInstalled).mockResolvedValue(true);
+
+    const onInstalled = vi.fn();
+    render(
+      <InstallHelperModal
+        isOpen={true}
+        onClose={vi.fn()}
+        onCancel={vi.fn()}
+        onInstalled={onInstalled}
+        platform="windows"
+      />,
+    );
+
+    expect(
+      screen.getByText('Administrator Permission Required'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Privileged Blocking Helper Required'),
+    ).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Allow Access' }));
+
+    await waitFor(() => {
+      expect(api.setupNativeBlocking).toHaveBeenCalledTimes(1);
+      expect(api.installPrivilegedHelper).not.toHaveBeenCalled();
+      expect(onInstalled).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('HelperReminderPrompt uses Windows copy and setupNativeBlocking on Windows', async () => {
+    vi.mocked(api.isPrivilegedHelperInstalled)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    vi.mocked(api.setupNativeBlocking).mockResolvedValue(undefined);
+
+    render(<HelperReminderPrompt initialDelayMs={0} platform="windows" />);
+
+    expect(
+      await screen.findByText(
+        'Allow Windows administrator permission once to block websites across all browsers and apps.',
+      ),
+    ).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Allow Access' }));
+
+    await waitFor(() => {
+      expect(api.setupNativeBlocking).toHaveBeenCalledTimes(1);
+      expect(api.installPrivilegedHelper).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -1942,10 +1942,14 @@ mod tests {
         #[cfg(unix)]
         let test_pid = unsafe { libc::getppid() as u32 };
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
-            .spawn()
-            .expect("spawn test process");
+        let mut child = {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd")
+                .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+                .creation_flags(0x08000000)
+                .spawn()
+                .expect("spawn test process")
+        };
         #[cfg(windows)]
         let test_pid = child.id();
 
@@ -1977,10 +1981,14 @@ mod tests {
         #[cfg(unix)]
         let live_pid = unsafe { libc::getppid() as u32 };
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
-            .spawn()
-            .expect("spawn test process");
+        let mut child = {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd")
+                .args(["/c", "ping 127.0.0.1 -n 10 >nul"])
+                .creation_flags(0x08000000)
+                .spawn()
+                .expect("spawn test process")
+        };
         #[cfg(windows)]
         let live_pid = child.id();
 

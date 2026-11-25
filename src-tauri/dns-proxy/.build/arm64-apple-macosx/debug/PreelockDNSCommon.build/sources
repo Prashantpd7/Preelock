@@ -1,0 +1,8 @@
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/BlocklistManager.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/ControlServer.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSCache.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSLogger.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/DNSPacket.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/NetworkWatcher.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/Policy.swift
+/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/Common/UpstreamResolver.swift

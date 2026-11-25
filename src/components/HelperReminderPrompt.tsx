@@ -2,11 +2,21 @@ import { useEffect, useState, useRef } from 'react';
 import { api, desktop } from '../services/api';
 import { Modal } from './SettingsControls';
 
+function detectWindows(platform?: string): boolean {
+  if (platform) return platform === 'windows';
+  return (
+    typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
+  );
+}
+
 export function HelperReminderPrompt({
   initialDelayMs,
+  platform,
 }: {
   initialDelayMs?: number;
+  platform?: string;
 } = {}) {
+  const isWindows = detectWindows(platform);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -59,13 +69,19 @@ export function HelperReminderPrompt({
     setBusy(true);
     setError('');
     try {
-      await api.installPrivilegedHelper();
+      if (isWindows) {
+        await api.setupNativeBlocking();
+      } else {
+        await api.installPrivilegedHelper();
+      }
       const installed = await api.isPrivilegedHelperInstalled();
       if (installed) {
         setOpen(false);
       } else {
         setError(
-          'Installation was not completed. Laptop password is required.',
+          isWindows
+            ? 'Permission was not granted. Windows Administrator (UAC) approval is required.'
+            : 'Installation was not completed. Laptop password is required.',
         );
       }
     } catch (e) {
@@ -93,23 +109,18 @@ export function HelperReminderPrompt({
   }
 
   return (
-    <Modal title="Install Helper" onClose={handleDismiss}>
-      <div className="dialog-stack" style={{ maxWidth: '380px' }}>
-        <p
-          style={{
-            margin: '0.25rem 0 0.75rem 0',
-            fontSize: '14px',
-            lineHeight: 1.5,
-          }}
-        >
-          Install helper to detect and block websites across all apps.
+    <Modal
+      title={isWindows ? 'Enable System Blocking' : 'Install Helper'}
+      onClose={handleDismiss}
+    >
+      <div className="dialog-stack">
+        <p>
+          {isWindows
+            ? 'Allow Windows administrator permission once to block websites across all browsers and apps.'
+            : 'Install helper to detect and block websites across all apps.'}
         </p>
         {error && (
-          <p
-            role="alert"
-            className="error"
-            style={{ marginBottom: '0.75rem', fontSize: '12px' }}
-          >
+          <p role="alert" className="error">
             {error}
           </p>
         )}
@@ -134,7 +145,13 @@ export function HelperReminderPrompt({
             onClick={() => void handleInstall()}
             disabled={busy}
           >
-            {busy ? 'Installing…' : 'Install Helper'}
+            {busy
+              ? isWindows
+                ? 'Enabling…'
+                : 'Installing…'
+              : isWindows
+                ? 'Allow Access'
+                : 'Install Helper'}
           </button>
         </div>
       </div>

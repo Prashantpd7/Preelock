@@ -15,7 +15,12 @@
 //! - Non-disruptive: Only listed domains are blocked; all other internet traffic flows untouched.
 
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
 use std::path::Path;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub const DEFAULT_HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
 pub const BACKUP_HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts.preelock.bak";
@@ -107,6 +112,7 @@ pub fn is_admin_setup_required() -> bool {
         }
         // Test write access
         std::fs::OpenOptions::new()
+            .write(true)
             .append(true)
             .open(hosts_path)
             .is_err()
@@ -118,27 +124,75 @@ pub fn is_admin_setup_required() -> bool {
 }
 
 /// Executes the one-time Windows UAC administrator elevation to grant Modify
-/// permission on the hosts file to the `Users` group.
+/// permission on the hosts file to `BUILTIN\Users` and `Authenticated Users`.
 pub fn run_admin_setup() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        log::info!("[WINDOWS_HOSTS] Requesting one-time UAC elevation to grant hosts file write permissions");
-        let script = format!(
-            "Start-Process icacls -ArgumentList '\"{}\" /grant Users:(M)' -Verb RunAs -Wait",
-            DEFAULT_HOSTS_PATH
+        log::info!(
+            "[WINDOWS_HOSTS] Requesting one-time UAC elevation to grant hosts file write permissions"
         );
 
-        let status = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .status()
-            .map_err(|e| format!("Failed to launch elevated UAC setup: {e}"))?;
+        let temp_dir = std::env::temp_dir();
+        let ps1_path = temp_dir.join(format!("preelock_hosts_setup_{}.ps1", std::process::id()));
+        let ps1_script = format!(
+            "$ErrorActionPreference = 'Stop'\r\n\
+             $hosts = '{hosts}'\r\n\
+             $etcDir = Split-Path -Parent $hosts\r\n\
+             if (-not (Test-Path $etcDir)) {{ New-Item -ItemType Directory -Path $etcDir -Force | Out-Null }}\r\n\
+             if (-not (Test-Path $hosts)) {{ New-Item -ItemType File -Path $hosts -Force | Out-Null }}\r\n\
+             & attrib -R -S -H $hosts 2>$null\r\n\
+             & icacls $hosts /grant '*S-1-5-32-545:(M)' '*S-1-5-11:(M)'\r\n\
+             if ($LASTEXITCODE -ne 0) {{\r\n\
+                 & takeown /F $hosts /A 2>$null\r\n\
+                 & icacls $hosts /grant '*S-1-5-32-545:(M)' '*S-1-5-11:(M)'\r\n\
+             }}\r\n\
+             exit $LASTEXITCODE\r\n",
+            hosts = DEFAULT_HOSTS_PATH.replace('\'', "''"),
+        );
 
-        if !status.success() {
+        std::fs::write(&ps1_path, &ps1_script)
+            .map_err(|e| format!("Failed to write temporary UAC setup script: {e}"))?;
+
+        let ps1_str = ps1_path.to_string_lossy().replace('\'', "''");
+        let launcher = format!(
+            "$p = Start-Process powershell.exe -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File','{ps1_str}') -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode"
+        );
+
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &launcher,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = std::fs::remove_file(&ps1_path);
+
+        let output = output.map_err(|e| format!("Failed to launch elevated UAC setup: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "[WINDOWS_HOSTS] Elevated UAC setup exited with {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            );
             return Err("Windows UAC administrator elevation was cancelled or failed".into());
         }
 
-        if is_admin_setup_required() {
-            return Err("Write access to hosts file was not granted by UAC setup".into());
+        if let Err(e) = std::fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(Path::new(DEFAULT_HOSTS_PATH))
+        {
+            log::error!("[WINDOWS_HOSTS] Hosts file still not writable after UAC setup: {e}");
+            return Err(format!(
+                "Write access to hosts file was not granted by UAC setup ({e})"
+            ));
         }
 
         log::info!("[WINDOWS_HOSTS] One-time UAC setup completed successfully");
@@ -177,6 +231,9 @@ pub fn apply_blocks(domains: &[String]) -> Result<(), String> {
         // Flush DNS resolver cache so changes take effect immediately
         let _ = std::process::Command::new("ipconfig")
             .arg("/flushdns")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
 
         log::info!(
@@ -207,28 +264,14 @@ pub fn clear_blocks() -> Result<(), String> {
                 let _ = std::fs::write(hosts_path, cleaned);
                 let _ = std::process::Command::new("ipconfig")
                     .arg("/flushdns")
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .status();
                 log::info!("[WINDOWS_HOSTS] Preelock blocks cleared from hosts file");
             }
         }
         Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(())
-    }
-}
-
-/// Ensures the Windows hosts file is writable, running the one-time UAC
-/// administrator setup if write access is not already available.
-pub fn ensure_hosts_writable() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        if is_admin_setup_required() {
-            run_admin_setup()
-        } else {
-            Ok(())
-        }
     }
     #[cfg(not(target_os = "windows"))]
     {

@@ -19,7 +19,12 @@ export function InstallHelperModal({
 }: InstallHelperModalProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const isWindows = platform === 'windows';
+  const resolvedPlatform =
+    platform ??
+    (typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
+      ? 'windows'
+      : 'macos');
+  const isWindows = resolvedPlatform === 'windows';
 
   if (!isOpen) return null;
 
@@ -37,7 +42,9 @@ export function InstallHelperModal({
         onInstalled();
       } else {
         setError(
-          'Installation was cancelled or not completed. Laptop password is required to install the helper.',
+          isWindows
+            ? 'Administrator permission was cancelled or not completed. Windows UAC approval is required.'
+            : 'Installation was cancelled or not completed. Laptop password is required to install the helper.',
         );
       }
     } catch (e) {
@@ -48,22 +55,30 @@ export function InstallHelperModal({
   }
 
   return (
-    <Modal title="Install Helper" onClose={onClose}>
+    <Modal
+      title={isWindows ? 'Enable System Blocking' : 'Install Helper'}
+      onClose={onClose}
+    >
       <div className="dialog-stack">
         <p>
-          <strong>Privileged Blocking Helper Required</strong>
+          <strong>
+            {isWindows
+              ? 'Administrator Permission Required'
+              : 'Privileged Blocking Helper Required'}
+          </strong>
         </p>
-        <p className="muted" style={{ margin: '0.75rem 0', lineHeight: 1.5 }}>
-          Preelock requires the Privileged Blocking Helper to block websites and
-          apps across the entire system.
-        </p>
-        <p className="muted" style={{ margin: '0 0 1rem 0', lineHeight: 1.5 }}>
+        <p className="muted">
           {isWindows
-            ? 'This requires a one-time administrator approval to configure system-level website blocking. Your credentials are confirmed only in the native Windows dialog.'
+            ? 'Preelock needs one-time Windows Administrator (UAC) permission to configure system-level website blocking across all browsers and apps.'
+            : 'Preelock requires the Privileged Blocking Helper to block websites and apps across the entire system.'}
+        </p>
+        <p className="muted">
+          {isWindows
+            ? 'Your approval is confirmed only in the native Windows UAC dialog and is never seen or stored by Preelock.'
             : 'Preelock will ask for your laptop administrator password in the native macOS dialog. Your password is never seen, stored, or logged by Preelock.'}
         </p>
         {error && (
-          <p role="alert" className="error" style={{ marginBottom: '1rem' }}>
+          <p role="alert" className="error">
             {error}
           </p>
         )}
@@ -88,7 +103,13 @@ export function InstallHelperModal({
             onClick={() => void handleInstall()}
             disabled={busy}
           >
-            {busy ? 'Installing…' : 'Install Helper'}
+            {busy
+              ? isWindows
+                ? 'Enabling…'
+                : 'Installing…'
+              : isWindows
+                ? 'Allow Access'
+                : 'Install Helper'}
           </button>
         </div>
       </div>

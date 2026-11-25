@@ -1,0 +1,3 @@
+module PreelockDNSCommon {
+    header "/Users/Prashant/My_Workspace/Preelock/src-tauri/dns-proxy/.build/arm64-apple-macosx/debug/PreelockDNSCommon.build/include/PreelockDNSCommon-Swift.h"
+}

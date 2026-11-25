@@ -1057,6 +1057,7 @@ export function SessionCard({
       )}
       <InstallHelperModal
         isOpen={installHelperModalOpen}
+        platform={setup?.platform}
         onClose={() => setInstallHelperModalOpen(false)}
         onCancel={() => setInstallHelperModalOpen(false)}
         onInstalled={() => {
