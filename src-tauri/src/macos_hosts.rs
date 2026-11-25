@@ -15,6 +15,7 @@
 //! - Instant restoration: When the active session or app lock ends, the Preelock section
 //!   is stripped and `/usr/bin/dscacheutil -flushcache` is executed.
 
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 pub const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
