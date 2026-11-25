@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
