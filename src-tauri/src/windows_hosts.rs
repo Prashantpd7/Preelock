@@ -220,6 +220,23 @@ pub fn clear_blocks() -> Result<(), String> {
     }
 }
 
+/// Ensures the Windows hosts file is writable, running the one-time UAC
+/// administrator setup if write access is not already available.
+pub fn ensure_hosts_writable() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        if is_admin_setup_required() {
+            run_admin_setup()
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
