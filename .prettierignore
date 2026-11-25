@@ -4,3 +4,7 @@ src-tauri/target
 src-tauri/gen
 package-lock.json
 Cargo.lock
+src-tauri/dns-proxy/.build
+src-tauri/dns-proxy/build
+src-tauri/helper/.build
+src-tauri/helper/build

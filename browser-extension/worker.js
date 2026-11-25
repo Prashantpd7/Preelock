@@ -288,7 +288,10 @@ function tabBlockedBy(url, policy) {
 //      sends `/` to blocked.html.
 //   4. Desktop session / rule / channel blocks.
 async function blockTab(tab, policy, websiteControls = null) {
-  const url = tab.pendingUrl || tab.url;
+  const candidates = [tab?.pendingUrl, tab?.url].filter(
+    (u) => typeof u === 'string' && /^https?:\/\//i.test(u),
+  );
+  const url = candidates[0] || tab?.pendingUrl || tab?.url;
   if (tab?.id == null || !url) return;
   if (url.startsWith(chrome.runtime.getURL('blocked.html'))) return;
   const activePolicy = policy && leaseValid(policy) ? policy : null;
@@ -414,6 +417,27 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
       await clearChannelBlocked(tabId);
   });
 });
+if (chrome.tabs?.onActivated) {
+  chrome.tabs.onActivated.addListener(({ tabId }) => {
+    void enqueue(async () => {
+      if (typeof chrome.tabs.get !== 'function') return;
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (!tab) return;
+      const [{ policy }, controls] = await Promise.all([
+        chrome.storage.session.get('policy'),
+        readWebsiteControls(),
+      ]);
+      const activePolicy = leaseValid(policy) ? policy : null;
+      if (
+        activePolicy ||
+        controls.blockAdultWebsites ||
+        controls.blockDistractingWebsites
+      ) {
+        await blockTab(tab, activePolicy, controls);
+      }
+    });
+  });
+}
 if (chrome.tabs.onRemoved)
   chrome.tabs.onRemoved.addListener((tabId) => {
     void clearChannelBlocked(tabId);
@@ -901,6 +925,6 @@ if (chrome.declarativeNetRequest.onRuleMatchedDebug)
 // While awake, fast polling reduces activation latency. Alarms are the fallback.
 setInterval(() => {
   void requestSync();
-}, 2000);
+}, 1500);
 void chrome.alarms.create('sync', { periodInMinutes: 0.5 });
 void requestSync();

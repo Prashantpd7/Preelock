@@ -13,6 +13,9 @@
     "browser-pairing-reset",
     "open-setup",
     "read-app-icons",
-    "dismiss-blocked-app"
+    "dismiss-blocked-app",
+    "manage-statistics",
+    "dns-blocking",
+    "privileged-helper"
   ]
 }
