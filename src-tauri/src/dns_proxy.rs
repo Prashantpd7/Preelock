@@ -83,6 +83,7 @@ pub fn set_user_consent(granted: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 #[derive(Default)]
 struct DnsProxyState {
     child_pid: Option<u32>,
@@ -118,6 +119,7 @@ where
 }
 
 /// Milliseconds since the Unix epoch, for retry throttling.
+#[allow(dead_code)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -761,9 +763,11 @@ pub fn sync_policy(
     Ok(())
 }
 
+#[allow(dead_code)]
 static WATCHDOG_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Watchdog thread that monitors proxy health and immediately restores system DNS if the proxy dies.
+#[allow(dead_code)]
 fn ensure_watchdog_started() {
     #[cfg(target_os = "macos")]
     {
@@ -1061,10 +1065,10 @@ pub fn start_for_session(
             return Ok(());
         }
 
-        if crate::windows_hosts::is_admin_setup_required() {
-            if !GUI_SETUP_ATTEMPTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                let _ = crate::windows_hosts::run_admin_setup();
-            }
+        if crate::windows_hosts::is_admin_setup_required()
+            && !GUI_SETUP_ATTEMPTED.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let _ = crate::windows_hosts::run_admin_setup();
         }
 
         crate::windows_hosts::apply_blocks(domains)?;

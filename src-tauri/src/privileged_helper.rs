@@ -109,6 +109,7 @@ fn union_of(map: &std::collections::BTreeMap<String, OwnerBlock>) -> Vec<String>
 /// Fast, non-blocking check that the privileged helper socket exists.
 /// Never probes with a socket round-trip; callers that need a probe
 /// (`get_system_blocking_status`) do it themselves.
+#[allow(dead_code)]
 fn helper_socket_present() -> bool {
     Path::new(DEFAULT_HELPER_SOCKET).exists()
 }
@@ -168,6 +169,7 @@ pub fn find_helper_binary() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)]
 fn find_bundled_helper_binary() -> Option<PathBuf> {
     helper_binary_candidates(false)
         .into_iter()

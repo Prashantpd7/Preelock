@@ -107,7 +107,6 @@ pub fn is_admin_setup_required() -> bool {
         }
         // Test write access
         std::fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .open(hosts_path)
             .is_err()
