@@ -43,7 +43,12 @@ const LAUNCH_AGENT_LABEL: &str = "com.preelock.background";
 #[cfg(target_os = "windows")]
 const WINDOWS_TASK_NAME: &str = "PreelockBackground";
 const STALE_MS: i64 = 3_000;
-pub const RELAUNCH_DELAY_MS: u64 = 500;
+/// Missing-UI debounce before a relaunch. A killed GUI never sends
+/// `UiExiting`, so this delay is measured from the poll that first saw the
+/// lock released and the recorded PID gone — 200 ms is enough to ride out a
+/// handover and keeps the whole reopen inside the 1 s budget. The in-flight
+/// grace window below, not this delay, is what prevents relaunch storms.
+pub const RELAUNCH_DELAY_MS: u64 = 200;
 pub const RELAUNCH_COOLDOWN_MS: u64 = 3_000;
 /// Grace window after a supervisor launch (2026-11-17 loop fix). Once the
 /// supervisor fires a launch, `evaluate` must not fire another one until
@@ -53,6 +58,12 @@ pub const RELAUNCH_COOLDOWN_MS: u64 = 3_000;
 /// every spawned copy died instantly. The window ends early as soon as any
 /// liveness evidence reports the GUI alive (`poll_ui_alive` clears it).
 pub const LAUNCH_GRACE_MS: u64 = 10_000;
+/// Circuit breaker: stop relaunching after this many consecutive launches
+/// where the UI never stayed alive. A GUI that dies on every launch would
+/// otherwise be relaunched forever (one launch per grace window), filling
+/// the Dock and hanging the machine. The counter resets as soon as the UI
+/// is seen alive. (2026-11-23 fix: unlimited Dock icons + laptop hang.)
+pub const MAX_CONSECUTIVE_RELAUNCHES: u32 = 3;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -105,6 +116,43 @@ fn install_shutdown_handler() {}
 
 pub fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire) || crate::lifecycle::ending()
+}
+
+/// Whether some Preelock process currently owns the background lock.
+/// Used by the startup safety net to distinguish an engine that is
+/// merely slow to answer from one that does not exist.
+pub fn engine_process_alive(data_dir: &Path) -> bool {
+    lock_held(data_dir)
+}
+
+/// Stops the background engine for quit cleanup and removes its runtime
+/// endpoint/meta so nothing can reconnect to a dying process.
+///
+/// Quitting the app must leave no engine behind: every respawn path is
+/// closed (the LaunchAgent has no KeepAlive and the GUI is gone).
+pub fn stop_background(data_dir: &Path) {
+    let mut pids = Vec::new();
+    if let Some(meta) = read_background_meta(data_dir) {
+        pids.push(meta.pid);
+    }
+    if let Some(ep) = crate::ipc::read_endpoint(&data_dir.join(crate::ipc::ENDPOINT_FILE)) {
+        if !pids.contains(&ep.pid) {
+            pids.push(ep.pid);
+        }
+    }
+    if let Some(holder) = find_preelock_lock_holder(&data_dir.join("background.lock")) {
+        if !pids.contains(&holder) {
+            pids.push(holder);
+        }
+    }
+    for pid in pids {
+        if process_alive(pid) {
+            log::info!("lifecycle event=background_stop_for_quit pid={pid}");
+            terminate_process(pid, data_dir);
+        }
+    }
+    clear_stale_runtime_files(data_dir);
+    let _ = std::fs::remove_file(data_dir.join(HEARTBEAT));
 }
 
 pub fn is_invocation(args: &[String]) -> bool {
@@ -317,7 +365,11 @@ pub(crate) fn launch_agent_plist(exe: &str, home: &str) -> String {
 <key>Label</key><string>{LAUNCH_AGENT_LABEL}</string>
 <key>ProgramArguments</key><array><string>{exe}</string><string>{ARG}</string></array>
 <key>RunAtLoad</key><true/>
-<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<!-- No KeepAlive: launchd must NEVER respawn the engine on its own.
+     A supervisor that ignores the GUI's circuit breaker kept filling
+     the Dock with trying engines after the user quit (2026-11-24).
+     The engine exits 0 when it cannot take the lock; the GUI starts it
+     again on the next launch. -->
 <key>ThrottleInterval</key><integer>5</integer>
 <key>StandardOutPath</key><string>{home}/Library/Logs/{LAUNCH_AGENT_LABEL}.stdout.log</string>
 <key>StandardErrorPath</key><string>{home}/Library/Logs/{LAUNCH_AGENT_LABEL}.stderr.log</string>
@@ -433,8 +485,12 @@ fn register_startup(exe: &Path, data_dir: &Path) -> Result<bool, String> {
             && String::from_utf8_lossy(&out.stdout).contains(exe.to_string_lossy().as_ref())
     });
 
-    if !already_loaded_for_exe {
-        if printed.is_ok_and(|out| out.status.success()) {
+    // Reload when the executable changed OR the plist contents did. A
+    // loaded agent keeps its OLD configuration until it is booted out:
+    // skipping this left the previous KeepAlive in force, so launchd
+    // kept respawning engines after the GUI quit (2026-11-24).
+    if !already_loaded_for_exe || needs_write {
+        if printed.as_ref().is_ok_and(|out| out.status.success()) {
             let _ = Command::new("/bin/launchctl")
                 .args(["bootout", &target])
                 .output();
@@ -753,7 +809,65 @@ fn stop_stale_background(data_dir: &Path) {
     }
 }
 
+struct SpawnGuardState {
+    last_spawn_time_ms: u64,
+    consecutive_failed_spawns: u32,
+}
+
+static SPAWN_GUARD: std::sync::Mutex<SpawnGuardState> = std::sync::Mutex::new(SpawnGuardState {
+    last_spawn_time_ms: 0,
+    consecutive_failed_spawns: 0,
+});
+
+pub fn reset_spawn_circuit_breaker() {
+    if let Ok(mut guard) = SPAWN_GUARD.lock() {
+        guard.consecutive_failed_spawns = 0;
+        guard.last_spawn_time_ms = 0;
+    }
+}
+
+pub fn manual_restart_background(data_dir: &Path) -> Result<(), String> {
+    reset_spawn_circuit_breaker();
+    ensure_running_inner(data_dir)
+}
+
 fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
+    let client = crate::ipc::IpcClient::new(data_dir);
+    // Fast path: if already alive and pingable, reset circuit breaker and return immediately.
+    if client.ping().is_ok() {
+        if let Ok(mut guard) = SPAWN_GUARD.lock() {
+            guard.consecutive_failed_spawns = 0;
+        }
+        return Ok(());
+    }
+
+    // Process-wide lock: only ONE thread can evaluate, check, or spawn at a time.
+    let mut guard = SPAWN_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Re-check ping after acquiring lock in case another thread just spawned it
+    if client.ping().is_ok() {
+        guard.consecutive_failed_spawns = 0;
+        return Ok(());
+    }
+
+    // Circuit breaker check: MAX_CONSECUTIVE_RELAUNCHES = 3
+    if guard.consecutive_failed_spawns >= MAX_CONSECUTIVE_RELAUNCHES {
+        log::warn!(
+            "Background engine spawn circuit breaker tripped after {} failed attempts; not spawning.",
+            guard.consecutive_failed_spawns
+        );
+        return Err("Background engine unavailable — restart the app".to_string());
+    }
+
+    // Cooldown check: 5 seconds (5000 ms)
+    let now_ms = crate::clock::continuous_ms();
+    if guard.last_spawn_time_ms > 0 && now_ms.saturating_sub(guard.last_spawn_time_ms) < 5_000 {
+        log::warn!("Background engine spawn cooldown in progress (last attempt was <5s ago); skipping spawn.");
+        return Err("Background engine spawn cooldown active".to_string());
+    }
+
+    guard.last_spawn_time_ms = now_ms;
+
     if let Err(error) = platform::enable_background_startup() {
         log::warn!("Could not enable independent background startup: {error}");
     }
@@ -771,7 +885,6 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
             "Development direct background process.",
         );
     }
-    let client = crate::ipc::IpcClient::new(data_dir);
     if lock_held(data_dir) {
         let mut ipc_ok = client.ping().is_ok();
         if !ipc_ok {
@@ -802,6 +915,7 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
                 && read_background_meta(data_dir)
                     .is_some_and(|m| background_binary_mismatch(&m, &exe));
             if !mismatch_dev {
+                guard.consecutive_failed_spawns = 0;
                 return Ok(());
             }
             log::info!("Development binary replacing existing background engine.");
@@ -816,13 +930,17 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
     if supervised_started {
         // Give launchd a brief moment to spawn the bootstrapped agent before
         // falling back to a direct spawn.
-        for _ in 0..20 {
+        for _ in 0..40 {
             if client.ping().is_ok() {
+                guard.consecutive_failed_spawns = 0;
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(50));
         }
         if lock_held(data_dir) {
+            if client.ping().is_ok() {
+                guard.consecutive_failed_spawns = 0;
+            }
             return Ok(());
         }
     }
@@ -849,7 +967,34 @@ fn ensure_running_inner(data_dir: &Path) -> Result<(), String> {
     command
         .spawn()
         .map_err(|e| format!("Could not start background engine: {e}"))?;
-    Ok(())
+
+    // Wait for the spawned engine to initialize and answer ping (up to 3.0s)
+    let mut ping_success = false;
+    for _ in 0..60 {
+        thread::sleep(Duration::from_millis(50));
+        if client.ping().is_ok() {
+            ping_success = true;
+            break;
+        }
+    }
+
+    if ping_success {
+        guard.consecutive_failed_spawns = 0;
+        log::info!("Background engine spawned and responded to ping successfully.");
+        Ok(())
+    } else {
+        guard.consecutive_failed_spawns += 1;
+        log::warn!(
+            "Spawned background engine failed to respond to ping (consecutive failures: {}/{}).",
+            guard.consecutive_failed_spawns,
+            MAX_CONSECUTIVE_RELAUNCHES
+        );
+        if guard.consecutive_failed_spawns >= MAX_CONSECUTIVE_RELAUNCHES {
+            Err("Background engine unavailable — restart the app".to_string())
+        } else {
+            Err("Background engine spawned but did not respond to ping in time".to_string())
+        }
+    }
 }
 
 struct BackgroundLock(File);
@@ -885,6 +1030,11 @@ pub struct UiRelaunchSupervisor {
     /// `evaluate` never fires again — a previous launch is still in flight
     /// and the new GUI has not had time to register yet.
     pending_launch_until_ms: Option<u64>,
+    /// Consecutive supervisor launches after which the UI never stayed
+    /// alive. Reset to 0 as soon as the UI is seen alive. When it reaches
+    /// `MAX_CONSECUTIVE_RELAUNCHES` the circuit breaker trips and
+    /// `evaluate` refuses to launch again until the UI is seen alive.
+    consecutive_relaunches: u32,
 }
 
 impl UiRelaunchSupervisor {
@@ -892,6 +1042,8 @@ impl UiRelaunchSupervisor {
         self.known_ui_pid = Some(pid);
         self.ui_exiting_at = None;
         self.ui_missing_since = None;
+        self.pending_launch_until_ms = None;
+        self.consecutive_relaunches = 0;
     }
 
     pub fn mark_ui_exiting(&mut self, pid: u32, now_ms: u64) {
@@ -937,6 +1089,21 @@ impl UiRelaunchSupervisor {
             self.pending_launch_until_ms = None;
             return true;
         }
+        // A free lock plus a `gui.pid` whose process is gone is proof the GUI
+        //    died right now (SIGKILL leaves the sidecar behind, but the OS
+        //    releases the lock and reaps the PID immediately). Without this,
+        //    a Force Quit waited out the 3 s heartbeat staleness before the
+        //    relaunch delay even started — the whole 1 s budget spent on a
+        //    signal that was never going to recover. `gui.pid` is absent in
+        //    the handover case the heartbeat fallback exists for, so a GUI
+        //    that has not written it yet still counts as alive by heartbeat.
+        if !known_ui_process_died {
+            if let Some(pid) = recorded_gui_pid(data_dir) {
+                if !process_alive(pid) {
+                    return false;
+                }
+            }
+        }
         // Desktop heartbeat: only the GUI touches it (setup + its 1 s
         //    heartbeat thread via `UiHeartbeat`), so a fresh one means a
         //    GUI is alive even if every pid source above is stale.
@@ -966,6 +1133,7 @@ impl UiRelaunchSupervisor {
         if ui_alive {
             self.ui_missing_since = None;
             self.pending_launch_until_ms = None;
+            self.consecutive_relaunches = 0;
             return false;
         }
         // Start (or keep) the missing clock BEFORE the grace check: the UI
@@ -989,7 +1157,19 @@ impl UiRelaunchSupervisor {
         {
             return false;
         }
+        // Circuit breaker: if the UI died on every one of the last
+        // `MAX_CONSECUTIVE_RELAUNCHES` launches, stop launching. The GUI
+        // is crashing on startup; relaunching it forever fills the Dock
+        // and hangs the machine. The user can reopen the app by hand.
+        if self.consecutive_relaunches >= MAX_CONSECUTIVE_RELAUNCHES {
+            log::warn!(
+                "UI relaunch circuit breaker tripped after {} consecutive failed launches; not relaunching until the UI is seen alive.",
+                self.consecutive_relaunches
+            );
+            return false;
+        }
         self.last_relaunch_at = Some(now_ms);
+        self.consecutive_relaunches += 1;
         self.ui_missing_since = None;
         self.pending_launch_until_ms = Some(now_ms.saturating_add(LAUNCH_GRACE_MS));
         true
@@ -1022,6 +1202,15 @@ fn is_lock_contention(error: &std::io::Error) -> bool {
     return error.raw_os_error() == Some(ERROR_LOCK_VIOLATION);
     #[cfg(not(windows))]
     false
+}
+
+/// The PID the GUI wrote into `gui.pid` (Windows sidecar, and the unlocked
+/// copy Unix keeps for readers). `None` when it is missing or unparsable.
+fn recorded_gui_pid(data_dir: &Path) -> Option<u32> {
+    std::fs::read_to_string(data_dir.join("gui.pid"))
+        .ok()
+        .and_then(|content| content.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != 0)
 }
 
 fn gui_lock_status(data_dir: &Path) -> (bool, Option<u32>) {
@@ -1129,6 +1318,34 @@ fn spawn_gui_in_user_session(spawned: &mut Option<Child>) -> bool {
                         return false;
                     }
                 }
+            }
+        }
+        // A Force Quit / `kill -9` leaves LaunchServices holding a record
+        // for the dead instance, so the coalescing `open -a` above fails
+        // with -600 (procNotFound) instead of starting a new GUI — the
+        // supervisor then burned its whole circuit-breaker budget on
+        // launches that could never happen. Force a new instance instead.
+        // `GuiLock` still admits exactly one GUI: if a real launch is
+        // already in flight it wins the lock and this instance exits.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(bundle) = app_bundle_root(&exe) {
+                let launched = Command::new("/usr/bin/open")
+                    .arg("-n")
+                    .arg("-a")
+                    .arg(&bundle)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false);
+                if launched {
+                    log::warn!(
+                        "lifecycle event=gui_request result=forced_new_instance source=supervisor correlation={correlation}"
+                    );
+                    return true;
+                }
+                log::error!("Forced GUI relaunch failed for bundle {}", bundle.display());
             }
         }
         log::error!("Could not request a Preelock GUI launch through LaunchServices.");
@@ -1331,9 +1548,12 @@ fn handle_ipc_request(
 }
 
 pub fn run() -> i32 {
+    crate::platform::init_background_daemon();
     crate::lifecycle_log::init();
     let correlation = crate::lifecycle_log::log_process_start("background");
     install_shutdown_handler();
+    #[cfg(target_os = "macos")]
+    crate::dns_proxy::cleanup_stale_redirect();
     // The headless process must not install a notification delegate or query
     // AppKit to locate/activate Preelock. Notification Center launches the GUI
     // for clicks; only that GUI owns the delegate and application identity.
@@ -1434,6 +1654,8 @@ pub fn run() -> i32 {
     loop {
         if shutdown_requested() {
             flush_shutdown(&mut engine);
+            #[cfg(target_os = "macos")]
+            crate::dns_proxy::cleanup_at_exit();
             return 0;
         }
 
@@ -1456,6 +1678,8 @@ pub fn run() -> i32 {
 
         if shutdown_requested() {
             flush_shutdown(&mut engine);
+            #[cfg(target_os = "macos")]
+            crate::dns_proxy::cleanup_at_exit();
             return 0;
         }
 
@@ -1467,11 +1691,12 @@ pub fn run() -> i32 {
             next_supervisor_check = now_instant + Duration::from_millis(200);
 
             let ui_alive = supervisor.poll_ui_alive(&dir);
-            let should_supervise = if cfg!(target_os = "windows") {
-                engine.has_active_strict()
-            } else {
-                engine.has_active()
-            };
+            // Anti-bypass: reopen for EVERY live session kind, not only
+            // Strict. `has_active()` covers Running, Preparing and Paused
+            // sessions (instant, scheduled, one-shot and Pomodoro), and is
+            // false only when no session is live or the global power
+            // toggle is off (an explicit user release, not a quit bypass).
+            let should_supervise = engine.has_active();
             if supervisor.evaluate(
                 crate::clock::continuous_ms(),
                 should_supervise,
@@ -1554,11 +1779,11 @@ mod tests {
             "<string>/Applications/Preelock.app/Contents/MacOS/Preelock</string><string>--background</string>"
         ));
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
-        assert!(
-            plist.contains("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>")
-        );
+        // launchd must NOT respawn the engine: no KeepAlive at all. A
+        // supervisor that ignored the breaker kept spawning engines (and
+        // Dock tiles) after the GUI was gone (2026-11-24).
+        assert!(!plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<key>ThrottleInterval</key><integer>5</integer>"));
-        assert!(!plist.contains("<key>KeepAlive</key><true/>"));
         assert!(plist.contains(
             "<string>/Users/test/Library/Logs/com.preelock.background.stdout.log</string>"
         ));
@@ -1588,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_relaunch_supervisor_relaunches_active_sessions_after_half_a_second() {
+    fn ui_relaunch_supervisor_relaunches_active_sessions_after_the_relaunch_delay() {
         let mut sup = UiRelaunchSupervisor::default();
 
         // Idle never relaunches regardless of elapsed absence.
@@ -1599,29 +1824,33 @@ mod tests {
         sup.mark_ui_alive(1234);
         assert!(!sup.evaluate(25_000, true, true, false));
 
-        // Cmd+Q / Force Quit -> wait 500 ms after confirmed disappearance.
-        assert!(!sup.evaluate(30_000, true, false, false));
-        assert!(!sup.evaluate(30_499, true, false, false));
+        // Cmd+Q / Force Quit -> wait the debounce after confirmed
+        // disappearance.
+        let missing_at = 30_000u64;
+        let launched = missing_at + RELAUNCH_DELAY_MS;
+        assert!(!sup.evaluate(missing_at, true, false, false));
+        assert!(!sup.evaluate(launched - 1, true, false, false));
 
-        assert!(sup.evaluate(30_500, true, false, false));
+        assert!(sup.evaluate(launched, true, false, false));
         // In-flight grace window (10 s) prevents duplicate spawns while the
         // GUI is booting — this is what stopped the 2026-11-17 loop, where
         // the old 3 s cooldown alone fired 9 launches in 24 s.
-        assert!(!sup.evaluate(30_500, true, false, false));
-        assert!(!sup.evaluate(30_999, true, false, false));
-        assert!(!sup.evaluate(40_499, true, false, false));
+        assert!(!sup.evaluate(launched, true, false, false));
+        assert!(!sup.evaluate(launched + 400, true, false, false));
+        assert!(!sup.evaluate(launched + LAUNCH_GRACE_MS - 1, true, false, false));
 
         // After the grace window passes, if UI still not alive, can relaunch.
-        assert!(sup.evaluate(40_500, true, false, false));
+        let second = launched + LAUNCH_GRACE_MS;
+        assert!(sup.evaluate(second, true, false, false));
 
         // A launch that registers (UI seen alive) ends the grace early:
-        // the next disappearance still needs its own 500 ms missing delay,
+        // the next disappearance still needs its own missing delay,
         // but no 10 s grace blocks it.
-        assert!(!sup.evaluate(40_600, true, true, false));
-        assert!(!sup.evaluate(40_700, true, false, false));
-        // Still inside the 3 s cooldown from the 40_500 launch.
-        assert!(!sup.evaluate(41_200, true, false, false));
-        assert!(sup.evaluate(43_500, true, false, false));
+        assert!(!sup.evaluate(second + 100, true, true, false));
+        assert!(!sup.evaluate(second + 200, true, false, false));
+        // Still inside the 3 s cooldown from the second launch.
+        assert!(!sup.evaluate(second + RELAUNCH_COOLDOWN_MS - 1, true, false, false));
+        assert!(sup.evaluate(second + RELAUNCH_COOLDOWN_MS, true, false, false));
 
         // OS shutdown suppresses relaunch even during an active session.
         assert!(!sup.evaluate(50_000, true, false, true));
@@ -1831,8 +2060,44 @@ mod tests {
         }
         assert_eq!(
             launch_at,
-            vec![600, 10_600, 20_600],
+            vec![
+                RELAUNCH_DELAY_MS,
+                RELAUNCH_DELAY_MS + LAUNCH_GRACE_MS,
+                RELAUNCH_DELAY_MS + 2 * LAUNCH_GRACE_MS
+            ],
             "expected one relaunch per grace window, got {launch_at:?}"
+        );
+    }
+
+    #[test]
+    fn supervisor_circuit_breaker_stops_after_three_failed_relaunches() {
+        // A GUI that dies on every launch must not be relaunched forever.
+        // After three consecutive launches with no live UI, the breaker
+        // trips and `evaluate` refuses until the UI is seen alive again.
+        let mut sup = UiRelaunchSupervisor::default();
+        let mut launches = 0;
+        // Simulate 60 s of a crashing GUI: UI never alive.
+        for t in (0..=60_000).step_by(200) {
+            if sup.evaluate(t as u64, true, false, false) {
+                launches += 1;
+            }
+        }
+        assert_eq!(
+            launches, 3,
+            "circuit breaker should allow exactly 3 relaunches, got {launches}"
+        );
+        // Seeing the UI alive resets the breaker: a later crash gets a fresh budget.
+        sup.mark_ui_alive(1234);
+        let mut reset_launch = false;
+        for t in (61_000..=65_000).step_by(200) {
+            if sup.evaluate(t as u64, true, false, false) {
+                reset_launch = true;
+                break;
+            }
+        }
+        assert!(
+            reset_launch,
+            "breaker should reset once the UI is seen alive"
         );
     }
 
@@ -2054,6 +2319,137 @@ mod tests {
     }
 
     #[test]
+    fn supervisor_relaunches_for_every_live_session_kind_not_only_strict() {
+        // Anti-bypass: the supervisor used to check `has_active_strict()`,
+        // so Cmd+Q / Force Quit escaped every Standard, Pomodoro,
+        // scheduled and one-shot session. It now supervises `has_active()`,
+        // which is exactly the Running | Preparing | Paused set.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("preelock.sqlite");
+        let mut engine = Engine::open(&db_path).unwrap();
+        let created = engine
+            .execute(crate::models::Action::CreateSession {
+                title: "Standard Focus".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Standard,
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let id = created.sessions[0].id.clone();
+        engine
+            .execute(crate::models::Action::StartSession { id: id.clone() })
+            .unwrap();
+
+        assert!(engine.has_active());
+        assert!(
+            !engine.has_active_strict(),
+            "a Standard session is live but not strict"
+        );
+
+        // A Standard session that the user started by hand gets the same
+        // relaunch treatment as a Strict one.
+        let mut sup = UiRelaunchSupervisor::default();
+        let t0 = crate::clock::continuous_ms();
+        assert!(!sup.evaluate(t0, engine.has_active(), false, false));
+        assert!(
+            sup.evaluate(t0 + RELAUNCH_DELAY_MS, engine.has_active(), false, false),
+            "a live Standard session must trigger a relaunch"
+        );
+
+        // A paused session is still live (`has_active()` matches Paused):
+        // the user must not be able to quit out of it while it is paused.
+        engine
+            .execute(crate::models::Action::PauseSession {
+                id: id.clone(),
+                password: None,
+                challenge_answer: None,
+            })
+            .unwrap();
+        assert!(engine.has_active(), "a paused session is still live");
+
+        // A session that was properly ended never reopens the window.
+        engine
+            .execute(crate::models::Action::EndSession {
+                id: id.clone(),
+                password: None,
+                challenge_answer: None,
+            })
+            .unwrap();
+        assert!(!engine.has_active());
+        let mut sup = UiRelaunchSupervisor::default();
+        assert!(!sup.evaluate(t0, engine.has_active(), false, false));
+        assert!(!sup.evaluate(t0 + 60_000, engine.has_active(), false, false));
+    }
+
+    #[test]
+    fn supervisor_stays_closed_when_idle_or_powered_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("idle.sqlite")).unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        let t0 = crate::clock::continuous_ms();
+        assert!(!engine.has_active());
+        for t in [t0, t0 + 500, t0 + 5_000, t0 + 60_000] {
+            assert!(
+                !sup.evaluate(t, engine.has_active(), false, false),
+                "an idle app must never reopen"
+            );
+        }
+
+        // The global power toggle is an explicit user release: it lifts
+        // enforcement (`has_active()` is false while paused), so it also
+        // stops the relaunch. This is the one user-initiated exemption and
+        // is intentional — see the report.
+        let created = engine
+            .execute(crate::models::Action::CreateSession {
+                title: "Standard Focus".into(),
+                minutes: 25,
+                allow_pause: true,
+                focus: crate::focus::FocusConfig::default(),
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        engine
+            .execute(crate::models::Action::StartSession {
+                id: created.sessions[0].id.clone(),
+            })
+            .unwrap();
+        assert!(engine.has_active());
+        engine.execute(crate::models::Action::TogglePower).unwrap();
+        assert!(engine.is_paused());
+        assert!(!engine.has_active());
+        let mut sup = UiRelaunchSupervisor::default();
+        assert!(!sup.evaluate(t0, engine.has_active(), false, false));
+        assert!(!sup.evaluate(t0 + 60_000, engine.has_active(), false, false));
+    }
+
+    #[test]
+    fn repeated_user_quits_keep_reopening_because_a_healthy_gui_resets_the_breaker() {
+        // The circuit breaker exists to stop a GUI that crashes on every
+        // launch (2026-11-23 Dock storm), not to let a user escape a session
+        // by quitting four times. Every relaunch that is seen alive resets
+        // the consecutive-launch counter, so user quits keep reopening.
+        let mut sup = UiRelaunchSupervisor::default();
+        let mut t = 0u64;
+        for round in 0..4 {
+            assert!(!sup.evaluate(t, true, false, false));
+            assert!(
+                sup.evaluate(t + RELAUNCH_DELAY_MS, true, false, false),
+                "user quit {round} must still reopen the GUI"
+            );
+            // The relaunched healthy GUI registers within its boot.
+            sup.mark_ui_alive(1_000 + round);
+            assert!(!sup.evaluate(t + RELAUNCH_DELAY_MS + 200, true, true, false));
+            t += RELAUNCH_COOLDOWN_MS + RELAUNCH_DELAY_MS;
+        }
+    }
+
+    #[test]
     fn windows_gui_pid_sidecar_detects_dead_gui_immediately() {
         let dir = tempfile::tempdir().unwrap();
         let mut sup = UiRelaunchSupervisor::default();
@@ -2071,6 +2467,31 @@ mod tests {
             !sup.poll_ui_alive(dir.path()),
             "poll_ui_alive must detect dead PID from gui.pid immediately"
         );
+    }
+
+    #[test]
+    fn dead_gui_pid_sidecar_beats_a_fresh_heartbeat() {
+        // Force Quit: the GUI is gone, `gui.pid` still names it, and the
+        // heartbeat it wrote a moment earlier is still inside STALE_MS.
+        // The supervisor must not wait those 3 s — the 1 s reopen budget
+        // would already be gone. A sidecar naming a dead process is proof.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sup = UiRelaunchSupervisor::default();
+        std::fs::write(dir.path().join("gui.pid"), "99999999\n").unwrap();
+        touch_desktop(dir.path());
+        assert!(
+            !sup.poll_ui_alive(dir.path()),
+            "a dead gui.pid must be reported dead without waiting for heartbeat staleness"
+        );
+
+        // While that process really is alive, the same sidecar means alive.
+        #[cfg(unix)]
+        {
+            let live = unsafe { libc::getppid() as u32 };
+            let mut sup = UiRelaunchSupervisor::default();
+            std::fs::write(dir.path().join("gui.pid"), format!("{live}\n")).unwrap();
+            assert!(sup.poll_ui_alive(dir.path()));
+        }
     }
 
     #[test]

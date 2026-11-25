@@ -354,7 +354,7 @@ describe('SessionReview', () => {
       );
       expect(screen.getByText('Not connected')).toBeInTheDocument();
       expect(
-        screen.getByText(/Browser extension is not connected/),
+        screen.getByText(/Ready — websites are blocked by the app/),
       ).toBeInTheDocument();
       unmount();
       render(
@@ -376,13 +376,13 @@ describe('SessionReview', () => {
       expect(screen.getByText('Ready for this session.')).toBeInTheDocument();
     });
 
-    it('shows the Safari warning on macOS when Safari is selected', () => {
+    it('does not show the Safari warning on macOS when Safari is selected', () => {
       renderReview(
         {
           platform: 'darwin',
-          safariWarning: true,
+          safariWarning: false,
           browserName: 'Safari',
-          browserConnected: false,
+          browserConnected: true,
         },
         {
           domains: ['youtube.com'],
@@ -391,7 +391,11 @@ describe('SessionReview', () => {
         },
       );
       expect(
-        screen.getByText(/Safari has no Preelock extension/),
+        screen.queryByText(/Safari has no Preelock extension/),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText('Extension Not Available')).toBeInTheDocument();
+      expect(
+        screen.getByText('Ready — websites are blocked by the app.'),
       ).toBeInTheDocument();
     });
   });

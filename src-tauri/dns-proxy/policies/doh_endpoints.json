@@ -1,0 +1,31 @@
+{
+  "description": "Standard well-known DNS-over-HTTPS (DoH) and DNS-over-TLS (DoT) resolver hostnames to enforce fallback to system DNS.",
+  "version": 1,
+  "endpoints": [
+    "cloudflare-dns.com",
+    "dns.cloudflare.com",
+    "one.one.one.one",
+    "1dot1dot1dot1.cloudflare-dns.com",
+    "dns.google",
+    "dns.google.com",
+    "dns.quad9.net",
+    "quad9.net",
+    "doh.opendns.com",
+    "dns.opendns.com",
+    "dns.cleanbrowsing.org",
+    "doh.cleanbrowsing.org",
+    "dns.adguard-dns.com",
+    "dns.nextdns.io",
+    "doh.mullvad.net",
+    "dns.controld.com",
+    "freedns.controld.com",
+    "mask.icloud.com",
+    "mask-h2.icloud.com",
+    "mask-api.icloud.com",
+    "mask.apple-dns.net",
+    "mask-tfo.apple-dns.net",
+    "mask-api.fe.apple-dns.net",
+    "mask-api.fe2.apple-dns.net",
+    "use-application-dns.net"
+  ]
+}

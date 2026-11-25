@@ -62,8 +62,21 @@ pub struct Engine {
     /// attempt-log throttle so the two never consume each other;
     /// never persisted.
     overlay_last_shown: std::collections::HashMap<String, i64>,
-    /// Last epoch-ms an unconnected browser warning notification was shown per app id.
-    unpaired_browser_warning_last_shown: std::collections::HashMap<String, i64>,
+    /// Last epoch-ms a blocked-website notification was shown per normalized domain.
+    blocked_site_notify_last_shown: std::collections::HashMap<String, i64>,
+    /// Normalized blocked domain seen on the previous tick (for edge-triggered re-notification).
+    last_blocked_site_seen: Option<String>,
+    /// Highest daily-limit milestone percentage notified (50, 90, or 100) per rule/day key.
+    daily_limit_milestones: std::collections::HashMap<String, u8>,
+    /// Last identified domain in the focused session browser (app_id, domain).
+    /// Prevents long-lived WebSocket connections (e.g. WhatsApp Web) from pausing the timer
+    /// when no new DNS queries occur.
+    sticky_browser_domain: Option<(String, String)>,
+    /// Screen Time's own sticky website: (foreground app id, domain,
+    /// continuous ms when it was last seen). Separate from the session
+    /// timer's cache above so always-on recording can never change how
+    /// the timer decides relevance, and vice versa.
+    screen_time_sticky: Option<(String, String, u64)>,
 }
 /// Whether the browser's active domain counts as relevant work for the
 /// focus timer. `domains` is interpreted according to the session's
@@ -110,6 +123,11 @@ fn browser_domain_relevant(
         false,
     )
 }
+fn is_google_search_domain(domain: &str) -> bool {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    d == "google.com" || d == "www.google.com"
+}
+
 fn browser_domain_relevant_with_exceptions(
     mode: &Mode,
     website_blocking: &WebsiteBlocking,
@@ -151,14 +169,14 @@ fn browser_domain_relevant_with_exceptions(
     });
     match website_blocking {
         WebsiteBlocking::Blocklist => !in_domains,
-        WebsiteBlocking::Allowlist => in_domains,
+        WebsiteBlocking::Allowlist => in_domains || is_google_search_domain(active_domain),
         // No website blocking: any site is fine.
         WebsiteBlocking::None => true,
         // Sessions saved before the choice existed follow the extension
         // policy: blocklist in Standard, allowlist otherwise.
         WebsiteBlocking::Auto => match mode {
             Mode::Standard => !in_domains,
-            _ => in_domains,
+            _ => in_domains || is_google_search_domain(active_domain),
         },
     }
 }
@@ -172,6 +190,12 @@ fn browser_domain_relevant_with_exceptions(
 /// a false wake; the cost of a missed wake is nil, because the
 /// ordinary tick already re-evaluates schedules every second.
 pub const TICK_GAP_THRESHOLD_MS: i64 = 120_000;
+
+/// How long Screen Time keeps crediting the last real website when the
+/// shared reader has no domain for this second (a tab switch, a page
+/// loading, a new tab with no address yet). Never longer: after this the
+/// interval falls back to the browser application, exactly as before.
+pub const SCREEN_TIME_STICKY_MS: u64 = 3_000;
 
 /// M4: minimum gap between bridge (re)start attempts by a lock
 /// holder whose bridge failed to start (port still bound by the
@@ -253,6 +277,119 @@ fn record_blocked_app_page(
         at_ms: now,
     });
 }
+/// Computes the native OS-level domain blocklist (and allowlist distraction blocks) for a session.
+/// When a session configures YouTube blocking rules (channel blocks, study mode, entertainment block,
+/// or watch-later playlist only):
+/// - If the browser extension is connected, YouTube filtering is enforced in-browser by the extension,
+///   so YouTube domains are NOT blocked natively (allowing allowed channels/playlists to load).
+/// - If the browser extension is disconnected, YouTube is immediately blocked completely at the OS
+///   level (via hosts/DNS proxy/packet filter) just like other blocked websites, preventing bypass.
+pub fn compute_session_native_domains(
+    policy_domains: &[String],
+    is_allowlist: bool,
+    session_has_yt: bool,
+    browser_connected: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut doms: Vec<String> = Vec::new();
+    for d in policy_domains {
+        let norm = crate::dns_proxy::normalize_domain(d);
+        if !norm.is_empty() {
+            doms.push(norm);
+        }
+    }
+
+    let yt_domains = [
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+    ];
+
+    if !is_allowlist {
+        if session_has_yt {
+            if browser_connected {
+                // Extension is active: carve out YouTube from native OS blocklist so the extension can filter it
+                doms.retain(|d| !yt_domains.contains(&d.as_str()));
+            } else {
+                // Extension is disconnected/removed: block YouTube completely at the OS level
+                for yt in &yt_domains {
+                    let yt_str = yt.to_string();
+                    if !doms.contains(&yt_str) {
+                        doms.push(yt_str);
+                    }
+                }
+            }
+        }
+        doms.sort();
+        doms.dedup();
+        (doms, Vec::new())
+    } else {
+        // Allowlist mode
+        if session_has_yt {
+            if browser_connected {
+                for yt in &yt_domains {
+                    let yt_str = yt.to_string();
+                    if !doms.contains(&yt_str) {
+                        doms.push(yt_str);
+                    }
+                }
+            } else {
+                doms.retain(|d| !yt_domains.contains(&d.as_str()));
+            }
+        }
+        let allow_set: std::collections::HashSet<String> = doms.iter().cloned().collect();
+        let popular_distractions = [
+            "instagram.com",
+            "facebook.com",
+            "twitter.com",
+            "x.com",
+            "tiktok.com",
+            "reddit.com",
+            "youtube.com",
+            "netflix.com",
+            "threads.net",
+            "snapchat.com",
+        ];
+        let mut distraction_blocks: Vec<String> = Vec::new();
+        for dist in &popular_distractions {
+            if !allow_set.contains(*dist) {
+                distraction_blocks.push(dist.to_string());
+            }
+        }
+        if session_has_yt && !browser_connected {
+            for yt in &yt_domains {
+                let yt_str = yt.to_string();
+                if !distraction_blocks.contains(&yt_str) {
+                    distraction_blocks.push(yt_str);
+                }
+            }
+        }
+        distraction_blocks.sort();
+        distraction_blocks.dedup();
+
+        // Allowlist sites need their asset/CDN domains to render properly
+        let mut cdn: Vec<String> = Vec::new();
+        for d in &doms {
+            let extras: &[&str] = match d.as_str() {
+                "whatsapp.com" => &["whatsapp.net", "fbcdn.net"],
+                "linkedin.com" => &["licdn.com"],
+                "youtube.com" => &["googlevideo.com", "ytimg.com", "ggpht.com"],
+                "instagram.com" => &["cdninstagram.com", "fbcdn.net"],
+                _ => &[],
+            };
+            for e in extras {
+                cdn.push(e.to_string());
+            }
+        }
+        doms.extend(cdn);
+        doms.push("challenges.cloudflare.com".to_string());
+        doms.sort();
+        doms.dedup();
+
+        (doms, distraction_blocks)
+    }
+}
+
 impl Engine {
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -517,7 +654,7 @@ impl Engine {
             0
         };
         let lifecycle_path = path.with_extension("lifecycle.json");
-        let engine = Self {
+        let mut engine = Self {
             db,
             data_dir: path
                 .parent()
@@ -547,8 +684,13 @@ impl Engine {
             failed: None,
             attempt_tracker: crate::stats::AttemptTracker::default(),
             overlay_last_shown: Default::default(),
-            unpaired_browser_warning_last_shown: Default::default(),
+            blocked_site_notify_last_shown: Default::default(),
+            last_blocked_site_seen: None,
+            daily_limit_milestones: Default::default(),
+            sticky_browser_domain: None,
+            screen_time_sticky: None,
         };
+        engine.seed_daily_limit_milestones(clock::now());
         engine.publish();
         // Screen Time sampling is always on: the observe-only lease
         // starts at launch so usage is collected whenever the app runs.
@@ -968,10 +1110,7 @@ impl Engine {
             )
         }) {
             if !session.focus.browser_app.is_empty() {
-                let status = self.browser_status_for(&session.focus.browser_app);
-                if status.connected {
-                    return status;
-                }
+                return self.browser_status_for(&session.focus.browser_app);
             }
         }
         self.bridge
@@ -995,15 +1134,17 @@ impl Engine {
     /// with no browser picked) is ready by definition.
     pub fn session_browsers_ready(&self, focus: &FocusConfig) -> bool {
         let ids = focus.session_browsers();
-        if ids.is_empty() {
+        if ids.is_empty()
+            || (!focus.has_youtube_rules()
+                && !(focus.frozen.enabled && !focus.browser_app.is_empty()))
+        {
             return true;
         }
+        let connected = self.connected_browsers();
         ids.iter().all(|browser_id| {
-            let status = self.browser_status_for(browser_id);
-            status.connected
-                && status.error.is_empty()
-                && !status.client_browser.is_empty()
-                && crate::browser::same_browser(browser_id, &status.client_browser)
+            connected
+                .iter()
+                .any(|c| crate::browser::same_browser(browser_id, c))
         })
     }
     /// Status of the connected browser matching the foreground app sample
@@ -1131,6 +1272,10 @@ impl Engine {
         if s.focus.mode == Mode::Deep {
             return Err("Deep Focus is unavailable: managed OS policy, a restricted account, signed deployment and administrator recovery must be configured separately.".into());
         }
+        #[cfg(not(test))]
+        if self.native && !crate::privileged_helper::is_helper_installed() {
+            return Err("Privileged Blocking Helper is required to start a session. Install helper before starting this session.".into());
+        }
         if s.focus.activity_consent && (!self.native || !platform::supported()) {
             return Err("Native application restrictions are unavailable on this platform.".into());
         }
@@ -1149,25 +1294,22 @@ impl Engine {
             return Err("This session checks you're at your desk with the camera, but camera access isn't allowed. Allow it in setup, or start a session without camera checks.".into());
         }
         if s.focus.network_required() {
-            // Session-specific Safari restriction, re-checked here because
-            // a stored session can predate it (or be restored from a
-            // backup): Safari has no extension, so it can never enforce
-            // this session's website rules.
-            if s.focus.safari_approved() {
-                return Err("This session includes Safari, which can't enforce website rules. Edit the session and choose a supported browser. No session has started.".into());
-            }
-            // The website rules are enforced in every selected browser, so
-            // each one must be paired before the session starts. A selected
-            // browser without the extension would browse unfiltered.
-            for browser_id in s.focus.session_browsers() {
-                let b = self.browser_status_for(&browser_id);
-                let wrong_browser = b.client_browser.is_empty()
-                    || !browser::same_browser(&browser_id, &b.client_browser);
-                if !b.connected || !b.error.is_empty() || wrong_browser {
-                    return Err(format!(
-                        "Pair the Preelock extension in {} before starting. No session has started.",
-                        browser_display_name(&browser_id)
-                    ));
+            // YouTube rules and Frozen sessions strictly require the extension to be paired
+            // in the selected browser before the session starts.
+            if s.focus.has_youtube_rules()
+                || (s.focus.frozen.enabled && !s.focus.browser_app.is_empty())
+            {
+                let connected = self.connected_browsers();
+                for browser_id in s.focus.session_browsers() {
+                    let paired = connected
+                        .iter()
+                        .any(|c| browser::same_browser(&browser_id, c));
+                    if !paired {
+                        return Err(format!(
+                            "Pair the Preelock extension in {} before starting. No session has started.",
+                            browser_display_name(&browser_id)
+                        ));
+                    }
                 }
             }
         }
@@ -1418,92 +1560,67 @@ impl Engine {
         }
         result
     }
+
     fn publish(&self) {
-        if let Some(b) = &self.bridge {
-            // Adult website blocking is a user setting, not session state, so
-            // it is mirrored on every publish (every action and every tick).
-            // This used to be published only by the screen-time sampler, which
-            // returns early while a session is live and whenever a sample is
-            // skipped, so toggling it during a focus session never reached the
-            // extension and adult sites stayed open. See
-            // `Engine::adult_block_toggle_reaches_browser_bridge`.
-            b.set_adult_block_enabled(self.data.adult_block.enabled);
-            if self.is_paused() {
+        let now = clock::now();
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+
+        // 1. Gather all Screen Time locks and exhausted allowances
+        let mut screen_time_sites =
+            crate::allowances::exhausted_site_rules(&self.data.allowances, now);
+        screen_time_sites.extend(crate::applocks::locked_site_rules(
+            &self.data.app_locks,
+            &self.data.screen_time_usage,
+            day_ms,
+            now,
+        ));
+        screen_time_sites.sort();
+        screen_time_sites.dedup();
+
+        let adult_block_enabled = self.data.adult_block.enabled;
+
+        // 2. Early return if Preelock is paused (power toggle off)
+        if self.is_paused() {
+            if let Some(b) = &self.bridge {
+                b.set_adult_block_enabled(adult_block_enabled);
                 b.publish(None);
                 b.set_screen_time_blocked_rules(&[], &[]);
                 b.set_connection_locked(false);
-                return;
             }
-            let policy = if self.failed.is_some() {
-                None
-            } else {
-                // Step 14: a grace session publishes no policy, so
-                // the extension removes its rules until grace ends
-                // — website blocking is not enforced during grace.
-                let now = clock::now();
-                self.data
-                    .sessions
-                    .iter()
-                    .find(|s| {
-                        matches!(s.status, Status::Running | Status::Preparing)
-                            && !crate::notifications::grace_active(s.grace_until_ms, now)
-                            // Screen Time sampling is always on, so a live session
-                            // always publishes a policy: the extension needs it to
-                            // report the active domain for usage collection, and a
-                            // session with no website rules simply carries none.
-                            // Breaks (step 7 Pomodoro, step 9 reward):
-                            // on a break the engine publishes no
-                            // policy, so the extension removes its
-                            // rules until focus republishes them. No
-                            // other session can be active at the same
-                            // time, so skipping this one publishes
-                            // nothing.
-                            && !crate::rewards::on_any_break(s)
-                    })
-                    .map(|s| {
-                        // Step 8: exhausted site rules ride the
-                        // policy's extra_blocked overlay (the step-1
-                        // adult mechanism), outranking allowlist
-                        // rules and exceptions in the extension.
-                        // Exhaustion is recomputed from current
-                        // usage on every publish, so a period roll,
-                        // disable, or delete lifts the block on the
-                        // next publish with no cleanup step.
-                        // App locks: enforced site locks ride the
-                        // same overlay — the extension protocol is
-                        // unchanged (version stays 6), since the
-                        // extension already treats extra_blocked as
-                        // a block that outranks everything else.
-                        let mut exhausted = crate::allowances::exhausted_site_rules(
-                            &self.data.allowances,
-                            clock::now(),
-                        );
-                        exhausted.extend(crate::applocks::locked_site_rules(
-                            &self.data.app_locks,
-                            &self.data.screen_time_usage,
-                            crate::screen_time::local_day_start_ms(now),
-                            now,
-                        ));
-                        exhausted.sort();
-                        exhausted.dedup();
-                        // "Why am I blocked": the true cause for the
-                        // session's own rules, plus per-rule causes for
-                        // the extra_blocked overlay (allowances, app
-                        // locks), so the extension's blocked page can
-                        // explain itself.
-                        let rule_causes = self.extra_blocked_causes(now);
-                        let mut p = Policy::new(
-                            &s.id,
-                            &s.focus,
-                            if s.status == Status::Preparing || s.focus.attention.enabled {
-                                60_000
-                            } else {
-                                s.remaining_ms
-                            },
-                        );
-                        // If specific target browsers were picked but none are connected while
-                        // another paired browser IS connected, clear p.browsers so that the
-                        // connected browser can enforce website blocking instead of leaving it unenforced.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if !cfg!(test) {
+                let _ = crate::dns_proxy::handle_policy_update(None);
+                let _ = crate::privileged_helper::clear_block("session");
+                let _ = crate::privileged_helper::clear_block("app_lock");
+                let _ = crate::privileged_helper::clear_block("adult_block");
+            }
+            return;
+        }
+
+        // 3. Evaluate active focus session policy (if any)
+        let session_policy = if self.failed.is_some() {
+            None
+        } else {
+            self.data
+                .sessions
+                .iter()
+                .find(|s| {
+                    matches!(s.status, Status::Running | Status::Preparing)
+                        && !crate::notifications::grace_active(s.grace_until_ms, now)
+                        && !crate::rewards::on_any_break(s)
+                })
+                .map(|s| {
+                    let rule_causes = self.extra_blocked_causes(now);
+                    let mut p = Policy::new(
+                        &s.id,
+                        &s.focus,
+                        if s.status == Status::Preparing || s.focus.attention.enabled {
+                            60_000
+                        } else {
+                            s.remaining_ms
+                        },
+                    );
+                    if let Some(b) = &self.bridge {
                         if !p.browsers().is_empty() {
                             let target_connected =
                                 p.browsers().iter().any(|id| b.status_for(id).connected);
@@ -1511,24 +1628,171 @@ impl Engine {
                                 p.clear_browsers();
                             }
                         }
-                        p.with_exhausted_rules(&exhausted)
-                            .with_session_cause(crate::blockreasons::session_cause(
-                                s,
-                                &self.data.schedules,
-                            ))
-                            .with_rule_causes(&rule_causes)
-                            .with_activity_tracking(true)
-                    })
-            };
-            b.publish(policy);
-            // Browser-connection lock, derived from the authoritative
-            // session state above: while a strict session is live the
-            // bridge refuses explicit disconnects, and the desktop
-            // pairing reset already refuses while any session is live
-            // (see `reset_pairing`). Publish runs on every tick and on
-            // every session transition, so the lock lifts on the same
-            // publish that ends the session — no restart needed.
+                    }
+                    p.with_exhausted_rules(&screen_time_sites)
+                        .with_session_cause(crate::blockreasons::session_cause(
+                            s,
+                            &self.data.schedules,
+                        ))
+                        .with_rule_causes(&rule_causes)
+                        .with_activity_tracking(true)
+                })
+        };
+
+        // 4. Sync browser bridge if extension is connected
+        if let Some(b) = &self.bridge {
+            b.set_adult_block_enabled(adult_block_enabled);
+            let rule_causes = self.extra_blocked_causes(now);
+            b.set_screen_time_blocked_rules(&screen_time_sites, &rule_causes);
+            b.publish(session_policy.clone());
             b.set_connection_locked(self.has_active_strict());
+        }
+
+        // 5. Compute Unified Native OS-Level Policy (Helper + DNS)
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if !cfg!(test) {
+            // A. Manage Independent App Locks under owner "app_lock"
+            let mut app_lock_domains: Vec<String> = Vec::new();
+            for d in &screen_time_sites {
+                let norm = crate::dns_proxy::normalize_domain(d);
+                if !norm.is_empty() {
+                    app_lock_domains.push(norm);
+                }
+            }
+            app_lock_domains.sort();
+            app_lock_domains.dedup();
+
+            if !app_lock_domains.is_empty() {
+                let _ = crate::privileged_helper::apply_block("app_lock", &app_lock_domains, None);
+            } else {
+                let _ = crate::privileged_helper::clear_block("app_lock");
+            }
+
+            // B. Manage Focus Session Blocking
+            let (dns_domains, is_allowlist) = match &session_policy {
+                Some(p) => {
+                    let allow = p.mode == "allowlist";
+                    let active_session = self.data.sessions.iter().find(|s| {
+                        matches!(s.status, Status::Running | Status::Preparing)
+                            && !crate::notifications::grace_active(s.grace_until_ms, now)
+                            && !crate::rewards::on_any_break(s)
+                    });
+                    let session_has_yt = active_session
+                        .map(|s| s.focus.has_youtube_rules())
+                        .unwrap_or(false);
+                    let browser_connected = if let Some(s) = active_session {
+                        let target = if s.focus.browser_app.is_empty() {
+                            ""
+                        } else {
+                            &s.focus.browser_app
+                        };
+                        self.browser_status_for(target).connected
+                    } else {
+                        false
+                    };
+
+                    let (mut doms, distraction_blocks) = compute_session_native_domains(
+                        &p.domains,
+                        allow,
+                        session_has_yt,
+                        browser_connected,
+                    );
+
+                    let strict_until = if self.has_active_strict() {
+                        let now_secs = (now / 1000).max(0) as u64;
+                        self.data
+                            .sessions
+                            .iter()
+                            .find(|s| {
+                                (s.focus.mode == crate::focus::Mode::Strict || !s.allow_pause)
+                                    && matches!(s.status, Status::Running)
+                            })
+                            .and_then(|s| {
+                                s.deadline_ms.map(|d| (d / 1000).max(0) as u64).or_else(|| {
+                                    Some(now_secs.saturating_add(s.remaining_ms / 1000))
+                                })
+                            })
+                    } else {
+                        None
+                    };
+
+                    if !allow {
+                        // Blocklist mode session: apply blocked domains to helper under owner "session"
+                        let _ =
+                            crate::privileged_helper::apply_block("session", &doms, strict_until);
+
+                        // DNS proxy also blocks these plus independent app locks
+                        for d in &app_lock_domains {
+                            doms.push(d.clone());
+                        }
+                    } else {
+                        for g in ["google.com", "www.google.com"] {
+                            if !doms.iter().any(|d| d == g) {
+                                doms.push(g.into());
+                            }
+                        }
+                        if !distraction_blocks.is_empty() {
+                            let _ = crate::privileged_helper::apply_block(
+                                "session",
+                                &distraction_blocks,
+                                strict_until,
+                            );
+                        } else {
+                            let _ = crate::privileged_helper::clear_block("session");
+                        }
+                        crate::privileged_helper::enforce_allowlist_browser_tabs(
+                            &doms,
+                            session_has_yt && browser_connected,
+                        );
+
+                        let extra: std::collections::HashSet<String> =
+                            app_lock_domains.iter().cloned().collect();
+                        doms.retain(|d| !extra.contains(d));
+                    }
+                    doms.sort();
+                    doms.dedup();
+                    (doms, allow)
+                }
+                None => {
+                    // No active session: clear "session" owner rules
+                    let _ = crate::privileged_helper::clear_block("session");
+                    (app_lock_domains.clone(), false)
+                }
+            };
+
+            // C. Manage System-Wide Adult Blocking under owner "adult_block"
+            if adult_block_enabled {
+                let strict_until = if self.data.adult_block.strict {
+                    self.data
+                        .adult_block
+                        .ends_at_ms
+                        .map(|ms| (ms / 1000).max(0) as u64)
+                } else {
+                    None
+                };
+                let _ = crate::privileged_helper::apply_block(
+                    "adult_block",
+                    crate::adult_block::all_adult_domains(),
+                    strict_until,
+                );
+            } else {
+                let _ = crate::privileged_helper::clear_block("adult_block");
+            }
+
+            let should_activate_native_dns =
+                is_allowlist || !dns_domains.is_empty() || adult_block_enabled;
+
+            if should_activate_native_dns {
+                if let Err(e) = crate::dns_proxy::handle_policy_update(Some((
+                    &dns_domains,
+                    is_allowlist,
+                    adult_block_enabled,
+                ))) {
+                    log::warn!("[DNS_PROXY] Native DNS blocking update failed: {e}");
+                }
+            } else {
+                let _ = crate::dns_proxy::handle_policy_update(None);
+            }
         }
     }
     /// Manual refresh of the browser bridge and enforcement state.
@@ -1537,6 +1801,107 @@ impl Engine {
             b.refresh();
         }
         self.publish();
+    }
+
+    /// True when `domain` must be redirected away from in a foreground browser
+    /// tab right now (covering extensionless browsers, Safari, Incognito,
+    /// Service-Worker-cached tabs, browser DNS caches, DoH, and browser VPNs).
+    pub(crate) fn is_domain_blocked_for_native_redirect(&self, domain: &str, now: i64) -> bool {
+        let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        if self.is_paused() || domain.is_empty() {
+            return false;
+        }
+        if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(&domain) {
+            return true;
+        }
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+        if crate::applocks::site_locked(
+            &self.data.app_locks,
+            &self.data.screen_time_usage,
+            day_ms,
+            now,
+            &domain,
+        ) {
+            return true;
+        }
+        if crate::allowances::exhausted_site_rules(&self.data.allowances, now)
+            .iter()
+            .any(|rule| crate::focus::rule_matches(rule, &domain, ""))
+        {
+            return true;
+        }
+        let Some(s) = self.data.sessions.iter().find(|s| {
+            matches!(s.status, Status::Running | Status::Preparing)
+                && !crate::notifications::grace_active(s.grace_until_ms, now)
+                && !crate::rewards::on_any_break(s)
+        }) else {
+            return false;
+        };
+        if s.focus.block_adult_content && crate::adult_block::is_adult_domain(&domain) {
+            return true;
+        }
+        if !s.focus.general_internet {
+            return !is_google_search_domain(&domain);
+        }
+        if s.focus.frozen.enabled {
+            if is_google_search_domain(&domain) {
+                return false;
+            }
+            return !s
+                .focus
+                .frozen
+                .website_host_rules()
+                .iter()
+                .any(|rule| crate::focus::rule_matches(rule, &domain, ""));
+        }
+        let policy_mode = match &s.focus.website_blocking {
+            WebsiteBlocking::Blocklist => "blocklist",
+            WebsiteBlocking::Allowlist => "allowlist",
+            WebsiteBlocking::None => "none",
+            WebsiteBlocking::Auto => match &s.focus.mode {
+                Mode::Standard => "blocklist",
+                _ => "allowlist",
+            },
+        };
+        if policy_mode == "none" {
+            return false;
+        }
+        let browser_connected = self
+            .browser_status_for(if s.focus.browser_app.is_empty() {
+                ""
+            } else {
+                &s.focus.browser_app
+            })
+            .connected;
+        let is_youtube = domain == "youtube.com" || domain.ends_with(".youtube.com");
+        if is_youtube
+            && browser_connected
+            && (s.focus.has_youtube_rules() || s.focus.youtube_allow_watch_later)
+        {
+            return false;
+        }
+        if policy_mode == "blocklist" {
+            if browser_connected
+                && s.focus.exceptions.iter().any(|exc| {
+                    let host_part = exc.split('/').next().unwrap_or("");
+                    crate::focus::rule_matches(host_part, &domain, "")
+                })
+            {
+                return false;
+            }
+            return s
+                .focus
+                .website_host_rules()
+                .iter()
+                .any(|rule| crate::focus::rule_matches(rule, &domain, ""));
+        }
+        if is_google_search_domain(&domain) {
+            return false;
+        }
+        !s.focus
+            .website_allowlist_host_rules()
+            .iter()
+            .any(|rule| crate::focus::rule_matches(rule, &domain, ""))
     }
     /// Per-rule block causes for the currently enforced
     /// `extra_blocked` site rules (allowance exhaustion and app
@@ -1617,6 +1982,342 @@ impl Engine {
             "Preelock",
             &crate::blockreasons::cause_text(cause, name, now),
         );
+    }
+
+    /// Build the `(title, body)` for a blocked-website notification.
+    /// Mentions the remaining block duration whenever the block has a known end time.
+    pub(crate) fn blocked_site_notification_text(
+        &self,
+        domain: &str,
+        now: i64,
+    ) -> (String, String) {
+        let domain_norm = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        let title = if domain_norm.is_empty() {
+            "Website Blocked".to_string()
+        } else {
+            format!("Website Blocked — {domain_norm}")
+        };
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+
+        // 1. Enforced site lock (timed lock includes remaining duration).
+        if let Some(lock) = crate::applocks::enforced_lock_for_site(
+            &self.data.app_locks,
+            &self.data.screen_time_usage,
+            day_ms,
+            now,
+            &domain_norm,
+        ) {
+            let body = match lock.rule {
+                crate::applocks::LockRule::Timed { ends_at_ms } => format!(
+                    "This website is blocked for {}.",
+                    crate::blockreasons::fmt_remaining(ends_at_ms.saturating_sub(now))
+                ),
+                crate::applocks::LockRule::DailyLimit { .. } => {
+                    "This website is blocked — daily limit reached.".to_string()
+                }
+            };
+            return (title, body);
+        }
+
+        // 2. Exhausted site allowance.
+        if let Some(allowance) = self.data.allowances.iter().find(|a| {
+            a.enabled
+                && a.kind == crate::allowances::TargetKind::Site
+                && crate::allowances::used_ms(a, now) >= crate::allowances::budget_ms(a)
+                && crate::focus::rule_matches(&a.target, &domain_norm, "")
+        }) {
+            let body = match allowance.period {
+                crate::allowances::Period::Day => {
+                    "This website is blocked — daily limit reached.".to_string()
+                }
+                crate::allowances::Period::Week => {
+                    "This website is blocked — weekly limit reached.".to_string()
+                }
+            };
+            return (title, body);
+        }
+
+        // 3. Active focus session (include remaining session time when known).
+        if let Some(s) = self.data.sessions.iter().find(|s| {
+            matches!(s.status, Status::Running | Status::Preparing)
+                && !crate::notifications::grace_active(s.grace_until_ms, now)
+                && !crate::rewards::on_any_break(s)
+        }) {
+            let rem_ms = if s.remaining_ms > 0 {
+                Some(s.remaining_ms as i64)
+            } else {
+                s.deadline_ms
+                    .filter(|&dl| dl > now)
+                    .map(|dl| dl.saturating_sub(now))
+            };
+            if let Some(ms) = rem_ms {
+                return (
+                    title,
+                    format!(
+                        "This website is blocked for {}.",
+                        crate::blockreasons::fmt_remaining(ms)
+                    ),
+                );
+            }
+        }
+
+        (title, "This website is blocked.".to_string())
+    }
+
+    /// Notify the user when they visit a blocked website in any browser
+    /// (with or without extension, including incognito/private windows and VPNs).
+    /// Returns `true` if a notification was dispatched.
+    pub(crate) fn maybe_notify_blocked_site(&mut self, domain: &str, now: i64) -> bool {
+        let norm = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        if norm.is_empty() {
+            self.last_blocked_site_seen = None;
+            return false;
+        }
+        if self.is_paused()
+            || !self.data.preferences.notifications_enabled
+            || !crate::desktop_settings::can_notify()
+        {
+            self.last_blocked_site_seen = Some(norm);
+            return false;
+        }
+        let last_shown = self
+            .blocked_site_notify_last_shown
+            .get(&norm)
+            .copied()
+            .unwrap_or(0);
+        let is_new_visit = self.last_blocked_site_seen.as_deref() != Some(norm.as_str());
+        let cooldown = if is_new_visit { 5_000 } else { 30_000 };
+        self.last_blocked_site_seen = Some(norm.clone());
+        if last_shown > 0 && now.saturating_sub(last_shown) < cooldown {
+            return false;
+        }
+        self.blocked_site_notify_last_shown
+            .insert(norm.clone(), now);
+        if self.blocked_site_notify_last_shown.len() > 128 {
+            self.blocked_site_notify_last_shown
+                .retain(|_, ts| now.saturating_sub(*ts) < 120_000);
+        }
+        let (title, body) = self.blocked_site_notification_text(&norm, now);
+        self.notify_general(&title, &body);
+        true
+    }
+
+    /// Seed daily-limit milestone state at engine startup so a daemon restart
+    /// does not re-fire milestones that were already reached earlier.
+    fn seed_daily_limit_milestones(&mut self, now: i64) {
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+        for lock in &self.data.app_locks {
+            if !lock.enabled || lock.kind != crate::allowances::TargetKind::Site {
+                continue;
+            }
+            let crate::applocks::LockRule::DailyLimit { limit_ms } = lock.rule else {
+                continue;
+            };
+            if limit_ms == 0 {
+                continue;
+            }
+            let used = crate::applocks::today_usage_ms(
+                &self.data.screen_time_usage,
+                day_ms,
+                crate::allowances::TargetKind::Site,
+                &lock.target,
+            );
+            let pct = ((used as u128).saturating_mul(100) / (limit_ms as u128)).min(100) as u8;
+            let milestone = if pct >= 100 {
+                100
+            } else if pct >= 90 {
+                90
+            } else if pct >= 50 {
+                50
+            } else {
+                0
+            };
+            if milestone > 0 {
+                let key = format!("lock:{}:{}:{}", lock.id, day_ms, limit_ms);
+                self.daily_limit_milestones.insert(key, milestone);
+            }
+        }
+        for allowance in &self.data.allowances {
+            if !allowance.enabled
+                || allowance.kind != crate::allowances::TargetKind::Site
+                || allowance.period != crate::allowances::Period::Day
+            {
+                continue;
+            }
+            let limit_ms = crate::allowances::budget_ms(allowance);
+            if limit_ms == 0 {
+                continue;
+            }
+            let used = crate::allowances::used_ms(allowance, now);
+            let pct = ((used as u128).saturating_mul(100) / (limit_ms as u128)).min(100) as u8;
+            let milestone = if pct >= 100 {
+                100
+            } else if pct >= 90 {
+                90
+            } else if pct >= 50 {
+                50
+            } else {
+                0
+            };
+            if milestone > 0 {
+                let period_tag = match allowance.mode {
+                    crate::allowances::ResetMode::Fixed => day_ms,
+                    crate::allowances::ResetMode::Rolling => 0,
+                };
+                let key = format!("allowance:{}:{}:{}", allowance.id, period_tag, limit_ms);
+                self.daily_limit_milestones.insert(key, milestone);
+            }
+        }
+    }
+
+    /// Evaluate 50%, 90%, and 100% daily-limit milestone notifications for
+    /// website daily limits (both `AppLock` DailyLimit and `Allowance` Day).
+    /// Returns the list of `(milestone_pct, target)` notifications dispatched.
+    pub(crate) fn evaluate_daily_limit_milestones(&mut self, now: i64) -> Vec<(u8, String)> {
+        if self.is_paused()
+            || !self.data.preferences.notifications_enabled
+            || !crate::desktop_settings::can_notify()
+        {
+            return Vec::new();
+        }
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+        let mut pending: Vec<(String, u8, String, String, String)> = Vec::new();
+
+        for lock in &self.data.app_locks {
+            if !lock.enabled || lock.kind != crate::allowances::TargetKind::Site {
+                continue;
+            }
+            let crate::applocks::LockRule::DailyLimit { limit_ms } = lock.rule else {
+                continue;
+            };
+            if limit_ms == 0 {
+                continue;
+            }
+            let used = crate::applocks::today_usage_ms(
+                &self.data.screen_time_usage,
+                day_ms,
+                crate::allowances::TargetKind::Site,
+                &lock.target,
+            );
+            let pct = ((used as u128).saturating_mul(100) / (limit_ms as u128)).min(100) as u8;
+            let milestone = if pct >= 100 {
+                100
+            } else if pct >= 90 {
+                90
+            } else if pct >= 50 {
+                50
+            } else {
+                0
+            };
+            if milestone == 0 {
+                continue;
+            }
+            let key = format!("lock:{}:{}:{}", lock.id, day_ms, limit_ms);
+            let prev = self.daily_limit_milestones.get(&key).copied().unwrap_or(0);
+            if milestone > prev {
+                let limit_str = crate::blockreasons::fmt_remaining(limit_ms as i64);
+                let name = if lock.title.is_empty() {
+                    lock.target.as_str()
+                } else {
+                    lock.title.as_str()
+                };
+                let (title, body) = if milestone == 100 {
+                    (
+                        format!("{name} — Daily Limit Reached"),
+                        format!(
+                            "100% of your daily limit ({limit_str}) for {} has been reached. This website is now blocked.",
+                            lock.target
+                        ),
+                    )
+                } else {
+                    (
+                        format!("{name} — {milestone}% Daily Limit"),
+                        format!(
+                            "{milestone}% of your daily limit ({limit_str}) for {} has been reached.",
+                            lock.target
+                        ),
+                    )
+                };
+                pending.push((key, milestone, title, body, lock.target.clone()));
+            }
+        }
+
+        for allowance in &self.data.allowances {
+            if !allowance.enabled
+                || allowance.kind != crate::allowances::TargetKind::Site
+                || allowance.period != crate::allowances::Period::Day
+            {
+                continue;
+            }
+            let limit_ms = crate::allowances::budget_ms(allowance);
+            if limit_ms == 0 {
+                continue;
+            }
+            let used = crate::allowances::used_ms(allowance, now);
+            let pct = ((used as u128).saturating_mul(100) / (limit_ms as u128)).min(100) as u8;
+            let period_tag = match allowance.mode {
+                crate::allowances::ResetMode::Fixed => day_ms,
+                crate::allowances::ResetMode::Rolling => 0,
+            };
+            let key = format!("allowance:{}:{}:{}", allowance.id, period_tag, limit_ms);
+            if allowance.mode == crate::allowances::ResetMode::Rolling && pct < 50 {
+                self.daily_limit_milestones.remove(&key);
+                continue;
+            }
+            let milestone = if pct >= 100 {
+                100
+            } else if pct >= 90 {
+                90
+            } else if pct >= 50 {
+                50
+            } else {
+                0
+            };
+            if milestone == 0 {
+                continue;
+            }
+            let prev = self.daily_limit_milestones.get(&key).copied().unwrap_or(0);
+            if milestone > prev {
+                let limit_str = crate::blockreasons::fmt_remaining(limit_ms as i64);
+                let name = if allowance.title.is_empty() {
+                    allowance.target.as_str()
+                } else {
+                    allowance.title.as_str()
+                };
+                let (title, body) = if milestone == 100 {
+                    (
+                        format!("{name} — Daily Limit Reached"),
+                        format!(
+                            "100% of your daily limit ({limit_str}) for {} has been reached. This website is now blocked.",
+                            allowance.target
+                        ),
+                    )
+                } else {
+                    (
+                        format!("{name} — {milestone}% Daily Limit"),
+                        format!(
+                            "{milestone}% of your daily limit ({limit_str}) for {} has been reached.",
+                            allowance.target
+                        ),
+                    )
+                };
+                pending.push((key, milestone, title, body, allowance.target.clone()));
+            }
+        }
+
+        let mut fired = Vec::with_capacity(pending.len());
+        for (key, milestone, title, body, target) in pending {
+            self.daily_limit_milestones.insert(key, milestone);
+            if milestone == 100 {
+                let norm = target.trim().trim_end_matches('.').to_ascii_lowercase();
+                if !norm.is_empty() {
+                    self.blocked_site_notify_last_shown.insert(norm, now);
+                }
+            }
+            self.notify_general(&title, &body);
+            fired.push((milestone, target));
+        }
+        fired
     }
     /// Grace-start notification (step 14 parity): tell the user
     /// once, when an auto-started session enters its grace period,
@@ -1773,16 +2474,14 @@ impl Engine {
                 };
                 s.report.event(now, "clock_jump", &detail);
             }
-            // Step 14: grace sessions never accrue in commit
-            // either — not just in tick. A schedule session is
-            // attention-enabled (advance skips it anyway), but a
-            // one-shot session need not be, so the guard belongs
-            // here, where every advance runs.
-            if !self.is_paused()
-                && !s.focus.attention.enabled
-                && !crate::notifications::grace_active(s.grace_until_ms, now)
-            {
-                sessions::advance(s, credit_elapsed, now);
+            // Step 14: grace sessions never accrue in commit either.
+            if !self.is_paused() && !crate::notifications::grace_active(s.grace_until_ms, now) {
+                if s.focus.attention.enabled {
+                    // Attention::observe owns productive countdown accounting.
+                    // It only consumes remaining time while focused.
+                } else {
+                    sessions::advance(s, credit_elapsed, now);
+                }
             }
         }
         let changed = action.is_some();
@@ -1808,9 +2507,14 @@ impl Engine {
             if !s.focus.activity_consent && !s.focus.network_required() {
                 s.report.enforcement = "No application or browser restrictions requested".into();
             }
-            if s.focus.attention.enabled {
-                s.deadline_ms = None;
-            }
+            // Every running session gets a wall-clock deadline, so the
+            // countdown and the end of the block never depend on the
+            // activity sampler (or on this engine answering at all).
+            s.deadline_ms = if s.focus.attention.enabled {
+                None
+            } else {
+                Some(now.saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64))
+            };
             if s.durability.intended_end_at_ms.is_none() {
                 s.durability.intended_end_at_ms =
                     Some(now.saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64));
@@ -1818,7 +2522,12 @@ impl Engine {
             if s.durability.recovery_status.is_none() {
                 s.durability.recovery_status = Some("clean".into());
             }
-            if s.focus.network_required() {
+            let has_connected_browser = s
+                .focus
+                .session_browsers()
+                .iter()
+                .any(|id| self.browser_status_for(id).connected);
+            if cfg!(test) && s.focus.network_required() && has_connected_browser {
                 s.started_at = self
                     .data
                     .sessions
@@ -1829,6 +2538,24 @@ impl Engine {
                 s.attention.state = State::Preparing;
                 s.deadline_ms = None;
                 s.report.enforcement = "Waiting for browser rule acknowledgement".into();
+            } else if s.focus.network_required()
+                && has_connected_browser
+                && !cfg!(target_os = "macos")
+            {
+                s.started_at = self
+                    .data
+                    .sessions
+                    .iter()
+                    .find(|old| old.id == id)
+                    .and_then(|old| old.started_at);
+                s.status = Status::Preparing;
+                s.attention.state = State::Preparing;
+                s.deadline_ms = None;
+                s.report.enforcement = "Waiting for browser rule acknowledgement".into();
+            } else {
+                s.status = Status::Running;
+                s.started_at.get_or_insert(now);
+                s.deadline_ms = Some(now + s.remaining_ms as i64);
             }
             s.report.event(
                 now,
@@ -2501,30 +3228,54 @@ impl Engine {
         // a browser this platform has an adapter for, and skipped when the
         // extension already reports a fresh, focused domain for it — the
         // credited result is identical and no OS query is spent.
-        let native_site = if browser_for_site.activity_fresh
+        let sampled_at = clock::continuous_ms();
+        let extension_site = browser_for_site.activity_fresh
             && browser_for_site.browser_focused
-            && !browser_for_site.active_domain.is_empty()
-        {
+            && !browser_for_site.active_domain.is_empty();
+        let native_site = if extension_site {
             None
         } else {
             crate::websites::native_site(&sample.id)
         };
+        // Sticky website for brief gaps only: a tab switch, a page load or
+        // an empty address bar must not stop the current website's seconds
+        // or start a bogus entry, and it must never carry one browser's
+        // page into another browser. The shared reader already refuses
+        // CDN/asset hosts, so those keep the last real domain too.
+        if extension_site {
+            self.screen_time_sticky = Some((
+                sample.id.clone(),
+                browser_for_site.active_domain.clone(),
+                sampled_at,
+            ));
+        } else if let Some(site) = &native_site {
+            self.screen_time_sticky = Some((sample.id.clone(), site.domain.clone(), sampled_at));
+        } else if !crate::focus::known_browser(&sample.id) {
+            // Another app is in front: there is no website to remember.
+            self.screen_time_sticky = None;
+        }
+        let sticky_site = match &self.screen_time_sticky {
+            Some((app, domain, at))
+                if app == &sample.id && sampled_at.saturating_sub(*at) <= SCREEN_TIME_STICKY_MS =>
+            {
+                Some(crate::websites::NativeSite {
+                    app: app.clone(),
+                    domain: domain.clone(),
+                })
+            }
+            _ => None,
+        };
+        // Exactly one domain per interval: the fresh observation when
+        // there is one, otherwise the last one seen in this same browser.
+        let site_for_record = native_site.clone().or(sticky_site);
         let has_usage = self.record_screen_time_buckets(
             now,
             delta,
             &sample,
             &browser_for_site,
-            native_site.as_ref(),
+            site_for_record.as_ref(),
         )?;
-        // Global unconnected-browser warning:
-        // - Active browser only is evaluated.
-        // - Safari on macOS is strictly exempt (never shows banner or notification).
-        // - Connected browser: no banner, no notification.
-        // - Active unconnected browser:
-        //   Mode 1 (GUI open): global in-app red banner.
-        //   Mode 2 (GUI closed): native OS notification (throttled to once per 5 min per browser).
-        // - Switching to a connected browser or non-browser app clears the banner.
-        // - Preelock in foreground preserves the current warning so user can click Connect.
+        // Global unconnected-browser state (in-app UI only; no OS notification).
         let is_preelock = sample.id.to_lowercase().contains("preelock");
         if crate::focus::safari(&sample.id) {
             self.data.unconnected_browser = None;
@@ -2537,24 +3288,6 @@ impl Engine {
                     browser_id: sample.id.clone(),
                     browser_name: name.to_string(),
                 });
-                let gui_open = crate::background::desktop_alive(&self.data_dir);
-                if !gui_open && self.data.preferences.notifications_enabled {
-                    let last_warned = self
-                        .unpaired_browser_warning_last_shown
-                        .get(&sample.id)
-                        .copied()
-                        .unwrap_or(0);
-                    if now.saturating_sub(last_warned) >= 300_000 {
-                        self.unpaired_browser_warning_last_shown
-                            .insert(sample.id.clone(), now);
-                        crate::desktop_settings::notify(
-                            &format!("Connect {name} to Preelock"),
-                            &format!(
-                                "{name} is not connected to Preelock. Open Preelock and connect this browser to enable browser tracking and protection."
-                            ),
-                        );
-                    }
-                }
             }
         } else if !is_preelock {
             self.data.unconnected_browser = None;
@@ -2569,6 +3302,7 @@ impl Engine {
         }
         let day_ms = crate::screen_time::local_day_start_ms(now);
         if self.has_active() {
+            self.evaluate_daily_limit_milestones(now);
             return Ok(());
         }
         // Screen Time limits remain active outside Focus Sessions. The app
@@ -2731,13 +3465,6 @@ impl Engine {
         };
         if let Some(domain) = domain_to_check {
             if self.data.adult_block.enabled && crate::adult_block::is_adult_domain(domain) {
-                // The browser extension owns adult blocking: its DNR rules stop the
-                // request and worker.js replaces the SAME tab with blocked.html, exactly
-                // like ordinary website blocking. Native code takes no action at all
-                // here: no AppleScript, no Cmd+W/Ctrl+W or synthesized keystrokes, no
-                // tab closing or browser-process termination, no window hiding, no
-                // blocked-app page and no desktop activation. The attempt is still
-                // recorded for stats.
                 let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
                     at_ms: now,
                     kind: crate::stats::AttemptKind::Site,
@@ -2754,11 +3481,6 @@ impl Engine {
                     domain,
                 )
             {
-                // The browser extension owns website blocking: locked site rules are synced
-                // to the extension via bridge.set_screen_time_blocked_rules, where worker.js
-                // replaces the SAME tab with blocked.html. Native code takes NO window-control,
-                // tab-closing, or desktop-popup action for website locks: no platform::hide,
-                // no record_blocked_app_page, no redirect_browser_blocked, and no desktop activation.
                 let _ = self.db.record_attempt(&crate::stats::BlockAttempt {
                     at_ms: now,
                     kind: crate::stats::AttemptKind::Site,
@@ -2767,6 +3489,29 @@ impl Engine {
                     reason: "site_lock".into(),
                 });
             }
+        }
+        self.evaluate_daily_limit_milestones(now);
+        if crate::focus::known_browser(&sample.id) {
+            if let Some(domain) = native_site
+                .as_ref()
+                .map(|s| s.domain.as_str())
+                .or(domain_to_check)
+            {
+                if self.is_domain_blocked_for_native_redirect(domain, now) {
+                    self.maybe_notify_blocked_site(domain, now);
+                    if !cfg!(test) {
+                        crate::privileged_helper::redirect_blocked_tab_for_browser(
+                            &sample.id, domain,
+                        );
+                    }
+                } else {
+                    self.last_blocked_site_seen = None;
+                }
+            } else {
+                self.last_blocked_site_seen = None;
+            }
+        } else {
+            self.last_blocked_site_seen = None;
         }
         if let Some(bridge) = &self.bridge {
             bridge.set_adult_block_enabled(self.data.adult_block.enabled);
@@ -2813,6 +3558,7 @@ impl Engine {
             return;
         }
         let now = clock::now();
+        self.evaluate_daily_limit_milestones(now);
         let p = self.data.preferences.clone();
         let mut session_changed = false;
 
@@ -3079,6 +3825,45 @@ impl Engine {
         if let Err(e) = self.evaluate_one_shots(tick_wall, gap_exceeded) {
             log::error!("One-shot evaluation failed: {e}");
         }
+        // Hard maximum lifetime: a session whose wall-clock deadline has
+        // passed completes on this tick, whatever its attention state or
+        // productive-time accounting says. This is the last line of
+        // defence against a timer that cannot move; publish() then lifts
+        // its blocks on the same tick.
+        if let Some(index) = self.data.sessions.iter().position(|s| {
+            s.status == Status::Running
+                && !s.focus.frozen.enabled
+                && s.deadline_ms.is_some_and(|deadline| tick_wall >= deadline)
+        }) {
+            let mut next = self.data.clone();
+            let s = &mut next.sessions[index];
+            s.remaining_ms = 0;
+            s.status = Status::Completed;
+            s.ended_at = Some(tick_wall);
+            s.deadline_ms = None;
+            s.grace_until_ms = None;
+            s.browser_fail_closed = false;
+            crate::rewards::clear(s);
+            crate::locks::clear_state(&mut s.lock_state);
+            s.attention.state = State::Idle;
+            s.attention.reason = "Session time is up".into();
+            s.report.active_app.clear();
+            s.report.camera_status = "off".into();
+            s.report.enforcement =
+                "Session ended at its deadline; native monitoring stopped".into();
+            s.report.event(
+                tick_wall,
+                "deadline_reached",
+                "Session reached its wall-clock deadline and was ended automatically.",
+            );
+            if self.db.save(&next).is_err() {
+                log::error!("Could not save deadline expiry; session continues.");
+            } else {
+                self.data = next;
+                self.publish();
+            }
+            return Ok(());
+        }
         // Step 12: frozen wall-clock expiry, checked on every tick
         // before any sample is taken. A frozen session ends when
         // its wall-clock timer runs out (or its productive
@@ -3219,7 +4004,9 @@ impl Engine {
         if applied_now {
             s.policy_applied = true;
         }
-        let fail_closed = !s.focus.browser_app.is_empty()
+        let native_dns_active = !cfg!(test) && cfg!(target_os = "macos");
+        let fail_closed = !native_dns_active
+            && !s.focus.browser_app.is_empty()
             && matches!(
                 crate::tamper::classify_browser(
                     s.focus.network_required(),
@@ -3255,30 +4042,38 @@ impl Engine {
         let mut signals = Signals::default();
         let mut screen_allowance_changed = false;
         if s.status == Status::Preparing {
-            // The session starts once every selected browser has the rules
-            // installed: the policy is published to all paired browsers
-            // and each extension acknowledges it separately.
-            let rules_live_everywhere = s.focus.session_browsers().iter().all(|id| {
+            // Wait only for browsers that are actually connected; never stall
+            // waiting for an unconnected browser (native enforcement handles it).
+            let any_connected = s
+                .focus
+                .session_browsers()
+                .iter()
+                .any(|id| self.browser_status_for(id).connected);
+            let connected_browsers_ready = s.focus.session_browsers().iter().all(|id| {
                 let b = self.browser_status_for(id);
-                b.connected
-                    && b.applied_id == s.id
-                    && b.error.is_empty()
-                    && !b.client_browser.is_empty()
-                    && browser::same_browser(id, &b.client_browser)
+                !b.connected
+                    || (b.applied_id == s.id
+                        && b.error.is_empty()
+                        && !b.client_browser.is_empty()
+                        && browser::same_browser(id, &b.client_browser))
             });
-            if rules_live_everywhere {
+            if connected_browsers_ready {
                 s.status = Status::Running;
                 s.started_at.get_or_insert(now);
-                s.deadline_ms = if s.focus.attention.enabled {
-                    None
+                s.deadline_ms = Some(now + s.remaining_ms as i64);
+                s.report.enforcement = if any_connected {
+                    "Browser filter acknowledged".into()
                 } else {
-                    Some(now + s.remaining_ms as i64)
+                    "Native DNS blocking active".into()
                 };
-                s.report.enforcement = "Browser filter acknowledged".into();
                 s.report.event(
                     now,
                     "browser_activated",
-                    "Paired browser acknowledged installed request rules.",
+                    if any_connected {
+                        "Paired browser acknowledged installed request rules."
+                    } else {
+                        "Enforcing website blocking via native DNS proxy."
+                    },
                 );
             }
         } else {
@@ -3342,6 +4137,8 @@ impl Engine {
                         // recording here too would write the same
                         // ~second twice. One sampler, one write.
                         let day_ms = crate::screen_time::local_day_start_ms(now);
+                        let mut sampled_native_domain: Option<String> = None;
+                        let mut browser_app_blocked = false;
                         if session_consented {
                             // Step 4: folder/title rules feed the EXACT
                             // existing blocked handling below (hide,
@@ -3376,6 +4173,8 @@ impl Engine {
                                 &sample.id,
                             );
                             let native_site_for_session = crate::websites::native_site(&sample.id);
+                            sampled_native_domain =
+                                native_site_for_session.as_ref().map(|s| s.domain.clone());
                             let domain_for_lock = if browser.activity_fresh
                                 && browser.browser_focused
                                 && !browser.active_domain.is_empty()
@@ -3411,6 +4210,7 @@ impl Engine {
                                 || allowance_blocked
                                 || lock_blocked
                                 || fail_closed_hit;
+                            browser_app_blocked = app_blocked;
                             let blocked = app_blocked || site_lock_blocked;
                             // "Why am I blocked": the true cause for blocked applications,
                             // threaded from the check that fired — never guessed.
@@ -3466,9 +4266,16 @@ impl Engine {
                                     .any(|id| crate::focus::ids_match(id, &sample.id))
                                     || crate::focus::ids_match(&sample.id, &s.focus.browser_app));
                             signals.idle_ms = sample.idle_ms;
-                            if crate::focus::ids_match(&sample.id, &s.focus.browser_app)
-                                && !sample.id.is_empty()
-                            {
+                            // The timer must run on the session's websites in
+                            // ANY browser, not only the one browser recorded
+                            // as `browser_app`. The old condition required
+                            // an exact match with `browser_app` — and
+                            // `ids_match` is false when `browser_app` is
+                            // empty (no browser picked / no extension
+                            // paired) — so the timer could never run in any
+                            // browser at all. The domain itself decides
+                            // relevance below; the browser is incidental.
+                            if !sample.id.is_empty() && crate::focus::known_browser(&sample.id) {
                                 // In Standard mode the relevance list is the
                                 // attention work domains, unless the user
                                 // explicitly picked a website blocking mode —
@@ -3493,6 +4300,12 @@ impl Engine {
                                     && (browser.channel_blocked
                                         || !browser.active_domain.is_empty())
                                 {
+                                    if !browser.active_domain.is_empty() {
+                                        self.sticky_browser_domain = Some((
+                                            sample.id.clone(),
+                                            browser.active_domain.clone(),
+                                        ));
+                                    }
                                     // A search page whose query matches a keyword rule is
                                     // distracted, whatever the domain rules say: the engine
                                     // cannot see the query, so the extension's report is
@@ -3516,9 +4329,36 @@ impl Engine {
                                             )
                                         },
                                     );
+                                } else if let Some(native) = &native_site_for_session {
+                                    self.sticky_browser_domain =
+                                        Some((sample.id.clone(), native.domain.clone()));
+                                    // No extension report (disconnected or stale):
+                                    // fall back to the native page reader, which
+                                    // reads the active tab's domain through the
+                                    // Accessibility API — no extension needed. This
+                                    // is what lets the timer run on an allowed
+                                    // website (WhatsApp) and pause on a blocked one
+                                    // (Facebook) without the extension. A blank/new
+                                    // tab has no domain, so native_site is None
+                                    // there and browser_relevant stays unset — the
+                                    // timer pauses, exactly as the user asked.
+                                    signals.browser_relevant =
+                                        Some(browser_domain_relevant_with_exceptions(
+                                            &s.focus.mode,
+                                            &s.focus.website_blocking,
+                                            domains,
+                                            &s.focus.exceptions,
+                                            &native.domain,
+                                            s.focus.block_adult_content,
+                                            s.focus.youtube_allow_watch_later,
+                                        ));
+                                } else {
+                                    // A blank or unreadable page must never
+                                    // inherit the previous allowed site.
+                                    self.sticky_browser_domain = None;
                                 }
-                            } else if crate::focus::known_browser(&sample.id) {
-                                signals.browser_required = true;
+                            } else {
+                                self.sticky_browser_domain = None;
                             }
                             // Problem B: a lecture playing in the foreground
                             // exempts the session from the five-minute input
@@ -3674,6 +4514,39 @@ impl Engine {
                                 }
                                 .into();
                             }
+                        }
+                        if crate::focus::known_browser(&sample.id) {
+                            let native_domain = sampled_native_domain.or_else(|| {
+                                if cfg!(test) {
+                                    None
+                                } else {
+                                    crate::websites::native_site(&sample.id).map(|ns| ns.domain)
+                                }
+                            });
+                            let check_domain = native_domain.as_deref().or_else(|| {
+                                (browser.activity_fresh
+                                    && browser.browser_focused
+                                    && !browser.active_domain.is_empty())
+                                .then_some(browser.active_domain.as_str())
+                            });
+                            if let Some(domain) = check_domain {
+                                if self.is_domain_blocked_for_native_redirect(domain, now) {
+                                    if !browser_app_blocked {
+                                        self.maybe_notify_blocked_site(domain, now);
+                                    }
+                                    if !cfg!(test) {
+                                        crate::privileged_helper::redirect_blocked_tab_for_browser(
+                                            &sample.id, domain,
+                                        );
+                                    }
+                                } else {
+                                    self.last_blocked_site_seen = None;
+                                }
+                            } else {
+                                self.last_blocked_site_seen = None;
+                            }
+                        } else {
+                            self.last_blocked_site_seen = None;
                         }
                     }
                     Err(e) => {
@@ -3853,6 +4726,56 @@ impl Drop for Engine {
 mod tests {
     use super::*;
     use crate::focus::FocusConfig;
+
+    #[test]
+    fn test_compute_session_native_domains_youtube_handling() {
+        // 1. Blocklist mode, session has YouTube rules, browser extension connected:
+        // YouTube must NOT be blocked natively at the OS level (so the extension can filter it).
+        let policy_domains = vec!["instagram.com".to_string(), "youtube.com".to_string()];
+        let (doms, _) = compute_session_native_domains(&policy_domains, false, true, true);
+        assert!(doms.contains(&"instagram.com".to_string()));
+        assert!(!doms.contains(&"youtube.com".to_string()));
+        assert!(!doms.contains(&"www.youtube.com".to_string()));
+
+        // 2. Blocklist mode, session has YouTube rules, browser extension DISCONNECTED:
+        // YouTube MUST be completely blocked natively at the OS level.
+        let policy_domains = vec!["instagram.com".to_string()];
+        let (doms, _) = compute_session_native_domains(&policy_domains, false, true, false);
+        assert!(doms.contains(&"instagram.com".to_string()));
+        assert!(doms.contains(&"youtube.com".to_string()));
+        assert!(doms.contains(&"www.youtube.com".to_string()));
+        assert!(doms.contains(&"m.youtube.com".to_string()));
+        assert!(doms.contains(&"youtu.be".to_string()));
+
+        // 3. Blocklist mode, NO YouTube rules, user blocked instagram:
+        // YouTube is NOT blocked because session does not use YouTube rules.
+        let policy_domains = vec!["instagram.com".to_string()];
+        let (doms, _) = compute_session_native_domains(&policy_domains, false, false, false);
+        assert!(doms.contains(&"instagram.com".to_string()));
+        assert!(!doms.contains(&"youtube.com".to_string()));
+
+        // 4. Blocklist mode, NO YouTube rules, but user explicitly blocked youtube.com:
+        // YouTube stays blocked like any standard distracting site.
+        let policy_domains = vec!["youtube.com".to_string()];
+        let (doms, _) = compute_session_native_domains(&policy_domains, false, false, true);
+        assert!(doms.contains(&"youtube.com".to_string()));
+
+        // 5. Allowlist mode, session has YouTube rules, browser extension connected:
+        // YouTube is allowed in allowlist (doms) and NOT in distraction_blocks.
+        let policy_domains = vec!["notion.so".to_string()];
+        let (doms, distraction_blocks) =
+            compute_session_native_domains(&policy_domains, true, true, true);
+        assert!(doms.contains(&"youtube.com".to_string()));
+        assert!(!distraction_blocks.contains(&"youtube.com".to_string()));
+
+        // 6. Allowlist mode, session has YouTube rules, browser extension DISCONNECTED:
+        // YouTube is NOT in allowlist (doms) and IS in distraction_blocks (blocked).
+        let policy_domains = vec!["notion.so".to_string()];
+        let (doms, distraction_blocks) =
+            compute_session_native_domains(&policy_domains, true, true, false);
+        assert!(!doms.contains(&"youtube.com".to_string()));
+        assert!(distraction_blocks.contains(&"youtube.com".to_string()));
+    }
     /// Client UUID + browser report used by the network tests' fake extension.
     const TEST_CLIENT: &str = "11111111-1111-1111-1111-111111111111";
     const TEST_BROWSER: &str = "com.google.Chrome";
@@ -5714,7 +6637,13 @@ mod tests {
         e.anchor = clock::continuous_ms().saturating_sub(1_000);
         e.snapshot().unwrap();
         let s = &e.data.sessions[0];
-        assert_eq!(s.remaining_ms, 60_000, "jump must not shorten remaining");
+        // Only the ~1 s of real (monotonic) time may be credited — the
+        // 10-minute wall jump itself must never shorten the session.
+        assert!(
+            s.remaining_ms >= 58_000 && s.remaining_ms <= 60_000,
+            "jump must not shorten remaining, got {}",
+            s.remaining_ms
+        );
         assert!(s.report.events.iter().any(|ev| ev.kind == "clock_jump"));
         let delay_after = s.lock_state.delay_until_ms.expect("delay still pending");
         let shifted = delay_after - delay_before;
@@ -7521,5 +8450,413 @@ mod tests {
 
         // Now has_active_strict is false
         assert!(!engine.has_active_strict());
+    }
+
+    #[test]
+    fn screen_time_locks_and_adult_block_evaluate_cleanly_without_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("screentime-dns.sqlite");
+        let mut engine = Engine::open(&path).unwrap();
+        assert!(engine.bridge.is_none());
+
+        let now = crate::clock::now();
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+
+        // 1. Initially no locks or adult block
+        assert!(crate::applocks::locked_site_rules(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now
+        )
+        .is_empty());
+        assert!(!engine.data.adult_block.enabled);
+
+        // 2. Add a timed lock for 60 minutes
+        engine
+            .execute(Action::CreateAppLock {
+                title: "WhatsApp".into(),
+                kind: crate::allowances::TargetKind::Site,
+                target: "web.whatsapp.com".into(),
+                rule: crate::applocks::AppLockRuleInput::Timed { minutes: 60 },
+            })
+            .unwrap();
+
+        let locked = crate::applocks::locked_site_rules(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+        );
+        assert_eq!(locked, vec!["web.whatsapp.com".to_string()]);
+
+        // Publish runs without error even when bridge is None
+        engine.publish();
+
+        // 3. Add a daily limit lock for 60 minutes
+        engine
+            .execute(Action::CreateAppLock {
+                title: "123Movies".into(),
+                kind: crate::allowances::TargetKind::Site,
+                target: "123movies9.garden".into(),
+                rule: crate::applocks::AppLockRuleInput::DailyLimit { limit_minutes: 60 },
+            })
+            .unwrap();
+
+        // Before usage reaches 60m, it is not enforced
+        let locked_before = crate::applocks::locked_site_rules(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+        );
+        assert_eq!(locked_before, vec!["web.whatsapp.com".to_string()]);
+
+        // Record 61 minutes of Screen Time usage today
+        engine
+            .data
+            .screen_time_usage
+            .push(crate::models::ScreenTimeBucket {
+                day_ms,
+                kind: "site".into(),
+                target: "123movies9.garden".into(),
+                name: "123movies9.garden".into(),
+                ms: 61 * 60_000,
+            });
+
+        // Now daily limit is enforced and aggregated
+        let mut locked_after = crate::applocks::locked_site_rules(
+            &engine.data.app_locks,
+            &engine.data.screen_time_usage,
+            day_ms,
+            now,
+        );
+        locked_after.sort();
+        assert_eq!(
+            locked_after,
+            vec![
+                "123movies9.garden".to_string(),
+                "web.whatsapp.com".to_string()
+            ]
+        );
+
+        // 4. Enable adult block
+        engine
+            .execute(Action::SetAdultBlock {
+                enabled: true,
+                strict: false,
+                minutes: None,
+            })
+            .unwrap();
+        assert!(engine.data.adult_block.enabled);
+
+        // Publish runs cleanly without crashing or requiring bridge
+        engine.publish();
+
+        // 5. Test power pause lifts everything
+        engine.execute(Action::SetPower { enabled: false }).unwrap();
+        assert!(engine.is_paused());
+        assert!(!engine.is_domain_blocked_for_native_redirect("instagram.com", now));
+        engine.publish();
+    }
+
+    #[test]
+    fn native_redirect_checks_app_locks_adult_and_sessions_accurately() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("preelock.sqlite");
+        let mut engine = Engine::open(&db_path).unwrap();
+        let now = crate::clock::now();
+
+        // Site lock on instagram.com matches subdomains and never false-matches others.
+        engine
+            .execute(Action::CreateAppLock {
+                title: "Instagram".into(),
+                kind: crate::allowances::TargetKind::Site,
+                target: "instagram.com".into(),
+                rule: crate::applocks::AppLockRuleInput::Timed { minutes: 30 },
+            })
+            .unwrap();
+        assert!(engine.is_domain_blocked_for_native_redirect("instagram.com", now));
+        assert!(engine.is_domain_blocked_for_native_redirect("www.instagram.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("notinstagram.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("wikipedia.org", now));
+
+        // Focus session blocklist adds reddit.com without affecting wikipedia.org.
+        let created = engine
+            .execute(Action::CreateSession {
+                title: "Blocklist Session".into(),
+                minutes: 30,
+                allow_pause: true,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Standard,
+                    browser_app: "com.google.Chrome".into(),
+                    website_blocking: WebsiteBlocking::Blocklist,
+                    domains: vec!["reddit.com".into()],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let sid = created.sessions.last().unwrap().id.clone();
+        if let Some(s) = engine.data.sessions.iter_mut().find(|s| s.id == sid) {
+            s.status = Status::Running;
+        }
+        assert!(engine.is_domain_blocked_for_native_redirect("old.reddit.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("wikipedia.org", now));
+
+        // Adult block also triggers native redirect.
+        engine
+            .execute(Action::SetAdultBlock {
+                enabled: true,
+                strict: false,
+                minutes: None,
+            })
+            .unwrap();
+        assert!(engine.is_domain_blocked_for_native_redirect("pornhub.com", now));
+
+        // Paused Preelock lifts native redirect too.
+        engine.execute(Action::SetPower { enabled: false }).unwrap();
+        assert!(!engine.is_domain_blocked_for_native_redirect("www.instagram.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("old.reddit.com", now));
+    }
+
+    #[test]
+    fn blocked_site_notification_text_and_cooldown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("blocked-site-notify.sqlite")).unwrap();
+        let now = clock::now();
+
+        // 1. Timed site lock mentions remaining time.
+        engine.data.app_locks.push(crate::applocks::AppLock {
+            id: "l-timed".into(),
+            title: "Instagram".into(),
+            kind: crate::allowances::TargetKind::Site,
+            target: "instagram.com".into(),
+            rule: crate::applocks::LockRule::Timed {
+                ends_at_ms: now + 25 * 60_000,
+            },
+            enabled: true,
+            strict: false,
+            created_at: now,
+        });
+        let (title, body) = engine.blocked_site_notification_text("www.instagram.com", now);
+        assert!(title.contains("www.instagram.com"));
+        assert!(body.starts_with("This website is blocked for "));
+        assert!(body.contains("25m"));
+
+        // 2. Daily limit site lock says daily limit reached.
+        engine.data.app_locks.clear();
+        engine.data.app_locks.push(crate::applocks::AppLock {
+            id: "l-daily".into(),
+            title: "GitHub".into(),
+            kind: crate::allowances::TargetKind::Site,
+            target: "github.com".into(),
+            rule: crate::applocks::LockRule::DailyLimit { limit_ms: 60_000 },
+            enabled: true,
+            strict: false,
+            created_at: now,
+        });
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            day_ms,
+            "site",
+            "github.com",
+            "github.com",
+            60_000,
+        );
+        let (_t2, b2) = engine.blocked_site_notification_text("github.com", now);
+        assert!(b2.starts_with("This website is blocked"));
+
+        // 3. Adult block says "This website is blocked."
+        engine.data.adult_block.enabled = true;
+        let (_t3, b3) = engine.blocked_site_notification_text("pornhub.com", now);
+        assert_eq!(b3, "This website is blocked.");
+
+        // 4. Cooldown: first visit notifies, immediate next tick does not, leaving & returning after 5s notifies again.
+        assert!(engine.maybe_notify_blocked_site("instagram.com", now));
+        assert!(!engine.maybe_notify_blocked_site("instagram.com", now + 1_000));
+        engine.last_blocked_site_seen = None;
+        assert!(!engine.maybe_notify_blocked_site("instagram.com", now + 2_000));
+        engine.last_blocked_site_seen = None;
+        assert!(engine.maybe_notify_blocked_site("instagram.com", now + 6_000));
+    }
+
+    #[test]
+    fn daily_limit_milestones_fire_at_50_90_100_percent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("daily-milestones.sqlite")).unwrap();
+        let now = clock::now();
+        let day_ms = crate::screen_time::local_day_start_ms(now);
+
+        // 60-minute daily limit on instagram.com
+        engine.data.app_locks.push(crate::applocks::AppLock {
+            id: "l-ig".into(),
+            title: "Instagram".into(),
+            kind: crate::allowances::TargetKind::Site,
+            target: "instagram.com".into(),
+            rule: crate::applocks::LockRule::DailyLimit {
+                limit_ms: 60 * 60_000,
+            },
+            enabled: true,
+            strict: false,
+            created_at: now,
+        });
+
+        // 29m (48%): no notification, not blocked
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            day_ms,
+            "site",
+            "instagram.com",
+            "instagram.com",
+            29 * 60_000,
+        );
+        assert!(engine.evaluate_daily_limit_milestones(now).is_empty());
+        assert!(!engine.is_domain_blocked_for_native_redirect("instagram.com", now));
+
+        // +1m = 30m (50%): fires 50% once
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            day_ms,
+            "site",
+            "instagram.com",
+            "instagram.com",
+            60_000,
+        );
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(50, "instagram.com".to_string())]
+        );
+        assert!(engine.evaluate_daily_limit_milestones(now).is_empty());
+
+        // +24m = 54m (90%): fires 90% once
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            day_ms,
+            "site",
+            "instagram.com",
+            "instagram.com",
+            24 * 60_000,
+        );
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(90, "instagram.com".to_string())]
+        );
+        assert!(engine.evaluate_daily_limit_milestones(now).is_empty());
+        assert!(!engine.is_domain_blocked_for_native_redirect("instagram.com", now));
+
+        // +6m = 60m (100%): fires 100% once AND blocks the website
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            day_ms,
+            "site",
+            "instagram.com",
+            "instagram.com",
+            6 * 60_000,
+        );
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(100, "instagram.com".to_string())]
+        );
+        assert!(engine.evaluate_daily_limit_milestones(now).is_empty());
+        assert!(engine.is_domain_blocked_for_native_redirect("instagram.com", now));
+
+        // Next calendar day: resets and can notify again
+        let next_day = now + 86_400_000;
+        let next_day_ms = crate::screen_time::local_day_start_ms(next_day);
+        crate::screen_time::add_usage(
+            &mut engine.data.screen_time_usage,
+            next_day_ms,
+            "site",
+            "instagram.com",
+            "instagram.com",
+            30 * 60_000,
+        );
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(next_day),
+            vec![(50, "instagram.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn allowance_daily_milestones_fire_at_50_90_100_percent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("allowance-milestones.sqlite")).unwrap();
+        let now = clock::now();
+
+        engine.data.allowances.push(crate::allowances::Allowance {
+            id: "a-gh".into(),
+            title: "GitHub".into(),
+            kind: crate::allowances::TargetKind::Site,
+            target: "github.com".into(),
+            budget_minutes: 60,
+            period: crate::allowances::Period::Day,
+            mode: crate::allowances::ResetMode::Fixed,
+            enabled: true,
+            usage: vec![],
+            created_at: now,
+        });
+
+        crate::allowances::accrue(&mut engine.data.allowances[0], now, 30 * 60_000);
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(50, "github.com".to_string())]
+        );
+        crate::allowances::accrue(&mut engine.data.allowances[0], now, 24 * 60_000);
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(90, "github.com".to_string())]
+        );
+        crate::allowances::accrue(&mut engine.data.allowances[0], now, 6 * 60_000);
+        assert_eq!(
+            engine.evaluate_daily_limit_milestones(now),
+            vec![(100, "github.com".to_string())]
+        );
+        assert!(engine.is_domain_blocked_for_native_redirect("github.com", now));
+    }
+
+    #[test]
+    fn google_search_allowed_unless_explicitly_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Engine::open(&dir.path().join("google-search.sqlite")).unwrap();
+        let now = clock::now();
+
+        // 1. Allowlist session (e.g. Strict/Allowlist) allows google.com and www.google.com,
+        // while still blocking non-allowlisted websites like reddit.com.
+        let created = engine
+            .execute(Action::CreateSession {
+                title: "Strict Study".into(),
+                minutes: 30,
+                allow_pause: true,
+                focus: crate::focus::FocusConfig {
+                    mode: crate::focus::Mode::Strict,
+                    browser_app: "com.google.Chrome".into(),
+                    website_blocking: WebsiteBlocking::Allowlist,
+                    domains: vec!["github.com".into()],
+                    ..Default::default()
+                },
+                lock: Default::default(),
+                lock_password: None,
+            })
+            .unwrap();
+        let sid = created.sessions.last().unwrap().id.clone();
+        if let Some(s) = engine.data.sessions.iter_mut().find(|s| s.id == sid) {
+            s.status = Status::Running;
+        }
+        assert!(!engine.is_domain_blocked_for_native_redirect("google.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("www.google.com", now));
+        assert!(!engine.is_domain_blocked_for_native_redirect("github.com", now));
+        assert!(engine.is_domain_blocked_for_native_redirect("reddit.com", now));
+
+        // 2. Explicit blocklist rule for google.com still blocks google.com.
+        if let Some(s) = engine.data.sessions.iter_mut().find(|s| s.id == sid) {
+            s.focus.mode = crate::focus::Mode::Standard;
+            s.focus.website_blocking = WebsiteBlocking::Blocklist;
+            s.focus.domains = vec!["google.com".into()];
+        }
+        assert!(engine.is_domain_blocked_for_native_redirect("google.com", now));
+        assert!(engine.is_domain_blocked_for_native_redirect("www.google.com", now));
     }
 }

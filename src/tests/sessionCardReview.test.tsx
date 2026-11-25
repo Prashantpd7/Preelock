@@ -90,8 +90,10 @@ beforeEach(() => {
 });
 
 describe('SessionCard Before you start review', () => {
-  it('shows the exact session config before starting a saved session', async () => {
+  it('starts a saved session directly without requiring browser connection', async () => {
     const user = userEvent.setup();
+    const executeSpy = vi.fn().mockResolvedValue(true);
+    useAppStore.setState({ execute: executeSpy });
     render(
       <SessionCard
         session={session}
@@ -100,19 +102,16 @@ describe('SessionCard Before you start review', () => {
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Start session' }));
+    expect(executeSpy).toHaveBeenCalledWith({
+      type: 'start_session',
+      id: 's1',
+    });
     expect(
-      await screen.findByRole('heading', { name: 'Before you start' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Focus App')).toBeInTheDocument();
-    expect(screen.getByText('youtube.com')).toBeInTheDocument();
-    expect(screen.getByText('@mkbhd')).toBeInTheDocument();
-    expect(screen.getByText('Chrome')).toBeInTheDocument();
-    expect(
-      screen.getByText(/Browser extension is not connected/),
-    ).toBeInTheDocument();
+      screen.queryByRole('heading', { name: 'Before you start' }),
+    ).not.toBeInTheDocument();
   });
 
-  it('requires browser readiness for YouTube-channel-only sessions and skips macOS camera warning on Windows', async () => {
+  it('starts YouTube-channel-only sessions on Windows without requiring browser or camera popup', async () => {
     const ytAndCamSession = {
       ...session,
       focus: {
@@ -136,6 +135,8 @@ describe('SessionCard Before you start review', () => {
       browsers: [{ id: 'chrome.exe', name: 'Chrome' }],
     };
     vi.mocked(api.focusSetup).mockResolvedValue(windowsSetup);
+    const executeSpy = vi.fn().mockResolvedValue(true);
+    useAppStore.setState({ execute: executeSpy });
     const user = userEvent.setup();
     render(
       <SessionCard
@@ -145,12 +146,13 @@ describe('SessionCard Before you start review', () => {
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Start session' }));
+    expect(executeSpy).toHaveBeenCalledWith({
+      type: 'start_session',
+      id: 's1',
+    });
     expect(
-      await screen.findByRole('heading', { name: 'Before you start' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Browser extension is not connected/),
-    ).toBeInTheDocument();
+      screen.queryByRole('heading', { name: 'Before you start' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/Camera permission/)).not.toBeInTheDocument();
   });
 });

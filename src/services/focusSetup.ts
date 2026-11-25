@@ -1,4 +1,3 @@
-import { sameBrowser, sessionBrowsers } from '../types';
 import type { FocusConfig, FocusSetup } from '../types';
 export const splitDomains = (value: string) =>
   value
@@ -11,39 +10,8 @@ export function setupProblem(
   consent = true,
 ) {
   const p = focus.attention!;
-  const network =
-    (focus.mode === 'strict' && !!focus.browser_app) ||
-    !focus.general_internet ||
-    focus.domains.length > 0 ||
-    p.work_domains.length > 0 ||
-    // YouTube channel rules need the extension too, so a session
-    // with only channel rules still requires a browser connection.
-    // The Watch-Later toggle alone is not a rule (see
-    // FocusConfig::network_required in focus.rs).
-    (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
-    (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
-    !!focus.youtube_study_mode ||
-    !!focus.youtube_block_entertainment;
-  // Step 12: a frozen session with a picked browser needs that
-  // browser connected (the backend preflight requires it), but a
-  // frozen session with no picked browser does not need one
-  // chosen — its policy applies to any browser, and the sampler
-  // blocks browser apps not in the frozen allowlist anyway.
-  const frozenNetwork = !!focus.frozen?.enabled && !!focus.browser_app;
-  const needsConnection = network || frozenNetwork;
   if (!setup?.native_available)
     return 'App checking is unavailable on this device.';
-  if (network && !focus.browser_app)
-    return 'No browser detected — open Comet, Chrome, Edge, Brave or Vivaldi, then refresh apps.';
-  // A connection from a different browser than the one picked — or one
-  // that cannot say which browser it is in — does not count.
-  const browserMismatch =
-    !setup?.browser.client_browser ||
-    !sameBrowser(focus.browser_app, setup.browser.client_browser);
-  if (needsConnection && (!setup?.browser.connected || browserMismatch))
-    return 'Connect the browser extension below, then check again.';
-  if (needsConnection && setup?.browser.error)
-    return 'Reconnect the extension below.';
   if (focus.website_blocking === 'allowlist' && focus.domains.length === 0)
     return 'List at least one website to keep open, or pick a different blocking option.';
   if (
@@ -93,33 +61,12 @@ export function missingPrerequisites(
   const none = { browser: false, camera: false };
   if (!setup || !setup.native_available) return none;
   const p = focus.attention!;
-  const network =
-    (focus.mode === 'strict' && !!focus.browser_app) ||
-    !focus.general_internet ||
-    focus.domains.length > 0 ||
-    p.work_domains.length > 0 ||
-    (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
-    (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
-    !!focus.youtube_study_mode ||
-    !!focus.youtube_block_entertainment;
-  const frozenNetwork = !!focus.frozen?.enabled && !!focus.browser_app;
-  const needsConnection = network || frozenNetwork;
-  const sessionBrowserIds = sessionBrowsers(focus);
-  const connectedIds = setup.connected_browsers ?? [];
-  const unpairedBrowsers = sessionBrowserIds.filter(
-    (id) => !connectedIds.some((c) => sameBrowser(c, id)),
-  );
-  const browserOk =
-    !!setup.browser.connected &&
-    !setup.browser.error &&
-    (!focus.browser_app ||
-      (!!setup.browser.client_browser &&
-        sameBrowser(focus.browser_app, setup.browser.client_browser))) &&
-    unpairedBrowsers.length === 0;
   const needsCamera =
     focus.camera === true || p.verification === 'camera_and_activity';
   return {
-    browser: needsConnection && !browserOk,
+    // Browser extension connection is optional: native DNS/hosts/AX enforcement
+    // handles website blocking without requiring a paired browser extension.
+    browser: false,
     camera:
       needsCamera &&
       setup.platform !== 'windows' &&

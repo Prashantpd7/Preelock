@@ -117,19 +117,15 @@ describe('SessionConfirmDialog', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
   });
 
-  it('asks to connect browser before starting when extension is not connected', async () => {
+  it('starts the session directly even when the extension is not connected', async () => {
     const user = userEvent.setup();
-    const onConnectBrowser = vi.fn();
     const { onStart } = renderDialog({
       browserConnected: false,
-      onConnectBrowser,
     });
     await user.click(screen.getByRole('button', { name: 'Start session' }));
-    expect(onStart).not.toHaveBeenCalled();
+    expect(onStart).toHaveBeenCalledTimes(1);
     expect(
-      screen.getByText('Browser extension is not connected.'),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Connect browser' }));
-    expect(onConnectBrowser).toHaveBeenCalledTimes(1);
+      screen.queryByText('Connect browser before starting?'),
+    ).not.toBeInTheDocument();
   });
 });

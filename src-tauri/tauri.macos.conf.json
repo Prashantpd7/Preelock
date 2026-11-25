@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": {
+      "dns-proxy/build/preelock-dns-proxy": "binaries/preelock-dns-proxy",
+      "helper/build/preelock-helper": "binaries/preelock-helper",
+      "dns-proxy/policies/doh_endpoints.json": "dns-proxy/policies/doh_endpoints.json",
+      "dns-proxy/policies/adult-domains.txt": "dns-proxy/policies/adult-domains.txt"
+    }
+  }
+}

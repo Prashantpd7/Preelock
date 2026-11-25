@@ -160,6 +160,13 @@ impl FocusConfig {
             // session would browse unfiltered.
             || self.frozen.enabled
     }
+    pub fn has_youtube_rules(&self) -> bool {
+        !self.youtube_blocked_channels.is_empty()
+            || !self.youtube_allowed_channels.is_empty()
+            || self.youtube_study_mode
+            || self.youtube_block_entertainment
+            || self.youtube_allow_watch_later
+    }
     /// The single browser this session's website rules cover. One browser
     /// per session: the engine requires it to be paired before the
     /// session starts.
@@ -469,6 +476,13 @@ pub fn protected(id: &str) -> bool {
         "com.apple.finder",
         "com.apple.systempreferences",
         "com.apple.activitymonitor",
+        // Recovery tools must always stay reachable, even during a
+        // strict allowlist session: a focus app must never lock the
+        // user out of the tools needed to recover from its own failure.
+        "com.apple.terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.warp-stable",
+        "com.apple.console",
         "com.apple.loginwindow",
         "com.apple.securityagent",
         "com.apple.systemuiserver",
@@ -505,6 +519,7 @@ pub fn supported_browser(id: &str) -> bool {
         "company.thebrowser.browser",
         "com.operasoftware.opera",
         "com.operasoftware.operagx",
+        "com.apple.safari",
     ]
     .contains(&id.as_str())
         || [
@@ -516,6 +531,7 @@ pub fn supported_browser(id: &str) -> bool {
             "comet.exe",
             "arc.exe",
             "opera.exe",
+            "safari.exe",
         ]
         .iter()
         .any(|name| id.ends_with(&format!("\\{name}")) || id == *name)
@@ -1099,18 +1115,6 @@ pub fn validate(mut config: FocusConfig) -> Result<FocusConfig, String> {
     // browser app not in the frozen allowed-apps list anyway).
     // A frozen session WITH a picked browser still needs that
     // browser to be supported, like any other session.
-    // Session-specific Safari restriction (Safari has no Preelock
-    // extension): a session whose website rules the extension must enforce
-    // cannot approve Safari as a work app either, not just as its browser.
-    // Only checked where browser rules exist — Safari as a plain app in a
-    // session without website blocking is untouched, and Safari keeps
-    // running and being tracked normally.
-    if config.network_required() && config.safari_approved() {
-        return Err(
-            "Safari can't enforce this session's website rules. Choose a supported browser for the session, or remove Safari from your work apps."
-                .into(),
-        );
-    }
     let needs_browser_pick =
         config.network_required() && !(config.frozen.enabled && config.browser_app.is_empty());
     if needs_browser_pick && !supported_browser(&config.browser_app) {
@@ -1220,7 +1224,8 @@ mod tests {
         assert!(protected(
             "C:\\work\\preelock\\target\\release\\preelock.exe"
         ));
-        assert!(!protected("com.apple.Terminal"));
+        assert!(protected("com.apple.Terminal"));
+        assert!(protected("com.apple.ActivityMonitor"));
         // blocked_sample must never flag Preelock itself, so a strict
         // session can never strand the user with no way to stop it.
         let strict = FocusConfig {
@@ -1234,7 +1239,7 @@ mod tests {
             "",
             "Preelock"
         ));
-        assert!(strict.blocked_sample("com.apple.Terminal", "", "Terminal"));
+        assert!(!strict.blocked_sample("com.apple.Terminal", "", "Terminal"));
     }
     #[test]
     fn comet_pairing_and_app_only_strict_policy() {
@@ -1809,35 +1814,34 @@ mod safari_session_rules {
         c
     }
     #[test]
-    fn safari_is_known_without_extension_support() {
+    fn safari_is_known_and_supported() {
         assert!(safari("com.apple.Safari"));
         assert!(safari("C:\\Program Files\\Safari\\Safari.exe"));
         assert!(known_browser("com.apple.Safari"));
-        assert!(!supported_browser("com.apple.Safari"));
+        assert!(supported_browser("com.apple.Safari"));
         assert!(!safari("com.google.Chrome"));
     }
     #[test]
-    fn safari_work_app_is_rejected_when_the_session_blocks_websites() {
-        let mut c = config();
-        c.attention.work_apps.push("com.apple.Safari".into());
-        let err = validate(c).unwrap_err();
-        assert!(err.contains("Safari"), "{err}");
-    }
-    #[test]
-    fn safari_as_the_session_browser_is_rejected() {
+    fn safari_work_app_is_allowed_when_the_session_blocks_websites() {
         let mut c = config();
         c.browser_app = "com.apple.Safari".into();
-        let err = validate(c).unwrap_err();
-        assert!(err.contains("Safari"), "{err}");
+        c.attention.work_apps.push("com.apple.Safari".into());
+        assert!(validate(c).is_ok());
     }
     #[test]
-    fn strict_sessions_cannot_allowlist_safari() {
+    fn safari_as_the_session_browser_is_allowed() {
+        let mut c = config();
+        c.browser_app = "com.apple.Safari".into();
+        assert!(validate(c).is_ok());
+    }
+    #[test]
+    fn strict_sessions_can_allowlist_safari() {
         let mut c = config();
         c.mode = Mode::Strict;
         c.website_blocking = WebsiteBlocking::Allowlist;
+        c.browser_app = "com.apple.Safari".into();
         c.apps = vec!["com.apple.Safari".into()];
-        let err = validate(c).unwrap_err();
-        assert!(err.contains("Safari"), "{err}");
+        assert!(validate(c).is_ok());
     }
     #[test]
     fn blocking_safari_or_using_it_without_website_rules_stays_valid() {

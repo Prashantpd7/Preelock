@@ -282,9 +282,9 @@ describe('missingPrerequisites', () => {
     });
   });
 
-  it('reports the browser only when website blocking needs one and it is not connected', () => {
+  it('never reports browser as missing even when website blocking is on and extension is disconnected', () => {
     expect(missingPrerequisites(browserFocus(), disconnectedSetup())).toEqual({
-      browser: true,
+      browser: false,
       camera: false,
     });
     expect(missingPrerequisites(browserFocus(), connectedSetup())).toEqual({
@@ -293,12 +293,12 @@ describe('missingPrerequisites', () => {
     });
   });
 
-  it('reports the browser when the connected extension lives in another browser', () => {
+  it('never reports browser as missing when the connected extension lives in another browser', () => {
     const wrong = connectedSetup();
     wrong.browser.client_browser = 'com.brave.browser';
     wrong.connected_browsers = ['com.brave.browser'];
     expect(missingPrerequisites(browserFocus(), wrong)).toEqual({
-      browser: true,
+      browser: false,
       camera: false,
     });
   });
@@ -333,14 +333,14 @@ describe('missingPrerequisites', () => {
     });
   });
 
-  it('reports both when both are missing', () => {
+  it('reports only camera when both browser is disconnected and camera is missing', () => {
     const both = { ...browserFocus(), camera: true };
     const setup = {
       ...disconnectedSetup(),
       camera_permission: 'denied',
     };
     expect(missingPrerequisites(both, setup)).toEqual({
-      browser: true,
+      browser: false,
       camera: true,
     });
   });
@@ -427,24 +427,20 @@ describe('minutesUntilStart', () => {
 });
 
 describe('PreSessionWarning popup', () => {
-  it('warns a schedule starting in 5 minutes with a disconnected browser', async () => {
+  it('warns a schedule starting in 5 minutes with a plain notice even when browser is disconnected', async () => {
     const schedule = makeSchedule({ focus: browserFocus() });
     setData({ schedules: [schedule] });
     render(<PreSessionWarning />);
-    // The title flips to the browser variant once the per-session
-    // setup check lands, so wait for the text, not just the dialog.
-    // findByRole (not a sync getByRole) because the native <dialog>
-    // only exposes the dialog role once Modal's showModal effect
-    // has run — under load the text can land first.
-    await screen.findByText('Connect browser to start this session');
     const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Session starting soon');
     expect(dialog).toHaveTextContent(schedule.title);
     expect(dialog).toHaveTextContent(/starts in \d+ minutes/);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Connect browser' }));
     expect(
-      await screen.findByText(/Step 1: Select and install a browser extension/),
-    ).toBeVisible();
+      screen.queryByText('Connect browser to start this session'),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Connect browser' }),
+    ).toBeNull();
   });
 
   it('warns a one-shot starting in 5 minutes with camera access missing', async () => {
@@ -506,7 +502,7 @@ describe('PreSessionWarning popup', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('shows the popup again at start time when the browser is still missing', async () => {
+  it('does not show the at-start popup when only the browser is disconnected', async () => {
     const session = makeSession({
       title: 'Morning block',
       schedule_id: 'sched1',
@@ -526,11 +522,8 @@ describe('PreSessionWarning popup', () => {
     });
     setData({ sessions: [session] });
     render(<PreSessionWarning />);
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent(
-      /started, but the browser is not connected/,
-    );
-    await screen.findByText('Connect browser to start this session');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('does not show the at-start popup for a manual live session', async () => {
@@ -544,14 +537,14 @@ describe('PreSessionWarning popup', () => {
   it('retries live warning check after transient focusSetup failure and closes when the live session ends', async () => {
     vi.mocked(api.focusSetup)
       .mockRejectedValueOnce(new Error('transient'))
-      .mockResolvedValue(disconnectedSetup());
+      .mockResolvedValue(cameraMissingSetup());
     const live = makeSession({
       id: 'live-retry-1',
       title: 'Morning block',
       schedule_id: 'sched1',
       status: 'running',
       started_at: Date.now(),
-      focus: browserFocus(),
+      focus: cameraFocus(),
     });
     setData({ sessions: [live] });
     render(<PreSessionWarning />);

@@ -128,12 +128,10 @@ it('shows Block these channels and Block all entertainment content under YouTube
     screen.getByRole('checkbox', { name: 'Block all entertainment content' }),
   ).toBeInTheDocument();
   expect(
-    screen.queryByRole('checkbox', { name: 'Block all except these' }),
-  ).not.toBeInTheDocument();
+    screen.getByRole('checkbox', { name: 'Allow Watch Later playlist only' }),
+  ).toBeInTheDocument();
   expect(
-    screen.queryByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
+    screen.queryByRole('checkbox', { name: 'Block all except these' }),
   ).not.toBeInTheDocument();
 
   await user.click(
@@ -162,7 +160,7 @@ it('shows Block these channels and Block all entertainment content under YouTube
   );
 });
 
-it('shows Allow Watch Later playlist dynamically at the bottom of Website blocking when typing rules block YouTube', async () => {
+it('shows Allow Watch Later playlist only under YouTube blocking and not under Website blocking', async () => {
   const user = userEvent.setup();
   await openAppsStep(user);
   await user.click(screen.getByRole('checkbox', { name: 'Website blocking' }));
@@ -172,68 +170,39 @@ it('shows Allow Watch Later playlist dynamically at the bottom of Website blocki
   expect(
     screen.getByRole('checkbox', { name: 'Block all websites except these' }),
   ).toBeInTheDocument();
+  expect(
+    screen.queryByRole('checkbox', {
+      name: /Allow Watch Later playlist/i,
+    }),
+  ).not.toBeInTheDocument();
 
-  // Blocklist: Watch Later is hidden until user enters YouTube.
+  // Blocklist: Watch Later is NOT under Website blocking even if user types youtube.com
   await user.click(
     screen.getByRole('checkbox', { name: 'Block distracting websites' }),
   );
-  expect(
-    screen.queryByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  ).not.toBeInTheDocument();
-
   const blockInput = screen.getByLabelText('Websites to block');
-  await user.type(blockInput, 'instagram.com');
+  await user.type(blockInput, 'youtube.com');
   expect(
     screen.queryByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
+      name: /Allow Watch Later playlist/i,
     }),
   ).not.toBeInTheDocument();
 
-  await user.type(blockInput, '{enter}youtube.com');
+  // Enable YouTube blocking: it has the three options
+  await user.click(screen.getByRole('checkbox', { name: 'YouTube blocking' }));
+  expect(
+    screen.getByRole('checkbox', { name: 'Block these channels' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('checkbox', { name: 'Block all entertainment content' }),
+  ).toBeInTheDocument();
   const watchLater = screen.getByRole('checkbox', {
-    name: 'Allow Watch Later playlist when YouTube is blocked',
+    name: 'Allow Watch Later playlist only',
   });
   expect(watchLater).toBeInTheDocument();
   await user.click(watchLater);
   expect(watchLater).toBeChecked();
-  await user.click(watchLater);
-  expect(watchLater).not.toBeChecked();
 
-  // Removing youtube.com hides Watch Later immediately; switch to allowlist shows it
-  // when YouTube is omitted, and hides it as soon as youtube.com is kept open.
-  await user.clear(blockInput);
-  await user.type(blockInput, 'reddit.com');
-  expect(
-    screen.queryByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  ).not.toBeInTheDocument();
-
-  await user.click(
-    screen.getByRole('checkbox', { name: 'Block all websites except these' }),
-  );
-  expect(
-    screen.getByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  ).toBeInTheDocument();
-
-  const allowInput = screen.getByLabelText('Websites to keep open');
-  await user.type(allowInput, '{enter}youtube.com');
-  expect(
-    screen.queryByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  ).not.toBeInTheDocument();
-
-  await user.clear(allowInput);
-  await user.type(allowInput, 'docs.python.org');
-  const watchLaterAllowlist = screen.getByRole('checkbox', {
-    name: 'Allow Watch Later playlist when YouTube is blocked',
-  });
-  await user.click(watchLaterAllowlist);
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   vi.mocked(api.execute).mockResolvedValue(emptySnapshot);
   await user.click(screen.getByRole('button', { name: 'Create session' }));
@@ -242,8 +211,8 @@ it('shows Allow Watch Later playlist dynamically at the bottom of Website blocki
     expect.objectContaining({
       type: 'create_session',
       focus: expect.objectContaining({
-        website_blocking: 'allowlist',
-        domains: ['docs.python.org'],
+        website_blocking: 'blocklist',
+        domains: ['youtube.com'],
         youtube_allow_watch_later: true,
       }),
     }),
@@ -304,11 +273,6 @@ it('restores saved YouTube and Website blocking rules when a saved setup is appl
   ).toBeChecked();
   expect(screen.getByLabelText('Websites to block')).toHaveValue('youtube.com');
   expect(
-    screen.getByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  ).toBeChecked();
-  expect(
     screen.getByRole('checkbox', { name: 'YouTube blocking' }),
   ).toBeChecked();
   expect(
@@ -320,6 +284,11 @@ it('restores saved YouTube and Website blocking rules when a saved setup is appl
   expect(
     screen.getByRole('checkbox', { name: 'Block all entertainment content' }),
   ).toBeChecked();
+  expect(
+    screen.getByRole('checkbox', {
+      name: 'Allow Watch Later playlist only',
+    }),
+  ).toBeChecked();
 });
 
 it('ignores inactive channel input and hidden YouTube/Website controls when turned off', async () => {
@@ -330,11 +299,6 @@ it('ignores inactive channel input and hidden YouTube/Website controls when turn
     screen.getByRole('checkbox', { name: 'Block distracting websites' }),
   );
   await user.type(screen.getByLabelText('Websites to block'), 'youtube.com');
-  await user.click(
-    screen.getByRole('checkbox', {
-      name: 'Allow Watch Later playlist when YouTube is blocked',
-    }),
-  );
   await user.click(screen.getByRole('checkbox', { name: 'YouTube blocking' }));
   await user.click(
     screen.getByRole('checkbox', { name: 'Block these channels' }),
@@ -345,6 +309,11 @@ it('ignores inactive channel input and hidden YouTube/Website controls when turn
   );
   await user.click(
     screen.getByRole('checkbox', { name: 'Block all entertainment content' }),
+  );
+  await user.click(
+    screen.getByRole('checkbox', {
+      name: 'Allow Watch Later playlist only',
+    }),
   );
 
   // Untick both Website blocking and YouTube blocking -> hidden invalid

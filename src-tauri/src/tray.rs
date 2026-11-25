@@ -155,6 +155,21 @@ pub fn wait_for_release(data_dir: &Path, timeout: Duration) -> bool {
 
 /// The live session, if any — Running, Paused, or Preparing.
 /// Same predicate as the engine's `has_active` and the GUI tray.
+/// The wall-clock end of a live session. `deadline_ms` is authoritative;
+/// `started_at + duration` is the fallback for a session whose deadline
+/// was not persisted (the engine can be killed between starting the
+/// session and writing it), so a watchdog always knows when to act.
+pub fn session_end_ms(session: &Session) -> Option<i64> {
+    if session.focus.attention.enabled {
+        return session.deadline_ms;
+    }
+    session.deadline_ms.or_else(|| {
+        session.started_at.map(|start| {
+            start.saturating_add(i64::from(session.duration_minutes).saturating_mul(60_000))
+        })
+    })
+}
+
 pub fn live_session(snapshot: &Snapshot) -> Option<&Session> {
     if snapshot.preferences.paused {
         return None;
@@ -190,7 +205,18 @@ pub fn timer_text(session: &Session, now_ms: i64) -> String {
         let secs = crate::notifications::grace_remaining_secs(session.grace_until_ms, now_ms);
         return format!("Starting in {secs}s");
     }
-    let secs = session.remaining_ms / 1000;
+    // The menu-bar countdown ticks from the session's deadline on the
+    // local clock, never from a freshly polled `remaining_ms`. If the
+    // engine is slow or dead, the stored snapshot stops changing — and a
+    // countdown frozen at 00:58 was exactly the 2026-11-24 stuck session.
+    let secs = if session.status == Status::Running {
+        session
+            .deadline_ms
+            .map(|deadline| (deadline - now_ms).max(0) as u64 / 1000)
+            .unwrap_or(session.remaining_ms / 1000)
+    } else {
+        session.remaining_ms / 1000
+    };
     let clock = format!("{:02}:{:02}", secs / 60, secs % 60);
     match session.status {
         Status::Paused => format!("Paused - {clock}"),
@@ -476,6 +502,34 @@ mod tests {
         let mut grace = test_session(Status::Running, 90_000);
         grace.grace_until_ms = Some(now + 42_000);
         assert_eq!(timer_text(&grace, now), "Starting in 42s");
+    }
+
+    #[test]
+    fn session_end_prefers_deadline_and_falls_back_to_started_at() {
+        let mut session = test_session(Status::Running, 90_000);
+        session.started_at = Some(1_000_000);
+        assert_eq!(
+            session_end_ms(&session),
+            Some(1_000_000 + 25 * 60_000),
+            "a session killed before persisting its deadline still has an end"
+        );
+        session.deadline_ms = Some(5_000_000);
+        assert_eq!(session_end_ms(&session), Some(5_000_000));
+        session.started_at = None;
+        session.deadline_ms = None;
+        assert_eq!(session_end_ms(&session), None);
+    }
+
+    #[test]
+    fn timer_text_ticks_from_the_deadline_not_the_snapshot() {
+        // A frozen snapshot (same object) must still count down as the
+        // local clock advances: the menu-bar timer is not engine-driven.
+        let now = 1_000_000i64;
+        let mut session = test_session(Status::Running, 90_000);
+        session.deadline_ms = Some(now + 42_000);
+        assert_eq!(timer_text(&session, now), "00:42 left");
+        assert_eq!(timer_text(&session, now + 30_000), "00:12 left");
+        assert_eq!(timer_text(&session, now + 60_000), "00:00 left");
     }
 
     #[test]

@@ -12,6 +12,7 @@ unsafe extern "C" {
     fn preelock_camera_status() -> *mut c_char;
     fn preelock_app_icon(identity: *const c_char) -> *mut c_char;
     fn preelock_hide_from_dock();
+    fn preelock_init_background_daemon();
     fn preelock_pump_runloop(seconds: f64);
     fn preelock_activate_app();
     fn preelock_request_gui_activation(source: *const c_char, correlation: *const c_char) -> i32;
@@ -80,6 +81,10 @@ pub fn app_icon(identity: &str) -> Option<String> {
 /// once the app exists; harmless if called again.
 pub fn hide_from_dock() {
     unsafe { preelock_hide_from_dock() };
+}
+/// Sets the process type permanently to background-only so it never appears in the macOS Dock.
+pub fn init_background_daemon() {
+    unsafe { preelock_init_background_daemon() };
 }
 /// Install the notification-centre delegate in the GUI process.
 pub fn install_notification_delegate() {
@@ -176,6 +181,7 @@ pub fn installed_browsers() -> Vec<Application> {
         ("company.thebrowser.Browser", "Arc", "Arc.app"),
         ("com.operasoftware.Opera", "Opera", "Opera.app"),
         ("com.operasoftware.OperaGX", "Opera GX", "Opera GX.app"),
+        ("com.apple.Safari", "Safari", "Safari.app"),
     ];
     let user_apps = std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join("Applications"))
@@ -184,6 +190,9 @@ pub fn installed_browsers() -> Vec<Application> {
         .iter()
         .filter(|(_, _, app)| {
             std::path::Path::new("/Applications").join(app).exists()
+                || std::path::Path::new("/System/Applications")
+                    .join(app)
+                    .exists()
                 || user_apps
                     .as_ref()
                     .map(|p| p.join(app).exists())

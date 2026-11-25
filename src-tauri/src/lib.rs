@@ -13,6 +13,7 @@ pub mod cli;
 mod clock;
 pub mod database;
 mod desktop_settings;
+pub mod dns_proxy;
 pub(crate) mod engine;
 pub(crate) mod engine_lock;
 pub mod focus;
@@ -22,10 +23,12 @@ pub mod launch;
 mod lifecycle;
 pub mod lifecycle_log;
 mod locks;
+pub mod macos_hosts;
 pub mod models;
 mod notifications;
 pub mod platform;
 pub mod pomodoro;
+pub mod privileged_helper;
 mod quit;
 mod rewards;
 mod schedules;
@@ -37,6 +40,8 @@ mod stats;
 mod tamper;
 pub mod tray;
 pub mod websites;
+pub mod windows_firewall;
+pub mod windows_hosts;
 use ipc::IpcClient;
 use models::{Action, Snapshot};
 use std::sync::{
@@ -281,6 +286,69 @@ async fn settings_action(
         .await
         .map_err(|e| e.to_string())?
 }
+#[tauri::command]
+fn dns_proxy_status() -> serde_json::Value {
+    dns_proxy::get_status()
+}
+#[tauri::command]
+fn get_dns_consent() -> Option<bool> {
+    dns_proxy::has_user_consent()
+}
+#[tauri::command]
+fn set_dns_consent(granted: bool) -> Result<(), String> {
+    dns_proxy::set_user_consent(granted)
+}
+#[tauri::command]
+fn is_native_blocking_setup_required() -> bool {
+    dns_proxy::is_admin_setup_required()
+}
+#[tauri::command]
+fn setup_native_blocking() -> Result<(), String> {
+    dns_proxy::run_admin_setup()
+}
+#[tauri::command]
+fn is_privileged_helper_installed() -> bool {
+    let installed = privileged_helper::is_helper_installed();
+    log::info!("[COMMAND] is_privileged_helper_installed -> {installed}");
+    installed
+}
+#[tauri::command]
+fn install_privileged_helper() -> Result<(), String> {
+    log::info!("[COMMAND] install_privileged_helper invoked");
+    let result = privileged_helper::run_admin_install_helper();
+    match &result {
+        Ok(()) => log::info!("[COMMAND] install_privileged_helper succeeded"),
+        Err(e) => log::error!("[COMMAND] install_privileged_helper failed: {e}"),
+    }
+    result
+}
+#[tauri::command]
+fn uninstall_privileged_helper() -> Result<(), String> {
+    log::info!("[COMMAND] uninstall_privileged_helper invoked");
+    let result = privileged_helper::uninstall_helper();
+    match &result {
+        Ok(()) => log::info!("[COMMAND] uninstall_privileged_helper succeeded"),
+        Err(e) => log::error!("[COMMAND] uninstall_privileged_helper failed: {e}"),
+    }
+    result
+}
+#[tauri::command]
+fn get_system_blocking_status() -> serde_json::Value {
+    privileged_helper::get_system_blocking_status()
+}
+#[tauri::command]
+fn flush_system_blocks() -> Result<(), String> {
+    log::info!("[COMMAND] flush_system_blocks invoked");
+    privileged_helper::flush_all_blocks()
+}
+#[tauri::command]
+fn restart_background_engine() -> Result<(), String> {
+    log::info!("[COMMAND] restart_background_engine invoked by user");
+    let dir = std::env::var_os("PREELOCK_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| background::data_dir().unwrap_or_default());
+    background::manual_restart_background(&dir)
+}
 fn show_window(app: &tauri::AppHandle) {
     log::info!("lifecycle event=window_show");
     // M6: the window is visible again, so later tray-menu rebuilds
@@ -337,6 +405,115 @@ fn blocked_quit(app: &tauri::AppHandle) {
     );
 }
 
+/// Marks live sessions completed directly in SQLite (best effort). Used by
+/// the watchdog and the startup safety net when the engine cannot be
+/// reached, so a dead engine can never resurrect a finished session.
+fn mark_sessions_completed(data_dir: &std::path::Path, only: Option<&str>) {
+    let path = crate::cli::db_path(data_dir);
+    let Ok(mut db) = crate::database::Database::open(&path) else {
+        return;
+    };
+    let Ok(mut data) = db.load() else {
+        return;
+    };
+    let now = crate::clock::now();
+    let mut changed = false;
+    for session in &mut data.sessions {
+        if only.is_none_or(|id| session.id == id)
+            && matches!(
+                session.status,
+                models::Status::Running | models::Status::Paused | models::Status::Preparing
+            )
+        {
+            session.status = models::Status::Completed;
+            session.ended_at = Some(now);
+            session.deadline_ms = None;
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = db.save(&data);
+    }
+}
+
+/// Startup safety net: remove blocks that no live session owns.
+///
+/// A crash, force-quit, or stuck session must never leave the machine
+/// blocked after a relaunch. Blocks are kept only when a live session is
+/// in the store AND a background engine is actually alive to own it.
+fn startup_safety_net(data_dir: &std::path::Path) {
+    let client = IpcClient::new(data_dir);
+    let db_path = crate::cli::db_path(data_dir);
+    let live_from_store = crate::cli::load_snapshot_readonly(&db_path)
+        .map(|snapshot| {
+            !snapshot.preferences.paused
+                && snapshot.sessions.iter().any(|session| {
+                    matches!(
+                        session.status,
+                        models::Status::Running
+                            | models::Status::Paused
+                            | models::Status::Preparing
+                    )
+                })
+        })
+        .unwrap_or_else(|_| {
+            crate::lifecycle::read_checkpoint(&db_path.with_extension("lifecycle.json"))
+                .and_then(|checkpoint| checkpoint.active_session)
+                .is_some_and(|session| {
+                    matches!(session.status.as_str(), "running" | "paused" | "preparing")
+                })
+        });
+
+    // Give a just-started engine a moment to take its lock before
+    // declaring the stored session orphaned.
+    let mut engine_alive = client.ping().is_ok();
+    for _ in 0..15 {
+        if engine_alive || crate::background::engine_process_alive(data_dir) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        engine_alive = client.ping().is_ok();
+    }
+    let engine_alive = engine_alive || crate::background::engine_process_alive(data_dir);
+
+    if live_from_store && !engine_alive {
+        // A durable checkpoint that expects a resume is NOT an orphan. After
+        // an OS shutdown/restart the engine has not started yet when this
+        // runs (the GUI is the one that starts it), so ending "ownerless"
+        // sessions here would silently drop the session the shutdown was
+        // supposed to preserve — and clear its blocks. Keep it; the engine
+        // resumes the same session id with its remaining time on its next
+        // start, exactly as `Engine::open_recovery` already does.
+        let resume_expected =
+            crate::lifecycle::read_checkpoint(&db_path.with_extension("lifecycle.json"))
+                .is_some_and(|checkpoint| {
+                    let reboot = checkpoint.boot != crate::lifecycle::current_boot_id();
+                    let live = checkpoint.active_session.is_some_and(|session| {
+                        matches!(session.status.as_str(), "running" | "paused" | "preparing")
+                    });
+                    live && (checkpoint.orderly || reboot)
+                });
+        if resume_expected {
+            log::info!(
+                "[SAFETY_NET] Durable checkpoint expects this session to resume after an OS shutdown; keeping it and its blocks."
+            );
+            return;
+        }
+        log::warn!(
+            "[SAFETY_NET] Session from a previous run has no live engine; ending it and clearing its blocks."
+        );
+        mark_sessions_completed(data_dir, None);
+    }
+    if live_from_store && engine_alive {
+        log::info!("[SAFETY_NET] Live session owned by a live engine; leaving blocks in place.");
+        return;
+    }
+    match crate::privileged_helper::unblock_everything("startup safety net") {
+        Ok(()) => log::info!("[SAFETY_NET] No ownerless blocks remain."),
+        Err(error) => log::warn!("[SAFETY_NET] Cleanup incomplete: {error}"),
+    }
+}
+
 fn active_session_for_quit(data_dir: &std::path::Path) -> bool {
     let db_path = crate::cli::db_path(data_dir);
     match crate::cli::load_snapshot_readonly(&db_path) {
@@ -363,38 +540,64 @@ fn active_session_for_quit(data_dir: &std::path::Path) -> bool {
         })
 }
 
-/// Authoritative UI Quit handler (Cmd+Q / Dock Quit / Tray Quit):
-/// `--background` owns the session engine and remains running independently.
-/// Therefore quitting the GUI exits only the GUI process cleanly (`ExitUiOnly`),
-/// notifies `--background` (`ui_exiting`), and returns immediately:
-/// - If any session is live, `--background` automatically relaunches the
-///   Preelock UI and reconnects it to the intact session.
-/// - If no session is live, `--background` continues background tracking and
-///   schedules silently without reopening the UI.
+/// Authoritative UI Quit handler (Cmd+Q / Dock Quit / Tray Quit / Alt+F4 /
+/// the macOS `applicationShouldTerminate:` guard).
+///
+/// Anti-bypass rule (`crate::quit::quit_action`): quitting the window while
+/// a session is live must NOT end that session. The GUI exits, but the
+/// `--background` engine keeps owning the session, its blocks stay applied,
+/// and `UiRelaunchSupervisor` reopens the window within about a second, so
+/// Cmd+Q / Alt+F4 cannot be used to escape a session.
+///
+/// When there is no live session, quitting must leave the machine
+/// unblocked, even when the background engine is dead or hung — the
+/// 2026-11-24 incident left 1,103 bytes of Preelock blocks in /etc/hosts
+/// after a confirmed quit because cleanup depended on the engine. That
+/// order matters:
+///   1. end live sessions (engine IPC, best effort),
+///   2. stop the engine so it cannot re-apply policy,
+///   3. clear blocks through the helper/hosts directly, and verify,
+///   4. exit the GUI.
 fn quit(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let client = app.state::<IpcClient>().inner().clone();
-        let ping = client.ping();
-        let (reachable, has_active) = match &ping {
-            Ok(info) => (true, info.has_active),
-            Err(_) => {
-                let active_in_store = active_session_for_quit(client.data_dir());
-                let _ = background::ensure_running_headless(client.data_dir());
-                (false, active_in_store)
-            }
+        let dir = client.data_dir().to_path_buf();
+        // The authoritative live-session check: the engine's ping, and a
+        // read-only store/checkpoint fallback when the engine is gone (a
+        // force-quit background engine must not turn Cmd+Q into a bypass).
+        let has_active = match client.ping() {
+            Ok(info) => info.has_active,
+            Err(_) => active_session_for_quit(&dir),
         };
-        let decision = crate::quit::gui_quit_action(reachable, has_active);
-        match decision {
-            crate::quit::QuitDecision::CloseUiOnly => {
-                let _ = background::ensure_running_headless(client.data_dir());
-                blocked_quit(&app);
+        if crate::quit::quit_action(has_active) == crate::quit::QuitAction::RefuseAndShowWindow {
+            // Refuse the quit: nothing exits, nothing is released, and the
+            // session keeps its remaining time and blocks. If the engine
+            // died, bring it back first so enforcement is not lost.
+            if client.ping().is_err() {
+                if let Err(error) = background::ensure_running(&dir) {
+                    log::warn!("[QUIT] Could not restart the background engine: {error}");
+                }
             }
-            crate::quit::QuitDecision::ShutdownAndExit | crate::quit::QuitDecision::ExitUiOnly => {
-                client.ui_exiting();
-                disconnect_ui(&app);
-            }
+            log::warn!(
+                "lifecycle event=quit_refused active=true — session and blocks preserved; showing the window"
+            );
+            blocked_quit(&app);
+            return;
         }
+        // Stop the engine FIRST so it cannot re-apply its policy, then
+        // mark its sessions completed durably. Neither step is allowed to
+        // depend on an engine IPC answer — that was the bug that left
+        // 1,103 bytes of blocks in /etc/hosts after a confirmed quit.
+        background::stop_background(&dir);
+        mark_sessions_completed(&dir, None);
+        match crate::privileged_helper::unblock_everything("quit") {
+            Ok(()) => log::info!("[QUIT] All Preelock blocks removed before exit."),
+            Err(error) => log::warn!("[QUIT] Block cleanup incomplete: {error}"),
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        crate::dns_proxy::cleanup_at_exit();
+        disconnect_ui(&app);
     });
 }
 fn disconnect_ui(app: &tauri::AppHandle) {
@@ -572,9 +775,18 @@ pub fn run() {
         .setup(move |app| {
             let dir = setup_dir;
             app.manage(gui_lock);
+            // Before anything else: a crash or force-quit must never leave
+            // the previous run's blocks active. Runs even when the engine
+            // is dead, and keeps them only for a live engine-owned session.
+            startup_safety_net(&dir);
             desktop_settings::request_authorization();
             migrate_legacy_data(&dir)?;
-            background::ensure_running(&dir).map_err(std::io::Error::other)?;
+            if let Err(error) = background::ensure_running(&dir) {
+                // A dead engine must never abort the launch: the user gets
+                // the banner and the manual restart button instead of a
+                // process that exits and is relaunched into a Dock storm.
+                log::warn!("Could not start the background engine: {error}");
+            }
             background::touch_desktop(&dir);
             // Open-at-login is strictly session/schedule-conditional: the
             // app should only auto-open after a restart if there was an
@@ -613,16 +825,27 @@ pub fn run() {
             // (enable on first run) can never apply again.
             let _ = std::fs::remove_file(dir.join(".login_configured"));
             let client = IpcClient::new(&dir);
-            let initial_ping = client
-                .wait_ready(std::time::Duration::from_secs(12))
-                .map_err(|err| {
+            let initial_ping = match client.wait_ready(std::time::Duration::from_secs(12)) {
+                Ok(ping) => ping,
+                Err(err) => {
                     let detail = background::startup_diagnostic(&dir)
                         .map(|d| format!("{err} Diagnostic: {d}"))
                         .unwrap_or(err);
-                    std::io::Error::other(detail)
-                })?;
+                    log::warn!("Background engine unavailable at startup: {detail}");
+                    crate::ipc::PingInfo {
+                        pid: 0,
+                        has_active: false,
+                        has_active_strict: false,
+                        recovered_after_os_shutdown: false,
+                        notification_prefs: (true, true, 50),
+                    }
+                }
+            };
             let _ = client.ui_heartbeat();
-            let initial_snapshot = client.snapshot().map_err(std::io::Error::other)?;
+            let initial_snapshot = client.snapshot().unwrap_or_else(|err| {
+                log::warn!("Could not load the initial snapshot: {err}");
+                models::Snapshot::default()
+            });
             // A click consumes the handoff exactly once. It forces the window
             // visible even when the launch rules would start hidden.
             let pending_click = lifecycle_log::take_pending_notification_click(&dir);
@@ -681,6 +904,81 @@ pub fn run() {
             }
 
             tray.build(app)?;
+            // Watchdog state: the live session's id and deadline, kept
+            // fresh by the snapshot loop below. A dedicated thread checks
+            // it against the LOCAL clock, so a hung engine (which makes
+            // every snapshot time out) can never prevent the session from
+            // ending on time.
+            let watchdog_state: std::sync::Arc<Mutex<Option<(String, i64)>>> = Default::default();
+            let watchdog_dir = dir.clone();
+            {
+                let state = watchdog_state.clone();
+                std::thread::spawn(move || {
+                    let mut fired: Option<String> = None;
+                    let mut ticks_since_store_read = 0u32;
+                    let client = IpcClient::new(&watchdog_dir);
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        let mut current = state.lock().ok().and_then(|guard| guard.clone());
+                        if current.is_none() {
+                            ticks_since_store_read += 1;
+                            // Fallback: a session may have started while the
+                            // UI was detached. Read the store at most every
+                            // 10 s so SQLite is not polled per second.
+                            if ticks_since_store_read >= 10 {
+                                ticks_since_store_read = 0;
+                                let db_path = crate::cli::db_path(&watchdog_dir);
+                                if let Ok(snapshot) = crate::cli::load_snapshot_readonly(&db_path)
+                                {
+                                    current = crate::tray::live_session(&snapshot)
+                                        .filter(|session| session.status == models::Status::Running)
+                                        .and_then(|session| {
+                                            crate::tray::session_end_ms(session)
+                                                .map(|deadline| (session.id.clone(), deadline))
+                                        });
+                                }
+                            }
+                        } else {
+                            ticks_since_store_read = 0;
+                        }
+                        let Some((id, deadline)) = current else {
+                            fired = None;
+                            continue;
+                        };
+                        if crate::clock::now() > deadline + 2_000
+                            && fired.as_deref() != Some(id.as_str())
+                        {
+                            log::warn!(
+                                "[WATCHDOG] Session {id} passed its end time; lifting its blocks without waiting for the engine."
+                            );
+                            fired = Some(id.clone());
+                            match crate::privileged_helper::unblock_everything(
+                                "session watchdog",
+                            ) {
+                                Ok(()) => log::warn!(
+                                    "[WATCHDOG] Session {id} expired; blocks removed and verified."
+                                ),
+                                Err(error) => {
+                                    log::error!("[WATCHDOG] Direct unblock failed: {error}")
+                                }
+                            }
+                            mark_sessions_completed(&watchdog_dir, Some(&id));
+                            // Best effort: end it in the engine too, but
+                            // never on this thread (a hung engine would
+                            // block the watchdog).
+                            let client = client.clone();
+                            let id_for_engine = id.clone();
+                            std::thread::spawn(move || {
+                                let _ = client.execute(Action::EndSession {
+                                    id: id_for_engine,
+                                    password: None,
+                                    challenge_answer: None,
+                                });
+                            });
+                        }
+                    }
+                });
+            }
             let handle = app.handle().clone();
             let mut tray_menu = initial_menu;
             std::thread::spawn(move || loop {
@@ -690,6 +988,27 @@ pub fn run() {
                 let Ok(data) = client.snapshot() else {
                     continue;
                 };
+                // Keep the watchdog's view of the live deadline fresh.
+                // It does the clock check on its own thread, so this
+                // only has to publish the current session.
+                match crate::tray::live_session(&data)
+                    .filter(|session| session.status == models::Status::Running)
+                    .and_then(|session| {
+                        crate::tray::session_end_ms(session)
+                            .map(|deadline| (session.id.clone(), deadline))
+                    })
+                {
+                    Some(live) => {
+                        if let Ok(mut guard) = watchdog_state.lock() {
+                            *guard = Some(live);
+                        }
+                    }
+                    None => {
+                        if let Ok(mut guard) = watchdog_state.lock() {
+                            *guard = None;
+                        }
+                    }
+                }
                 sync_frozen_overlay(&handle, &data);
                 blockedpage::sync_overlay(&handle, &data);
                 let live = crate::tray::live_session(&data);
@@ -720,6 +1039,8 @@ pub fn run() {
                     runtime.update(&handle, &data);
                 }
             });
+            #[cfg(target_os = "macos")]
+            dns_proxy::cleanup_stale_redirect();
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -779,13 +1100,26 @@ pub fn run() {
             reset_browser_pairing,
             open_setup,
             settings_action,
-            blockedpage::dismiss_blocked_app_page
+            blockedpage::dismiss_blocked_app_page,
+            dns_proxy_status,
+            get_dns_consent,
+            set_dns_consent,
+            is_native_blocking_setup_required,
+            setup_native_blocking,
+            is_privileged_helper_installed,
+            install_privileged_helper,
+            uninstall_privileged_helper,
+            get_system_blocking_status,
+            flush_system_blocks,
+            restart_background_engine
         ])
         .build(context());
     match result {
         Ok(app) => app.run(|app, event| match event {
             tauri::RunEvent::ExitRequested { .. } if lifecycle::ending() => {
                 desktop_settings::approve_quit();
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                dns_proxy::cleanup_at_exit();
                 // Background engine handles OS shutdown checkpointing cleanly.
             }
             tauri::RunEvent::ExitRequested { api, .. }
@@ -814,6 +1148,8 @@ pub fn run() {
             }
             tauri::RunEvent::ExitRequested { .. } => {
                 desktop_settings::approve_quit();
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                dns_proxy::cleanup_at_exit();
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
@@ -851,6 +1187,57 @@ mod tests {
         .unwrap();
 
         assert!(active_session_for_quit(dir.path()));
+    }
+
+    #[test]
+    fn safety_net_keeps_a_session_the_shutdown_checkpoint_expected_to_resume() {
+        // Regression: the safety net ran before the engine started and
+        // ended a live session it found "ownerless", so a restart (and the
+        // login after an OS shutdown) silently dropped the session and
+        // cleared its blocks. A durable checkpoint that expects a resume
+        // must win.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = crate::cli::db_path(dir.path());
+        {
+            let mut engine = crate::engine::Engine::open(&db_path).unwrap();
+            let created = engine
+                .execute(Action::CreateSession {
+                    title: "Resume me".into(),
+                    minutes: 25,
+                    allow_pause: true,
+                    focus: crate::focus::FocusConfig::default(),
+                    lock: Default::default(),
+                    lock_password: None,
+                })
+                .unwrap();
+            let id = created.sessions[0].id.clone();
+            engine.execute(Action::StartSession { id }).unwrap();
+        }
+        let lifecycle_path = db_path.with_extension("lifecycle.json");
+        crate::lifecycle::write_session_checkpoint(
+            &lifecycle_path,
+            Some("previous-boot".into()),
+            true,
+            Some(crate::lifecycle::SessionCheckpoint {
+                session_id: "resume-1".into(),
+                status: "running".into(),
+                mode: "standard".into(),
+                remaining_ms: 10 * 60_000,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        startup_safety_net(dir.path());
+
+        let snapshot = crate::cli::load_snapshot_readonly(&db_path).unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(
+            snapshot.sessions[0].status,
+            models::Status::Running,
+            "a shutdown checkpoint must keep the live session for the engine to resume"
+        );
+        assert_eq!(snapshot.sessions[0].remaining_ms, 25 * 60_000);
     }
 
     #[test]

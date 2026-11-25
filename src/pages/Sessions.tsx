@@ -5,7 +5,6 @@ import {
   Clock,
   Hourglass,
   Plus,
-  RefreshCw,
   Timer,
 } from 'lucide-react';
 import { useAppStore } from '../state/store';
@@ -18,10 +17,17 @@ import {
 } from '../services/activitySection';
 import { Dropdown } from '../components/Dropdown';
 import { NumberInput } from '../components/NumberInput';
-import { BrowserSetup } from '../components/BrowserSetup';
-import { SafariBrowserNotice } from '../components/SafariBrowserNotice';
-import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
+import {
+  BrowserSetup,
+  isBrowserConnected,
+  getBrowserDisplayName,
+  getCanonicalBrowserKey,
+  isSupportedBrowser,
+} from '../components/BrowserSetup';
+import { Modal } from '../components/SettingsControls';
+import { isSafariId } from '../services/browserSupport';
 import { SessionConfirmDialog } from '../components/SessionConfirmDialog';
+import { InstallHelperModal } from '../components/InstallHelperModal';
 import { ScheduleConfirmDialog } from '../components/ScheduleConfirmDialog';
 import type { ScheduleCreateFields } from '../components/ScheduleConfirmDialog';
 import { OneShotConfirmDialog } from '../components/OneShotConfirmDialog';
@@ -32,7 +38,6 @@ import {
   cleanDomain,
   cleanYouTubeChannel,
   domainInputError,
-  isYouTubeBlockedByWebsiteRules,
   normalizeDomainInput,
   normalizeYouTubeChannelInput,
   youTubeChannelInputError,
@@ -69,9 +74,9 @@ export function Sessions() {
   const [ytBlockChannels, setYtBlockChannels] = useState(false);
   const [ytBlockEntertainment, setYtBlockEntertainment] = useState(false);
   const [ytWatchLater, setYtWatchLater] = useState(false);
-  const [guide, setGuide] = useState(false),
-    [rechecking, setRechecking] = useState(false),
-    [problem, setProblem] = useState('');
+  const [ytConnectModalOpen, setYtConnectModalOpen] = useState(false);
+  const [skipConnectPrompt, setSkipConnectPrompt] = useState(false);
+  const [problem, setProblem] = useState('');
   // Confirmation popup: "Start session" creates the session and starts
   // it immediately; "Cancel" discards the wizard state — nothing is
   // saved, and old sessions can no longer be reused from this page.
@@ -116,7 +121,6 @@ export function Sessions() {
   function startWizard(mode: 'start' | 'schedule' | 'oneshot') {
     closeAllowanceForm();
     setProblem('');
-    setSafariNotice(false);
     setMinutes(data.preferences.default_minutes);
     setWebsiteEnabled(false);
     setWebsiteSubMode(null);
@@ -134,18 +138,38 @@ export function Sessions() {
     setCreating(true);
   }
   function resetWizard() {
-    setSafariNotice(false);
     setTitle('');
     setStep(0);
     setMaxStep(0);
     setCreating(false);
     setConfirmOpen(false);
+    setPreSessionConnectModalOpen(false);
+    setSkipConnectPrompt(false);
     setScheduleConfirmOpen(false);
     setOneShotConfirmOpen(false);
     setWizardMode('start');
+    setSafariYtWarn('');
     setProblem('');
   }
   async function confirmStartSession() {
+    if (desktop && typeof api.isPrivilegedHelperInstalled === 'function') {
+      try {
+        const helperInstalled = await api.isPrivilegedHelperInstalled();
+        if (!helperInstalled) {
+          setConfirmOpen(false);
+          setInstallHelperModalOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Helper check failed in confirmStartSession:', e);
+      }
+    }
+    // Show the banner instantly: set the optimistic "starting" session
+    // before the backend calls, so the user sees "Active session"
+    // the moment they click Start instead of 2–5s later while the
+    // backend starts the DNS proxy. Cleared below on success (the
+    // backend snapshot then reports the real session) and on failure.
+    useAppStore.getState().setStartingSession({ title, minutes });
     const before = new Set(data.sessions.map((s) => s.id));
     const ok = await execute({
       type: 'create_session',
@@ -154,12 +178,54 @@ export function Sessions() {
       allow_pause: !strict,
       focus: selected,
     });
-    if (!ok) return;
+    if (!ok) {
+      useAppStore.getState().setStartingSession(null);
+      setConfirmOpen(false);
+      return;
+    }
     const created = useAppStore
       .getState()
       .data.sessions.find((s) => !before.has(s.id));
     resetWizard();
-    if (created) await execute({ type: 'start_session', id: created.id });
+    if (created) {
+      const started = await execute({ type: 'start_session', id: created.id });
+      if (!started) useAppStore.getState().setStartingSession(null);
+    } else {
+      useAppStore.getState().setStartingSession(null);
+    }
+  }
+
+  async function handleAttemptStart(skipConnectCheck = false) {
+    // If the browser selected in "Which apps will you use?" is not connected,
+    // prompt the user to connect it for a better experience just before starting.
+    // skipConnectCheck bypasses this when the user already chose Skip/Connect
+    // in the popup — the state value can be stale in that handler's closure.
+    if (
+      targetBrowserId &&
+      !isSafariId(targetBrowserId) &&
+      !isTargetConnected &&
+      !skipConnectPrompt &&
+      !skipConnectCheck
+    ) {
+      setConfirmOpen(false);
+      setPreSessionConnectModalOpen(true);
+      return;
+    }
+    if (desktop && typeof api.isPrivilegedHelperInstalled === 'function') {
+      try {
+        const helperInstalled = await api.isPrivilegedHelperInstalled();
+        if (!helperInstalled) {
+          setConfirmOpen(false);
+          setInstallHelperModalOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Helper check failed:', e);
+      }
+    }
+    // All pre-start checks passed — show the review once, at the end.
+    // Starting itself happens from the review's Start button.
+    setConfirmOpen(true);
   }
   // Schedule / one-shot mode: the wizard's FocusConfig is the snapshot,
   // exactly as creating from a template session would copy it.
@@ -204,15 +270,18 @@ export function Sessions() {
     const timer = setTimeout(() => setProblem(''), 5000);
     return () => clearTimeout(timer);
   }, [problem]);
-  // True while a browser chosen in the compatibility notice is being
-  // opened and waited for.
-  const [browserOpening, setBrowserOpening] = useState(false);
+  const [safariYtWarn, setSafariYtWarn] = useState('');
+  useEffect(() => {
+    if (!safariYtWarn) return;
+    const timer = setTimeout(() => setSafariYtWarn(''), 5500);
+    return () => clearTimeout(timer);
+  }, [safariYtWarn]);
   const [maxStep, setMaxStep] = useState(0);
   const [creating, setCreating] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Session-only Safari compatibility notice (Safari has no Preelock
-  // extension, so it cannot enforce website rules during a session).
-  const [safariNotice, setSafariNotice] = useState(false);
+  const [installHelperModalOpen, setInstallHelperModalOpen] = useState(false);
+  const [preSessionConnectModalOpen, setPreSessionConnectModalOpen] =
+    useState(false);
   function applySavedSetup(preset: SavedSetup) {
     const f = structuredClone(preset.focus);
     // Saved before Manual check-ins was removed: use Apps only instead.
@@ -240,10 +309,11 @@ export function Sessions() {
     setYtBlockedError('');
     const hasBlockedChannels = (f.youtube_blocked_channels?.length ?? 0) > 0;
     const hasEntertainment = !!f.youtube_block_entertainment;
+    const hasWatchLater = !!f.youtube_allow_watch_later;
     setYtBlockChannels(hasBlockedChannels);
     setYtBlockEntertainment(hasEntertainment);
-    setYtEnabled(hasBlockedChannels || hasEntertainment);
-    setYtWatchLater(!!f.youtube_allow_watch_later);
+    setYtWatchLater(hasWatchLater);
+    setYtEnabled(hasBlockedChannels || hasEntertainment || hasWatchLater);
     const wb = f.website_blocking ?? 'auto';
     if (wb === 'blocklist' || wb === 'allowlist') {
       setWebsiteEnabled(true);
@@ -280,17 +350,10 @@ export function Sessions() {
     : 'none';
   const chooseWebsiteSubMode = (mode: 'blocklist' | 'allowlist') =>
     setWebsiteSubMode(websiteSubMode === mode ? null : mode);
-  const watchLaterAvailable = isYouTubeBlockedByWebsiteRules(
-    blockMode,
-    blockSites,
-  );
-  const activeYtBlockChannels = ytEnabled && ytBlockChannels;
-  const activeYtEntertainment = ytEnabled && ytBlockEntertainment;
   const { setup, error, loading, refresh } = useFocusSetup(
     focus.browser_app || undefined,
   );
   const browsers = setup?.browsers ?? [];
-  const needsBrowser = websiteEnabled || ytEnabled || !focus.general_internet;
   const connectedBrowser = setup?.connected_browsers?.[0];
   const preferredBrowserId =
     connectedBrowser &&
@@ -298,15 +361,93 @@ export function Sessions() {
       ? (browsers.find((b) => sameBrowser(b.id, connectedBrowser))?.id ??
         connectedBrowser)
       : browsers[0]?.id || '';
+  const targetBrowser = (() => {
+    const selected = browsers.find(
+      (b) =>
+        workApps.some(
+          (id) =>
+            sameBrowser(b.id, id) ||
+            getCanonicalBrowserKey(b.id) === getCanonicalBrowserKey(id),
+        ) ||
+        (focus.browser_app &&
+          (sameBrowser(b.id, focus.browser_app) ||
+            getCanonicalBrowserKey(b.id) ===
+              getCanonicalBrowserKey(focus.browser_app))),
+    );
+    if (selected) return selected;
+    const workBrowserId = workApps.find(
+      (id) =>
+        isSupportedBrowser(id) ||
+        getCanonicalBrowserKey(id) !== id.toLowerCase(),
+    );
+    if (workBrowserId) {
+      return {
+        id: workBrowserId,
+        name: getBrowserDisplayName({ id: workBrowserId }),
+      };
+    }
+    if (preferredBrowserId) {
+      const pref = browsers.find(
+        (b) =>
+          sameBrowser(b.id, preferredBrowserId) ||
+          getCanonicalBrowserKey(b.id) ===
+            getCanonicalBrowserKey(preferredBrowserId),
+      );
+      if (pref) return pref;
+    }
+    return browsers[0] ?? null;
+  })();
+  const targetBrowserId = targetBrowser?.id ?? '';
+  const targetBrowserName = targetBrowser
+    ? getBrowserDisplayName(targetBrowser)
+    : 'browser';
+  const isSafariSelected =
+    isSafariId(targetBrowserId) ||
+    (workApps.some(isSafariId) &&
+      !workApps.some((id) => isSupportedBrowser(id) && !isSafariId(id)));
+  const effectiveYtEnabled = isSafariSelected ? false : ytEnabled;
+  const activeYtBlockChannels = effectiveYtEnabled && ytBlockChannels;
+  const activeYtEntertainment = effectiveYtEnabled && ytBlockEntertainment;
+  const activeYtWatchLater = effectiveYtEnabled && ytWatchLater;
+  const needsBrowser =
+    websiteEnabled || effectiveYtEnabled || !focus.general_internet;
   const browserId =
-    focus.browser_app || (needsBrowser ? preferredBrowserId : '');
+    focus.browser_app ||
+    (needsBrowser ? targetBrowserId || preferredBrowserId : '');
+  const isTargetConnected = targetBrowserId
+    ? isBrowserConnected(targetBrowserId, setup)
+    : false;
   // "Connected" counts only when the paired extension reports that it
-  // lives in the browser picked above. A connection from another browser —
-  // or one that cannot say which browser it is in — does not count.
+  // lives in the browser picked above. Safari has no extension.
   const browserConnected =
-    !!setup?.browser.connected &&
-    !!setup?.browser.client_browser &&
-    (!browserId || sameBrowser(browserId, setup.browser.client_browser));
+    !isSafariId(browserId) &&
+    ((setup?.connected_browsers?.some(
+      (c) => !browserId || sameBrowser(browserId, c),
+    ) ??
+      false) ||
+      (!!setup?.browser.connected &&
+        !!setup?.browser.client_browser &&
+        (!browserId || sameBrowser(browserId, setup.browser.client_browser))));
+  const effectiveBlockMode =
+    activeYtWatchLater && blockMode === 'none' ? 'blocklist' : blockMode;
+  const computedDomains = (() => {
+    const list =
+      blockMode !== 'none'
+        ? splitDomains(blockSites).flatMap((entry) => {
+            const cleaned =
+              blockMode === 'allowlist'
+                ? cleanAllowedDomain(entry)
+                : cleanDomain(entry);
+            return cleaned ? [cleaned] : [];
+          })
+        : [];
+    if (activeYtWatchLater) {
+      if (effectiveBlockMode === 'blocklist' && !list.includes('youtube.com')) {
+        list.push('youtube.com');
+      }
+    }
+    return list;
+  })();
   const selected: FocusConfig = {
     ...focus,
     pomodoro,
@@ -326,16 +467,7 @@ export function Sessions() {
     // Submit the cleaned rules, not the raw text: a pasted URL's port or
     // query is stripped by cleanDomain, and the submit guard above has
     // already rejected entries that clean to nothing.
-    domains:
-      blockMode !== 'none'
-        ? splitDomains(blockSites).flatMap((entry) => {
-            const cleaned =
-              blockMode === 'allowlist'
-                ? cleanAllowedDomain(entry)
-                : cleanDomain(entry);
-            return cleaned ? [cleaned] : [];
-          })
-        : [],
+    domains: computedDomains,
     // YouTube channel and entertainment rules are controlled by the
     // independent YouTube blocking section; Watch Later is controlled by
     // whether Website blocking currently blocks YouTube.
@@ -348,8 +480,8 @@ export function Sessions() {
     youtube_allowed_channels: [],
     youtube_study_mode: false,
     youtube_block_entertainment: activeYtEntertainment,
-    youtube_allow_watch_later: watchLaterAvailable && ytWatchLater,
-    website_blocking: blockMode,
+    youtube_allow_watch_later: activeYtWatchLater,
+    website_blocking: effectiveBlockMode,
     camera:
       setup?.platform !== 'windows' &&
       attention.verification === 'camera_and_activity',
@@ -367,76 +499,6 @@ export function Sessions() {
       work_domains: [],
     },
   };
-  // Safari has no Preelock extension, so it can never enforce a session's
-  // website rules. The compatibility notice appears only while configuring
-  // such a session — never during normal use or screen-time tracking, and
-  // never for a session that blocks no websites.
-  const safariSelected =
-    workApps.some(isSafariId) ||
-    focus.apps.some(isSafariId) ||
-    isSafariId(focus.browser_app);
-  const extensionNeeded = sessionNeedsExtension(selected);
-  useEffect(() => {
-    if (creating && safariSelected && extensionNeeded) setSafariNotice(true);
-  }, [creating, safariSelected, extensionNeeded]);
-  // Choose a supported browser from the notice: Safari is removed, every
-  // other selected app is kept, and the browser is selected for this
-  // session. One browser per session, so switching browsers replaces the
-  // previous browser selection instead of adding a second one.
-  function chooseSupportedBrowser(id: string) {
-    setSafariNotice(false);
-    setBrowserWarn('');
-    const replacesBrowser = (x: string) =>
-      x === id || browsers.some((b) => b.id === x);
-    setWorkApps((ids) => [
-      ...ids.filter((x) => !isSafariId(x) && !replacesBrowser(x)),
-      id,
-    ]);
-    update({
-      browser_app: id,
-      apps: focus.apps.filter((x) => !isSafariId(x) && !replacesBrowser(x)),
-    });
-    const connected = (setup?.connected_browsers ?? []).some((c) =>
-      sameBrowser(c, id),
-    );
-    setGuide(!connected);
-    // The browser may not be running yet, so it would not be in the app
-    // list. Open it (the desktop launches the installed app by its own
-    // identity) and wait briefly for it to appear. Launching says nothing
-    // about the extension: an unconnected browser still gets the existing
-    // Connect browser guide above.
-    void openChosenBrowser(id);
-  }
-  async function openChosenBrowser(id: string) {
-    setBrowserOpening(true);
-    setBrowserWarn('');
-    try {
-      await api.openSetup('browser', id);
-    } catch {
-      setBrowserOpening(false);
-      setBrowserWarn(
-        "Couldn't open browser. Open the browser manually and refresh the app list.",
-      );
-      return;
-    }
-    try {
-      // Six polls, half a second apart: enough for a cold browser start,
-      // bounded so a browser that never appears cannot spin here.
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const next = await refresh(id);
-        if (next?.applications.some((app) => app.id === id)) return;
-        if (attempt < 5)
-          await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-    } finally {
-      setBrowserOpening(false);
-    }
-  }
-  function cancelSafariSelection() {
-    setSafariNotice(false);
-    setWorkApps((ids) => ids.filter((x) => !isSafariId(x)));
-    update({ apps: focus.apps.filter((x) => !isSafariId(x)) });
-  }
   const apps =
     setup?.applications.filter(
       (a) =>
@@ -567,7 +629,12 @@ export function Sessions() {
                 setProblem(`Invalid website: ${badEntry}`);
                 return;
               }
-              if (ytEnabled && !ytBlockChannels && !ytBlockEntertainment) {
+              if (
+                effectiveYtEnabled &&
+                !ytBlockChannels &&
+                !ytBlockEntertainment &&
+                !ytWatchLater
+              ) {
                 setProblem(
                   'Choose a YouTube blocking option below, or uncheck YouTube blocking.',
                 );
@@ -589,17 +656,10 @@ export function Sessions() {
                 setProblem(`Invalid YouTube channel: ${badBlocked}`);
                 return;
               }
-              // Safari can never enforce this session's website rules:
-              // keep the user in the wizard with the compatibility notice
-              // instead of a generic problem message.
-              if (safariSelected && extensionNeeded) {
-                setSafariNotice(true);
-                return;
-              }
               const issue = setupProblem(selected, setup, step === 2);
               if (issue) {
                 setProblem(issue);
-                if (issue.includes('extension')) setGuide(true);
+                if (issue.includes('extension')) setYtConnectModalOpen(true);
                 return;
               }
               if (step === 1) {
@@ -615,7 +675,10 @@ export function Sessions() {
               } else if (wizardMode === 'oneshot') {
                 setOneShotConfirmOpen(true);
               } else {
-                setConfirmOpen(true);
+                // Run the pre-start checks first (browser connect,
+                // native blocking). The review popup opens once, at
+                // the end, from handleAttemptStart.
+                void handleAttemptStart();
               }
             }}
           >
@@ -827,6 +890,9 @@ export function Sessions() {
                           if (!e.target.checked && isBrowser) {
                             setBrowserWarn('');
                           }
+                          if (e.target.checked && isSafariId(app.id)) {
+                            setYtEnabled(false);
+                          }
                           setWorkApps(
                             e.target.checked
                               ? [...workApps, app.id]
@@ -863,67 +929,7 @@ export function Sessions() {
                       {browserWarn}
                     </p>
                   )}
-                  {browserOpening && (
-                    <p className="small muted" role="status">
-                      Opening the browser…
-                    </p>
-                  )}
-                  <div className="setting-row">
-                    <span>Browser extension</span>
-                    <div className="row">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="Re-check browser connection"
-                        title="Re-check browser connection"
-                        disabled={rechecking}
-                        onClick={() => {
-                          setRechecking(true);
-                          void refresh().finally(() => {
-                            setTimeout(() => setRechecking(false), 1500);
-                          });
-                        }}
-                      >
-                        <RefreshCw
-                          size={16}
-                          className={rechecking ? 'spin' : undefined}
-                        />
-                      </button>
-                      {browserConnected ? (
-                        <button
-                          type="button"
-                          className="connected-pill"
-                          aria-disabled="true"
-                          tabIndex={-1}
-                        >
-                          Connected
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setGuide(!guide)}
-                        >
-                          {guide ? 'Hide setup' : 'Connect browser'}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {guide && !browserConnected && (
-                    <BrowserSetup
-                      setup={setup}
-                      refresh={async () => {
-                        await refresh();
-                      }}
-                      browserId={browserId}
-                    />
-                  )}
-                  {!browsers.length && (
-                    <p className="small muted">
-                      Open Comet, Chrome, Edge, Brave or Vivaldi, then refresh
-                      apps.
-                    </p>
-                  )}
+
                   <div className="blocking-section">
                     <label className="blocking-option">
                       <input
@@ -1023,33 +1029,63 @@ export function Sessions() {
                             )}
                           </>
                         )}
-                        {watchLaterAvailable && (
-                          <label className="blocking-option">
-                            <input
-                              type="checkbox"
-                              checked={ytWatchLater}
-                              onChange={(e) =>
-                                setYtWatchLater(e.target.checked)
-                              }
-                            />
-                            <strong>
-                              Allow Watch Later playlist when YouTube is blocked
-                            </strong>
-                          </label>
-                        )}
                       </div>
                     )}
                   </div>
                   <div className="blocking-section">
-                    <label className="blocking-option">
+                    <label
+                      className={`blocking-option${isSafariSelected ? ' disabled-option' : ''}`}
+                      style={
+                        isSafariSelected
+                          ? { opacity: 0.5, cursor: 'not-allowed' }
+                          : undefined
+                      }
+                      onClick={(e) => {
+                        if (isSafariSelected) {
+                          e.preventDefault();
+                          setSafariYtWarn(
+                            'YouTube blocking is not available on Safari yet.',
+                          );
+                        }
+                      }}
+                    >
                       <input
                         type="checkbox"
-                        checked={ytEnabled}
-                        onChange={(e) => setYtEnabled(e.target.checked)}
+                        checked={effectiveYtEnabled}
+                        disabled={isSafariSelected}
+                        style={{
+                          pointerEvents: isSafariSelected ? 'none' : undefined,
+                        }}
+                        onChange={(e) => {
+                          if (isSafariSelected) {
+                            return;
+                          }
+                          if (!e.target.checked) {
+                            setYtEnabled(false);
+                            return;
+                          }
+                          if (isTargetConnected) {
+                            setYtEnabled(true);
+                          } else {
+                            setYtConnectModalOpen(true);
+                          }
+                        }}
                       />
                       <strong>YouTube blocking</strong>
                     </label>
-                    {ytEnabled && (
+                    {safariYtWarn && (
+                      <p
+                        className="small"
+                        role="status"
+                        style={{
+                          marginTop: '0.35rem',
+                          color: '#e0b45c',
+                        }}
+                      >
+                        {safariYtWarn}
+                      </p>
+                    )}
+                    {effectiveYtEnabled && (
                       <div className="blocking-suboptions">
                         <label className="blocking-option">
                           <input
@@ -1111,6 +1147,14 @@ export function Sessions() {
                             vlogs, gaming, music, and Shorts on YouTube.
                           </p>
                         )}
+                        <label className="blocking-option">
+                          <input
+                            type="checkbox"
+                            checked={ytWatchLater}
+                            onChange={(e) => setYtWatchLater(e.target.checked)}
+                          />
+                          <strong>Allow Watch Later playlist only</strong>
+                        </label>
                       </div>
                     )}
                   </div>
@@ -1367,16 +1411,6 @@ export function Sessions() {
         onNewAllowance={startNewAllowance}
         onEditAllowance={startEditAllowance}
       />
-      {safariNotice && creating && (
-        <SafariBrowserNotice
-          setup={setup}
-          onChoose={chooseSupportedBrowser}
-          onCancel={cancelSafariSelection}
-          onRefresh={async () => {
-            await refresh();
-          }}
-        />
-      )}
       {confirmOpen && (
         <SessionConfirmDialog
           title={title}
@@ -1391,14 +1425,63 @@ export function Sessions() {
           browserConnected={browserConnected}
           cameraPermission={setup?.camera_permission}
           platform={setup?.platform}
-          safariWarning={safariSelected && extensionNeeded}
+          safariWarning={false}
           onStart={() => void confirmStartSession()}
-          onCancel={resetWizard}
-          onConnectBrowser={() => {
-            setConfirmOpen(false);
-            setGuide(true);
-          }}
+          onCancel={() => setConfirmOpen(false)}
         />
+      )}
+      {ytConnectModalOpen && (
+        <Modal
+          title={`Connect ${targetBrowserName} to use YouTube blocking`}
+          onClose={() => {
+            if (isTargetConnected) {
+              setYtEnabled(true);
+            } else {
+              setYtEnabled(false);
+            }
+            setYtConnectModalOpen(false);
+          }}
+        >
+          <div className="dialog-stack">
+            <p className="muted small" style={{ marginBottom: '0.75rem' }}>
+              YouTube blocking requires the Preelock extension in{' '}
+              {targetBrowserName}. Connect it below to enable YouTube channel
+              and entertainment blocking.
+            </p>
+            <BrowserSetup
+              setup={setup}
+              refresh={async () => {
+                await refresh();
+              }}
+              browserId={targetBrowserId}
+              singleBrowserId={targetBrowserId}
+            />
+            <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+              {isTargetConnected ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setYtEnabled(true);
+                    setYtConnectModalOpen(false);
+                  }}
+                >
+                  Done
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setYtEnabled(false);
+                    setYtConnectModalOpen(false);
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </div>
+        </Modal>
       )}
       {scheduleConfirmOpen && (
         <ScheduleConfirmDialog
@@ -1414,7 +1497,7 @@ export function Sessions() {
           browserConnected={browserConnected}
           cameraPermission={setup?.camera_permission}
           platform={setup?.platform}
-          safariWarning={safariSelected && extensionNeeded}
+          safariWarning={false}
           onCreate={(fields) => void confirmCreateSchedule(fields)}
           onCancel={() => setScheduleConfirmOpen(false)}
         />
@@ -1433,11 +1516,82 @@ export function Sessions() {
           browserConnected={browserConnected}
           cameraPermission={setup?.camera_permission}
           platform={setup?.platform}
-          safariWarning={safariSelected && extensionNeeded}
+          safariWarning={false}
           onCreate={(fields) => void confirmCreateOneShot(fields)}
           onCancel={() => setOneShotConfirmOpen(false)}
         />
       )}
+      {preSessionConnectModalOpen && (
+        <Modal
+          title={`Connect ${targetBrowserName} for a better experience`}
+          hideClose
+          onClose={() => {
+            setPreSessionConnectModalOpen(false);
+            setSkipConnectPrompt(true);
+            void handleAttemptStart(true);
+          }}
+        >
+          <div className="dialog-stack">
+            <BrowserSetup
+              setup={setup}
+              refresh={async () => {
+                await refresh();
+              }}
+              browserId={targetBrowserId}
+              singleBrowserId={targetBrowserId}
+            />
+            <div
+              className="row controls"
+              style={{
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                marginTop: '1rem',
+              }}
+            >
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setPreSessionConnectModalOpen(false);
+                  setSkipConnectPrompt(true);
+                  void handleAttemptStart(true);
+                }}
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                disabled={!isTargetConnected}
+                onClick={() => {
+                  setPreSessionConnectModalOpen(false);
+                  setSkipConnectPrompt(true);
+                  void handleAttemptStart(true);
+                }}
+              >
+                Connect
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      <InstallHelperModal
+        isOpen={installHelperModalOpen}
+        platform={setup?.platform}
+        onClose={() => {
+          // Top-right cross (X) button closes the modal and keeps the user
+          // on the same last page (wizard step) without redirecting or starting.
+          setInstallHelperModalOpen(false);
+        }}
+        onCancel={() => {
+          // Cancel Session button cancels starting the session.
+          setInstallHelperModalOpen(false);
+        }}
+        onInstalled={() => {
+          // Helper successfully installed: continue to session review/start.
+          setInstallHelperModalOpen(false);
+          setConfirmOpen(true);
+        }}
+      />
     </>
   );
 }

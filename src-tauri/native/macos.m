@@ -226,19 +226,18 @@ static BOOL looksLikeAddress(NSString *value) {
     }
     return YES;
 }
-static NSString *safariCurrentURL(void) {
-    NSDictionary *error = nil;
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
-        @"tell application \"Safari\"\n"
-        @"  if (count of windows) > 0 then\n"
-        @"    return URL of current tab of front window\n"
-        @"  end if\n"
-        @"end tell"];
-    NSAppleEventDescriptor *desc = [script executeAndReturnError:&error];
-    if (desc && desc.stringValue) {
-        return desc.stringValue;
+void preelock_init_background_daemon(void) {
+    @autoreleasepool {
+        ProcessSerialNumber psn = { 0, kCurrentProcess };
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        TransformProcessType(&psn, kProcessTransformToBackgroundApplication);
+#pragma clang diagnostic pop
+        onMain(^{
+            [NSApplication sharedApplication];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        });
     }
-    return @"";
 }
 void preelock_redirect_safari_blocked(void) {
     // No-op: Do not close Safari tabs or terminate browser processes.
@@ -283,23 +282,13 @@ static NSString *axAddressBar(AXUIElementRef element, int depth, int *budget) {
 char *preelock_web_sample(void) {
     @autoreleasepool {
         __block pid_t pid = 0;
-        __block NSString *bundleId = @"";
         onMain(^{
             NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
             if (app) {
                 pid = app.processIdentifier;
-                bundleId = app.bundleIdentifier ?: @"";
             }
         });
         if (pid <= 0) return strdup("{\"url\":\"\",\"status\":\"no_url\"}");
-
-        // If frontmost application is Safari, query directly via AppleScript.
-        if ([bundleId isEqualToString:@"com.apple.Safari"]) {
-            NSString *sUrl = safariCurrentURL();
-            if (sUrl.length > 0) {
-                return json(@{@"url": sUrl, @"status": @"ok"});
-            }
-        }
 
         if (preelock_accessibility_status() != 1) {
             return strdup("{\"url\":\"\",\"status\":\"permission_required\"}");
@@ -707,12 +696,17 @@ void preelock_hide_from_dock(void) {
     });
 }
 
-// NOTE: there is deliberately no "set prohibited activation policy" call any
-// more. `[NSApplication sharedApplication]` is what registered a second
-// com.preelock.desktop instance (BackgroundOnly) for the headless engine in the
-// first place, which is the defect this file works around. A process that never
-// creates an NSApplication never appears to LaunchServices as the application,
-// so macOS cannot activate a daemon instead of the GUI.
+void preelock_set_prohibited_activation_policy(void) {
+    onMain(^{
+        ProcessSerialNumber psn = { 0, kCurrentProcess };
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        TransformProcessType(&psn, kProcessTransformToBackgroundApplication);
+#pragma clang diagnostic pop
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    });
+}
 
 void preelock_pump_runloop(double seconds) {
     @autoreleasepool {
@@ -735,9 +729,10 @@ void preelock_activate_app(void) {
 
 // Notification Center launches the app itself for a cold default-action
 // click. Its delegate must not race that LaunchServices launch with NSTask.
+// A second instance never cold launches either; it only activates the primary GUI.
 int preelock_gui_request_allows_cold_launch(const char *source) {
     NSString *sourceString = source ? [NSString stringWithUTF8String:source] : nil;
-    return ![sourceString isEqualToString:@"notification"];
+    return ![sourceString isEqualToString:@"notification"] && ![sourceString isEqualToString:@"second_instance"];
 }
 
 // THE single GUI entry point for every process mode. Returns:
@@ -758,6 +753,20 @@ int preelock_request_gui_activation(const char *source, const char *correlation)
     if (lockPid == getpid()) {
         vyLifecycleLog(@"event=gui_request result=self source=%@ correlation=%@", sourceString, corr);
         return 3;
+    }
+    if (lockPid > 0 && kill(lockPid, 0) == 0) {
+        NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:lockPid];
+        if (app != nil) {
+            [app activateWithOptions:NSApplicationActivateAllWindows];
+            vyLifecycleLog(@"event=gui_request result=activated_existing_pid source=%@ correlation=%@ pid=%d",
+                           sourceString, corr, lockPid);
+            return 1;
+        }
+    }
+    if ([sourceString isEqualToString:@"second_instance"]) {
+        vyLifecycleLog(@"event=gui_request result=second_instance_coalesced source=%@ correlation=%@",
+                       sourceString, corr);
+        return 1;
     }
     if (!preelock_gui_request_allows_cold_launch(sourceString.UTF8String)) {
         vyLifecycleLog(@"event=gui_request result=deferred_to_system source=%@ correlation=%@",

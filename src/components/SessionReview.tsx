@@ -10,7 +10,7 @@ import {
   workAppIds,
   youtubePolicy,
 } from '../services/activeSession';
-import { sessionNeedsExtension } from '../services/browserSupport';
+import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
 import { formatDays } from '../services/schedules';
 
 /** Timing the review shows. The caller passes the timing that
@@ -128,7 +128,6 @@ export function SessionReview({
   browserConnected,
   cameraPermission,
   platform,
-  safariWarning,
   lockText,
   nowMs,
 }: SessionReviewProps) {
@@ -190,7 +189,11 @@ export function SessionReview({
   const showYoutube = yt.mode !== 'none' || yt.watchLater || !!yt.entertainment;
   const browserNeeded = sessionNeedsExtension(focus);
   const showBrowser = browserNeeded || !!browserName;
-  const showSafariWarning = !!safariWarning && !isWindows;
+  const isSafari =
+    isSafariId(focus.browser_app) ||
+    (browserName?.toLowerCase().includes('safari') ?? false) ||
+    (focus.apps && focus.apps.some(isSafariId));
+  const showSafariWarning = false;
   const needsCamera =
     focus.camera === true ||
     focus.attention?.verification === 'camera_and_activity';
@@ -467,30 +470,32 @@ export function SessionReview({
             <div>
               <dt>Extension</dt>
               <dd>
-                <span
-                  className={`status-pill ${browserConnected ? 'ok' : 'warn'}`}
-                >
-                  {browserConnected ? 'Connected' : 'Not connected'}
-                </span>
+                {isSafari ? (
+                  <span className="status-pill muted">
+                    Extension Not Available
+                  </span>
+                ) : (
+                  <span
+                    className={`status-pill ${browserConnected ? 'ok' : 'warn'}`}
+                  >
+                    {browserConnected ? 'Connected' : 'Not connected'}
+                  </span>
+                )}
               </dd>
             </div>
             <div>
               <dt>Ready</dt>
               <dd>
-                {!browserNeeded
-                  ? 'Not needed for this session.'
-                  : browserConnected
-                    ? 'Ready for this session.'
-                    : 'Not ready — the extension is not connected.'}
+                {isSafari
+                  ? 'Ready — websites are blocked by the app.'
+                  : !browserNeeded
+                    ? 'Not needed for this session.'
+                    : browserConnected
+                      ? 'Ready for this session.'
+                      : 'Ready — websites are blocked by the app.'}
               </dd>
             </div>
           </dl>
-          {browserNeeded && !browserConnected && (
-            <p className="small" role="alert">
-              Browser extension is not connected — connect it before the session
-              starts.
-            </p>
-          )}
           {!browserName && browserNeeded && (
             <p className="small" role="alert">
               No browser detected — open Comet, Chrome, Edge, Brave or Vivaldi,

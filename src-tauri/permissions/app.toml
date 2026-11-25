@@ -1,7 +1,7 @@
 [[permission]]
 identifier = "read-state"
 description = "Read local application state."
-commands.allow = ["snapshot"]
+commands.allow = ["snapshot", "block_attempts"]
 
 [[permission]]
 identifier = "change-state"
@@ -47,3 +47,25 @@ commands.allow = ["get_app_icon"]
 identifier = "dismiss-blocked-app"
 description = "Dismiss the informational blocked-app page."
 commands.allow = ["dismiss_blocked_app_page"]
+
+[[permission]]
+identifier = "manage-statistics"
+description = "Export or delete local usage statistics after an explicit user action."
+commands.allow = ["export_statistics", "delete_statistics"]
+
+[[permission]]
+identifier = "dns-blocking"
+description = "Read and manage native DNS blocking consent, status and one-time setup."
+commands.allow = ["dns_proxy_status", "get_dns_consent", "set_dns_consent", "is_native_blocking_setup_required", "setup_native_blocking"]
+
+[[permission]]
+identifier = "privileged-helper"
+description = "Check, install and remove the privileged blocking helper after an explicit user action."
+commands.allow = [
+  "is_privileged_helper_installed",
+  "install_privileged_helper",
+  "uninstall_privileged_helper",
+  "get_system_blocking_status",
+  "flush_system_blocks",
+  "restart_background_engine"
+]

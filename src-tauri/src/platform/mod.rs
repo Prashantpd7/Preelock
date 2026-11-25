@@ -48,8 +48,8 @@ pub struct WebSample {
 pub use macos::{
     activate_app, activate_existing_instance, app_icon, applications, approve_quit,
     camera_permission, camera_start, camera_status, camera_stop, deactivate_and_exit, hide,
-    hide_from_dock, install_notification_delegate, installed_browsers, pump_runloop,
-    redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
+    hide_from_dock, init_background_daemon, install_notification_delegate, installed_browsers,
+    pump_runloop, redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
     request_camera, request_gui_activation, sample, web_sample,
 };
 #[cfg(target_os = "windows")]
@@ -222,6 +222,9 @@ pub fn request_gui_activation(_source: &str, _correlation: &str) -> GuiActivatio
 
 #[cfg(not(target_os = "macos"))]
 pub fn hide_from_dock() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn init_background_daemon() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn approve_quit() {}

@@ -11,11 +11,11 @@ import {
 import { useAppStore } from '../state/store';
 import { countdown } from '../services/analytics';
 import { api, desktop } from '../services/api';
-import { isSafariId, sessionNeedsExtension } from '../services/browserSupport';
 import { sessionTypeLabel, youtubePolicy } from '../services/activeSession';
 import { Modal } from './SettingsControls';
 import { BrowserSetup } from './BrowserSetup';
 import { SessionReview } from './SessionReview';
+import { InstallHelperModal } from './InstallHelperModal';
 import {
   frozenLabel,
   lockDelayStatus,
@@ -81,11 +81,12 @@ export function SessionCard({
   // the session's dropdown browser, and reusing a status filtered to an
   // already-connected browser would render the guide as nothing.
   const [guideSetup, setGuideSetup] = useState<FocusSetup | null>(null);
+  const [installHelperModalOpen, setInstallHelperModalOpen] = useState(false);
   const autoStarted = useRef(false);
   const finished = ['completed', 'interrupted', 'ended'].includes(
     session.status,
   );
-  async function requestStart() {
+  async function performStart() {
     if (finished) {
       // Reuse the card: reset it to a fresh run first.
       const ok = await execute({ type: 'restart_session', id: session.id });
@@ -101,6 +102,21 @@ export function SessionCard({
     setGuideBrowser('');
     setGuideSetup(null);
     setReadyOpen(true);
+  }
+
+  async function requestStart() {
+    if (desktop && typeof api.isPrivilegedHelperInstalled === 'function') {
+      try {
+        const helperInstalled = await api.isPrivilegedHelperInstalled();
+        if (!helperInstalled) {
+          setInstallHelperModalOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Helper check failed:', e);
+      }
+    }
+    await performStart();
   }
   async function allowCamera() {
     setAllowingCamera(true);
@@ -157,19 +173,8 @@ export function SessionCard({
   const needsCamera =
     focusCfg?.camera === true ||
     focusCfg?.attention?.verification === 'camera_and_activity';
-  const needsBrowser =
-    !!focusCfg &&
-    (!focusCfg.general_internet ||
-      (focusCfg.domains?.length ?? 0) > 0 ||
-      (focusCfg.mode !== 'standard' && !!focusCfg.browser_app) ||
-      (focusCfg.attention?.work_domains?.length ?? 0) > 0 ||
-      (focusCfg.youtube_blocked_channels?.length ?? 0) > 0 ||
-      (focusCfg.youtube_allowed_channels?.length ?? 0) > 0 ||
-      !!focusCfg.youtube_study_mode ||
-      // Step 12: a frozen session with a picked browser needs
-      // that browser connected (backend preflight requires it);
-      // with no picked browser, no browser check applies.
-      (!!focusCfg.frozen?.enabled && !!focusCfg.browser_app));
+  // Browser extension connection is optional: native enforcement handles website blocking.
+  const needsBrowser = false;
   const cameraPermission = setup?.camera_permission;
   const cameraBlocked =
     cameraPermission === 'denied' || cameraPermission === 'restricted';
@@ -205,11 +210,7 @@ export function SessionCard({
   // config this saved session will start with. Safari can never
   // enforce website rules; the review warns about it (never on
   // Windows — Safari is macOS-only — the review gates that).
-  const safariWarning =
-    !!focusCfg &&
-    sessionNeedsExtension(focusCfg) &&
-    (isSafariId(focusCfg.browser_app) ||
-      (focusCfg.apps ?? []).some((id) => isSafariId(id)));
+  const safariWarning = false;
   const reviewBrowserName =
     (browserSetup?.browsers ?? []).find((b) =>
       sameBrowser(b.id, focusCfg?.browser_app ?? ''),
@@ -1054,6 +1055,15 @@ export function SessionCard({
           </div>
         </Modal>
       )}
+      <InstallHelperModal
+        isOpen={installHelperModalOpen}
+        onClose={() => setInstallHelperModalOpen(false)}
+        onCancel={() => setInstallHelperModalOpen(false)}
+        onInstalled={() => {
+          setInstallHelperModalOpen(false);
+          void performStart();
+        }}
+      />
     </article>
   );
 }

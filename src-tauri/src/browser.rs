@@ -16,6 +16,106 @@ use std::{
 };
 
 pub const PORT: u16 = 47832;
+
+/// Sanitize a hostname for display on the local `/blocked` landing page.
+pub fn sanitize_blocked_host(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .take(253)
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+/// Static HTML returned by `GET /blocked` on the loopback bridge when
+/// native tab redirection moves an open or cached browser tab off a blocked site.
+pub fn render_blocked_page_html(host: &str) -> String {
+    let clean_host = sanitize_blocked_host(host);
+    let label = if clean_host.is_empty() {
+        "This website".to_string()
+    } else {
+        clean_host
+    };
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Blocked by Preelock</title>
+<style>
+  :root {{ color-scheme: dark light; }}
+  body {{
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #f4f6fb;
+    padding: 24px;
+    box-sizing: border-box;
+  }}
+  .card {{
+    max-width: 440px;
+    width: 100%;
+    padding: 32px 28px;
+    border-radius: 16px;
+    background: #171a21;
+    border: 1px solid #262b36;
+    text-align: center;
+  }}
+  .badge {{
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #93c5fd;
+    background: rgba(59, 130, 246, 0.14);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }}
+  h1 {{
+    margin: 0 0 10px;
+    font-size: 22px;
+    font-weight: 600;
+    word-break: break-word;
+  }}
+  p {{
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.55;
+    color: #9aa4b2;
+  }}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">Preelock</div>
+    <h1>{label} is blocked</h1>
+    <p>This website is currently restricted by Preelock. Stay focused — access will return automatically when your block or session ends.</p>
+  </main>
+</body>
+</html>"#
+    )
+}
+
+fn blocked_host_from_request_url(req_url: &str) -> String {
+    let Some((_, query)) = req_url.split_once('?') else {
+        return String::new();
+    };
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == "h" {
+                return sanitize_blocked_host(v);
+            }
+        }
+    }
+    String::new()
+}
 /// Extension behavior version the app shipped with. Bump together with
 /// EXTENSION_VERSION in browser-extension/worker.js whenever extension
 /// behavior changes, so a stale (never reloaded) copy can be spotted.
@@ -98,6 +198,13 @@ fn normalized_channels(values: &[String]) -> Vec<String> {
     out
 }
 impl Policy {
+    pub fn has_youtube_rules(&self) -> bool {
+        self.youtube_study_mode
+            || self.youtube_block_entertainment
+            || self.youtube_allow_watch_later
+            || !self.youtube_blocked_channels.is_empty()
+            || !self.youtube_allowed_channels.is_empty()
+    }
     pub fn browsers(&self) -> &[String] {
         &self.browsers
     }
@@ -121,12 +228,12 @@ impl Policy {
                 _ => "allowlist",
             },
         };
-        let has_youtube_rules = !c.youtube_blocked_channels.is_empty()
+        let has_channel_rules = !c.youtube_blocked_channels.is_empty()
             || c.youtube_study_mode
             || c.youtube_block_entertainment;
         let blocking = (!matches!(&c.website_blocking, WebsiteBlocking::None)
             && c.general_internet)
-            || has_youtube_rules;
+            || has_channel_rules;
         let domains = match &c.website_blocking {
             WebsiteBlocking::None => Vec::new(),
             _ if policy_mode == "allowlist" => c.website_allowlist_host_rules(),
@@ -168,7 +275,7 @@ impl Policy {
             id: id.into(),
             observe_activity: c.activity_consent && c.attention.enabled,
             track_activity: false,
-            mode: if !c.general_internet && !has_youtube_rules {
+            mode: if !c.general_internet && !has_channel_rules {
                 "offline"
             } else {
                 policy_mode
@@ -296,6 +403,20 @@ struct State {
     adult_block_enabled: bool,
     paired_browsers: HashSet<String>,
 }
+impl State {
+    fn timeout_ms(&self) -> u64 {
+        let has_yt_policy = self
+            .policy
+            .as_ref()
+            .map(|p| p.has_youtube_rules())
+            .unwrap_or(false);
+        if has_yt_policy {
+            5_000
+        } else {
+            CONNECTION_TIMEOUT_MS
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct BrowserStatus {
     pub available: bool,
@@ -380,7 +501,7 @@ pub struct Bridge {
     last_loop: Arc<AtomicU64>,
     /// Browser ids known to this machine, captured once at startup. Used to
     /// disambiguate extension reports (Comet looks exactly like Chrome).
-    installed: Vec<String>,
+    pub(crate) installed: Arc<Mutex<Vec<String>>>,
     _dir: PathBuf,
 }
 /// M4: read-only bridge probes. Neither sends HTTP nor touches auth:
@@ -629,10 +750,12 @@ impl Bridge {
             stop.clone(),
             last_loop.clone(),
         );
-        let installed: Vec<String> = platform::installed_browsers()
-            .into_iter()
-            .map(|b| b.id)
-            .collect();
+        let installed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(
+            platform::installed_browsers()
+                .into_iter()
+                .map(|b| b.id)
+                .collect(),
+        ));
         let thread_browsers = installed.clone();
         std::thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -649,6 +772,29 @@ impl Bridge {
                 };
                 let origin = header("Origin");
                 let host = header("Host");
+                if host != format!("127.0.0.1:{port}") {
+                    let _ = req.respond(tiny_http::Response::empty(403));
+                    continue;
+                }
+                if req.method() == &tiny_http::Method::Get
+                    && (req.url() == "/blocked" || req.url().starts_with("/blocked?"))
+                {
+                    let blocked_host = blocked_host_from_request_url(req.url());
+                    let html = render_blocked_page_html(&blocked_host);
+                    let mut res = tiny_http::Response::from_string(html);
+                    for (k, v) in [
+                        ("Content-Type", "text/html; charset=utf-8"),
+                        ("Cache-Control", "no-store"),
+                        (
+                            "Content-Security-Policy",
+                            "default-src 'none'; style-src 'unsafe-inline'",
+                        ),
+                    ] {
+                        res.add_header(tiny_http::Header::from_bytes(k, v).unwrap());
+                    }
+                    let _ = req.respond(res);
+                    continue;
+                }
                 let authorized = key
                     .lock()
                     .is_ok_and(|token| header("Authorization") == format!("Bearer {token}"));
@@ -657,7 +803,7 @@ impl Bridge {
                     .is_some_and(|id| {
                         id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b))
                     });
-                if !extension || host != format!("127.0.0.1:{port}") || req.url() != "/sync" {
+                if !extension || req.url() != "/sync" {
                     let _ = req.respond(tiny_http::Response::empty(403));
                     continue;
                 }
@@ -715,13 +861,17 @@ impl Bridge {
                 let Ok(mut state) = state2.lock() else {
                     break;
                 };
+                let cur_installed = thread_browsers
+                    .lock()
+                    .map(|b| b.clone())
+                    .unwrap_or_default();
                 if heartbeat.disconnect && !state.connection_locked {
                     // The extension disconnected on purpose: forget just
                     // this client at once, so the app stops showing it as
                     // connected instead of waiting out the heartbeat window.
                     // Other paired browsers are untouched.
                     state.clients.remove(&heartbeat.client);
-                    let resolved = resolve_browser(&heartbeat.browser, &thread_browsers);
+                    let resolved = resolve_browser(&heartbeat.browser, &cur_installed);
                     state.paired_browsers.remove(&resolved);
                     let list: Vec<String> = state.paired_browsers.iter().cloned().collect();
                     if let Ok(json) = serde_json::to_string(&list) {
@@ -736,7 +886,7 @@ impl Bridge {
                 // connected. (The popup Disconnect button is gone, but
                 // a stale, never-reloaded extension copy can still send
                 // one — the lock holds against it too.)
-                let resolved_browser = resolve_browser(&heartbeat.browser, &thread_browsers);
+                let resolved_browser = resolve_browser(&heartbeat.browser, &cur_installed);
                 // The extension reports the browser it detected. An empty
                 // or unrecognised identity means it could not tell which
                 // browser it is (or is not one Preelock supports). Refuse
@@ -878,12 +1028,12 @@ impl Bridge {
     }
     #[cfg(test)]
     pub fn test_bridge(dir: &Path) -> Self {
-        let mut bridge = Self::start_at_retries(dir, 0, 20, 20).unwrap();
+        let bridge = Self::start_at_retries(dir, 0, 20, 20).unwrap();
         // Deterministic test environment: the fake extension always reports
         // Chrome, so pin the installed list instead of reading the dev
         // machine (Comet-vs-Chrome disambiguation would otherwise rewrite
         // the report depending on which browsers happen to be installed).
-        bridge.installed = vec!["com.google.Chrome".into()];
+        *bridge.installed.lock().unwrap() = vec!["com.google.Chrome".into()];
         bridge
     }
     #[cfg(test)]
@@ -995,7 +1145,36 @@ impl Bridge {
     pub fn set_screen_time_blocked_rules(&self, rules: &[String], causes: &[RuleCause]) {
         if let Ok(mut state) = self.state.lock() {
             state.tracking_blocked_rules = rules.to_vec();
-            if let Some(policy) = state.tracking_policy.as_mut() {
+            // App locks must reach the extension even when screen-time
+            // tracking was never turned on: without a tracking policy
+            // here, the bridge returns no policy, the extension never
+            // learns the site is locked, and an already-open tab keeps
+            // loading from the browser's DNS cache until the browser
+            // restarts. Create the minimal observe-only policy on
+            // demand when there are rules to publish. (2026-11-23
+            // fix: only instagram blocked instantly, unstop.com kept
+            // loading in Comet because the extension had no policy.)
+            if state.tracking_policy.is_none() && !rules.is_empty() {
+                state.tracking_policy = Some(Policy {
+                    browsers: Vec::new(),
+                    id: "screen-time-observation".into(),
+                    mode: "blocklist".into(),
+                    domains: Vec::new(),
+                    exceptions: Vec::new(),
+                    keywords: Vec::new(),
+                    extra_blocked: rules.to_vec(),
+                    youtube_blocked_channels: Vec::new(),
+                    youtube_allowed_channels: Vec::new(),
+                    youtube_study_mode: false,
+                    youtube_block_entertainment: false,
+                    youtube_allow_watch_later: false,
+                    expires_at: clock::now() + 65_000,
+                    observe_activity: true,
+                    track_activity: true,
+                    session_cause: None,
+                    rule_causes: causes.to_vec(),
+                });
+            } else if let Some(policy) = state.tracking_policy.as_mut() {
                 policy.extra_blocked = rules.to_vec();
                 policy.rule_causes = causes.to_vec();
                 policy.expires_at = clock::now() + 65_000;
@@ -1024,19 +1203,18 @@ impl Bridge {
         matches: impl Fn(&ClientState) -> bool,
     ) -> Option<&'s ClientState> {
         let now = clock::continuous_ms();
+        let timeout = s.timeout_ms();
         for c in s.clients.values() {
             if !matches(c) {
                 continue;
             }
             let stale = c.ext_v != EXTENSION_VERSION;
-            let connected =
-                c.last_seen != 0 && now.saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS;
+            let connected = c.last_seen != 0 && now.saturating_sub(c.last_seen) < timeout;
             let better = match &best {
                 None => true,
                 Some(b) => {
                     let b_stale = b.ext_v != EXTENSION_VERSION;
-                    let b_connected =
-                        b.last_seen != 0 && now.saturating_sub(b.last_seen) < CONNECTION_TIMEOUT_MS;
+                    let b_connected = b.last_seen != 0 && now.saturating_sub(b.last_seen) < timeout;
                     if connected != b_connected {
                         connected
                     } else if stale != b_stale {
@@ -1061,11 +1239,12 @@ impl Bridge {
         best: Option<&ClientState>,
         installed: &[String],
         policy_none: bool,
+        timeout: u64,
     ) -> BrowserStatus {
         match best {
             Some(c) => {
                 let connected = c.last_seen != 0
-                    && clock::continuous_ms().saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS;
+                    && clock::continuous_ms().saturating_sub(c.last_seen) < timeout;
                 BrowserStatus {
                     active_domain: c.active_domain.clone(),
                     browser_focused: c.browser_focused,
@@ -1111,13 +1290,15 @@ impl Bridge {
     /// connection. When no paired extension reports that browser, the
     /// status comes back not-connected.
     pub fn status_for(&self, browser_id: &str) -> BrowserStatus {
+        let installed = self.installed.lock().map(|b| b.clone()).unwrap_or_default();
         match self.state.lock() {
             Ok(s) => {
+                let timeout = s.timeout_ms();
                 let best = Self::best_client(&s, None, |c| {
-                    let resolved = resolve_browser(&c.browser, &self.installed);
+                    let resolved = resolve_browser(&c.browser, &installed);
                     browser_id.is_empty() || same_browser(browser_id, &resolved)
                 });
-                Self::status_from_best(best, &self.installed, s.policy.is_none())
+                Self::status_from_best(best, &installed, s.policy.is_none(), timeout)
             }
             Err(_) => unavailable("Browser bridge failed."),
         }
@@ -1131,34 +1312,59 @@ impl Bridge {
         if app_id.is_empty() {
             return unavailable("");
         }
+        let installed = self.installed.lock().map(|b| b.clone()).unwrap_or_default();
         match self.state.lock() {
             Ok(s) => {
+                let timeout = s.timeout_ms();
                 let best = Self::best_client(&s, None, |c| {
-                    let resolved = resolve_browser(&c.browser, &self.installed);
+                    let resolved = resolve_browser(&c.browser, &installed);
                     same_browser(app_id, &resolved)
                 });
-                Self::status_from_best(best, &self.installed, s.policy.is_none())
+                Self::status_from_best(best, &installed, s.policy.is_none(), timeout)
             }
             Err(_) => unavailable("Browser bridge failed."),
         }
     }
-    /// Resolved browser ids with a live connection, for the Settings panel.
-    /// Also includes previously paired browsers when they are closed/not running,
-    /// so closed browsers are never falsely reported as unconnected.
+    /// Resolved browser ids with a live connection or paired extension, for the Settings panel.
+    /// Includes both actively communicating clients and paired browsers, independent of whether
+    /// the browser process is running or closed.
     pub fn connected_browsers(&self) -> Vec<String> {
+        let installed = self.installed.lock().map(|b| b.clone()).unwrap_or_default();
         match self.state.lock() {
-            Ok(s) => {
+            Ok(mut s) => {
                 let now = clock::continuous_ms();
+                let timeout = s.timeout_ms();
+                #[cfg(not(test))]
                 let running = platform::applications().unwrap_or_default();
-                let mut ids: Vec<String> = s
+                #[cfg(test)]
+                let running: Vec<crate::platform::Application> = Vec::new();
+                let active_clients: std::collections::HashSet<String> = s
                     .clients
                     .values()
-                    .filter(|c| {
-                        c.last_seen != 0 && now.saturating_sub(c.last_seen) < CONNECTION_TIMEOUT_MS
-                    })
-                    .map(|c| resolve_browser(&c.browser, &self.installed))
+                    .filter(|c| c.last_seen != 0 && now.saturating_sub(c.last_seen) < timeout)
+                    .map(|c| resolve_browser(&c.browser, &installed))
                     .collect();
 
+                let mut changed = false;
+                s.paired_browsers.retain(|paired| {
+                    let is_running = running.iter().any(|app| {
+                        same_browser(&app.id, paired) || app.id.eq_ignore_ascii_case(paired)
+                    });
+                    if is_running && !active_clients.contains(paired) {
+                        changed = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if changed {
+                    let list: Vec<String> = s.paired_browsers.iter().cloned().collect();
+                    if let Ok(json) = serde_json::to_string(&list) {
+                        let _ = std::fs::write(self._dir.join("paired-browsers.json"), json);
+                    }
+                }
+
+                let mut ids: Vec<String> = active_clients.into_iter().collect();
                 for paired in &s.paired_browsers {
                     let is_running = running.iter().any(|app| {
                         same_browser(&app.id, paired) || app.id.eq_ignore_ascii_case(paired)
@@ -1713,6 +1919,42 @@ mod tests {
         assert_eq!(bridge.connected_browsers(), vec!["ai.perplexity.comet"]);
     }
     #[test]
+    fn paired_browsers_remain_connected_when_closed_and_not_sending_heartbeats() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let mut bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let sync = |key: &str, client: &str, browser: &str| {
+            let body = serde_json::json!({
+                "client": client,
+                "browser": browser,
+                "applied_id": "",
+                "disconnect": false,
+            })
+            .to_string();
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(stream,"POST /sync HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nAuthorization: Bearer {key}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        };
+        let brave = "22222222-2222-2222-2222-222222222222";
+        assert!(sync(&bridge.token, brave, "com.brave.browser").starts_with("HTTP/1.1 200"));
+        assert_eq!(bridge.connected_browsers(), vec!["com.brave.browser"]);
+
+        // Simulate browser closing: clear clients map (heartbeat stops)
+        bridge.state.lock().unwrap().clients.clear();
+        // Browser is still reported in connected_browsers because it is paired
+        assert_eq!(bridge.connected_browsers(), vec!["com.brave.browser"]);
+
+        // When pairing is reset / token rotated, paired status is cleared
+        bridge.rotate_token(dir.path()).unwrap();
+        assert!(bridge.connected_browsers().is_empty());
+    }
+    #[test]
     fn disconnect_is_ignored_while_the_connection_lock_is_set() {
         use std::io::{Read, Write};
         let dir = tempfile::tempdir().unwrap();
@@ -1989,5 +2231,79 @@ mod tests {
             valid_body.len()
         ));
         assert!(ok.starts_with("HTTP/1.1 200"), "expected 200, got: {ok}");
+    }
+
+    #[test]
+    fn youtube_policy_enforces_fast_connection_timeout() {
+        let mut s = State::default();
+        assert_eq!(s.timeout_ms(), CONNECTION_TIMEOUT_MS);
+
+        let mut c = FocusConfig {
+            website_blocking: WebsiteBlocking::Blocklist,
+            youtube_allow_watch_later: true,
+            ..Default::default()
+        };
+        let p = Policy::new("yt-session", &c, 60_000);
+        assert!(p.has_youtube_rules());
+        s.policy = Some(p);
+        assert_eq!(s.timeout_ms(), 5_000);
+
+        let now = clock::continuous_ms();
+        let client_state = ClientState {
+            browser: "com.google.chrome".into(),
+            ext_v: EXTENSION_VERSION,
+            last_seen: now.saturating_sub(6_000), // 6 seconds ago
+            ..Default::default()
+        };
+        s.clients.insert("test-client".into(), client_state);
+
+        let installed = vec!["com.google.chrome".into()];
+        let best = Bridge::best_client(&s, None, |_| true);
+        let status = Bridge::status_from_best(best, &installed, s.policy.is_none(), s.timeout_ms());
+        // Under 5s timeout, 6-second heartbeat is disconnected
+        assert!(!status.connected);
+
+        // Without YouTube rules, 6-second heartbeat is still considered connected
+        c.youtube_allow_watch_later = false;
+        let non_yt_policy = Policy::new("non-yt", &c, 60_000);
+        assert!(!non_yt_policy.has_youtube_rules());
+        s.policy = Some(non_yt_policy);
+        assert_eq!(s.timeout_ms(), CONNECTION_TIMEOUT_MS);
+        let best = Bridge::best_client(&s, None, |_| true);
+        let status = Bridge::status_from_best(best, &installed, s.policy.is_none(), s.timeout_ms());
+        assert!(status.connected);
+    }
+
+    #[test]
+    fn blocked_landing_page_sanitizes_host_and_enforces_host_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = Bridge::test_bridge(dir.path());
+        let port = bridge.server.server_addr().to_ip().unwrap().port();
+        let send = |request: String| -> String {
+            use std::io::{Read, Write};
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut buf = String::new();
+            let _ = stream.read_to_string(&mut buf);
+            buf
+        };
+
+        // Host mismatch (DNS rebinding) is rejected even on GET /blocked.
+        let bad_host = send(format!(
+            "GET /blocked?h=instagram.com HTTP/1.1\r\nHost: evil.example:{port}\r\nConnection: close\r\n\r\n"
+        ));
+        assert!(bad_host.starts_with("HTTP/1.1 403"));
+
+        // Direct loopback GET /blocked returns sanitized HTML with strict CSP.
+        let ok = send(format!(
+            "GET /blocked?h=www.Instagram.com%3Cscript%3E HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        ));
+        assert!(ok.starts_with("HTTP/1.1 200"));
+        assert!(ok.contains("Content-Security-Policy: default-src 'none'"));
+        assert!(ok.contains("www.instagram.com"));
+        assert!(!ok.contains("<script>"));
     }
 }

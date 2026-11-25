@@ -32,6 +32,7 @@ vi.mock('../services/api', async (importOriginal) => {
       focusSetup: vi.fn(),
       openSetup: vi.fn(),
       requestCamera: vi.fn(),
+      isPrivilegedHelperInstalled: vi.fn().mockResolvedValue(true),
       execute: vi.fn().mockImplementation(async (action) => {
         if (action?.type === 'update_preferences' && action?.preferences) {
           return {
@@ -165,7 +166,7 @@ describe('Accessibility and Onboarding Permission State Machine', () => {
     ).toBeInTheDocument();
 
     // Accessibility row should show Open settings
-    const openSettingsBtn = screen.getByRole('button', {
+    const openSettingsBtn = await screen.findByRole('button', {
       name: 'Open settings',
     });
     expect(openSettingsBtn).toBeInTheDocument();

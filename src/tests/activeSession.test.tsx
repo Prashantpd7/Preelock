@@ -570,7 +570,7 @@ describe('ActiveSessionBanner', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows the reconnect hint when the browser is disconnected', () => {
+  it('never shows a reconnect hint when the browser is disconnected without YouTube blocking', () => {
     setData({
       sessions: [
         makeSession(
@@ -581,11 +581,115 @@ describe('ActiveSessionBanner', () => {
       browser: { ...baseSetup.browser, connected: false },
     });
     renderBanner();
+    // Once a session has started, the banner never nags the user to
+    // connect the browser for general website blocking.
     expect(
-      screen.getByText(
+      screen.queryByText(
         'Browser disconnected — apps stay blocked. Reconnect to resume website blocking.',
       ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Connect browser/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Connect browser to use YouTube' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows Connect browser to use YouTube button on the banner when YouTube blocking is active and browser is disconnected', () => {
+    setData({
+      sessions: [
+        makeSession(
+          {},
+          {
+            domains: ['instagram.com'],
+            youtube_allow_watch_later: true,
+            browser_app: 'com.google.chrome',
+          },
+        ),
+      ],
+      browser: { ...baseSetup.browser, connected: false },
+    });
+    renderBanner();
+
+    const connectBtn = screen.getByRole('button', {
+      name: 'Connect browser to use YouTube',
+    });
+    expect(connectBtn).toBeInTheDocument();
+  });
+
+  it('hides Connect browser to use YouTube button when the browser is connected', () => {
+    setData({
+      sessions: [
+        makeSession(
+          {},
+          {
+            domains: ['instagram.com'],
+            youtube_block_entertainment: true,
+            browser_app: 'com.google.chrome',
+          },
+        ),
+      ],
+      browser: { ...baseSetup.browser, connected: true },
+    });
+    renderBanner();
+
+    expect(
+      screen.queryByRole('button', {
+        name: 'Connect browser to use YouTube',
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opens connect modal when Connect browser to use YouTube is clicked, and auto-closes on reconnection', async () => {
+    const user = userEvent.setup();
+    const session = makeSession(
+      {},
+      {
+        domains: ['instagram.com'],
+        youtube_blocked_channels: ['@distracting'],
+        browser_app: 'com.google.chrome',
+      },
+    );
+    setData({
+      sessions: [session],
+      browser: { ...baseSetup.browser, connected: false },
+    });
+    renderBanner();
+
+    const connectBtn = screen.getByRole('button', {
+      name: 'Connect browser to use YouTube',
+    });
+    await user.click(connectBtn);
+
+    // Modal opens with title
+    expect(
+      screen.getByRole('heading', {
+        name: 'Connect browser to use YouTube',
+      }),
     ).toBeInTheDocument();
+
+    // Browser connects in background
+    act(() => {
+      useAppStore.setState((s) => ({
+        data: {
+          ...s.data,
+          browser: { ...baseSetup.browser, connected: true },
+        },
+      }));
+    });
+
+    // Modal closes automatically, connect button is gone
+    expect(
+      screen.queryByRole('heading', {
+        name: 'Connect browser to use YouTube',
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', {
+        name: 'Connect browser to use YouTube',
+      }),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "name": "Focus Session",
+  "mode": "blocklist",
+  "domains": [
+    "instagram.com",
+    "facebook.com",
+    "reddit.com",
+    "tiktok.com",
+    "youtube.com",
+    "twitter.com"
+  ]
+}

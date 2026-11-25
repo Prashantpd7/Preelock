@@ -116,9 +116,15 @@ pub fn classify(config: &FocusConfig, signal: &Signals) -> (State, String) {
             return (State::Distracted, "Open one of your work websites.".into());
         }
     } else if signal.browser_required {
+        // The browser is open but no work website could be identified
+        // — an empty/new tab, or a page the app cannot read. The
+        // timer pauses here: it must only run on a website the user
+        // picked for this session, never on a blank tab. The native
+        // page reader (Accessibility) normally identifies the site,
+        // so this only fires when there is genuinely no site to check.
         return (
             State::Unknown,
-            "Waiting for your browser. Check the extension connection.".into(),
+            "Open one of your work websites to start the timer.".into(),
         );
     }
     if p.verification == "camera_and_activity" {
@@ -233,7 +239,7 @@ pub fn observe(s: &mut Session, signal: &Signals, delta: u64, now: i64) {
         s.attention.candidate_ms = delta;
     }
     let threshold = if candidate == State::Focused {
-        2000
+        1000
     } else {
         u64::from(s.focus.attention.grace_seconds) * 1000
     };
@@ -256,10 +262,15 @@ pub fn observe(s: &mut Session, signal: &Signals, delta: u64, now: i64) {
         now,
     );
     if state == State::Focused {
-        s.focused_ms += accepted;
         s.remaining_ms -= accepted;
+        s.focused_ms += accepted;
+        s.deadline_ms = Some(now.saturating_add(s.remaining_ms.min(i64::MAX as u64) as i64));
+    } else {
+        // Paused states do not keep a wall-clock countdown. The deadline is
+        // only a focused-time safety projection and is restored on the next
+        // settled focused sample.
+        s.deadline_ms = None;
     }
-    s.deadline_ms = None;
     if s.remaining_ms == 0 {
         complete(s, now);
     }
@@ -295,7 +306,6 @@ pub fn recover(s: &mut Session, now: i64) {
     s.attention.state = State::Recovering;
     s.attention.reason = "Rechecking fresh signals after restart".into();
     s.attention.candidate_ms = 0;
-    s.deadline_ms = None;
 }
 pub fn correct(s: &mut Session, interval_id: &str, note: &str, now: i64) -> Result<(), String> {
     if note.trim().len() < 3 || note.len() > 240 {
@@ -363,7 +373,7 @@ mod tests {
         };
         observe(&mut s, &good, 1000, 1000);
         observe(&mut s, &good, 1000, 2000);
-        assert_eq!(s.focused_ms, 1000);
+        assert_eq!(s.focused_ms, 2000);
         let bad = Signals {
             activity_available: true,
             ..Default::default()
@@ -371,10 +381,10 @@ mod tests {
         for t in 3..12 {
             observe(&mut s, &bad, 1000, t * 1000);
         }
-        assert_eq!(s.focused_ms, 1000);
+        assert_eq!(s.focused_ms, 2000);
         assert_eq!(s.attention.state, State::Distracted);
         observe(&mut s, &good, 120_000, 132000);
-        assert_eq!(s.focused_ms, 1000);
+        assert_eq!(s.focused_ms, 2000);
         assert_eq!(s.attention.state, State::Recovering);
         assert!(s.attention.elapsed_ms > 120000);
     }
@@ -430,7 +440,7 @@ mod tests {
         for tick in 1..=3 {
             observe(&mut s, &signal, 1000, tick * 1000);
         }
-        assert_eq!(s.focused_ms, 2000);
+        assert_eq!(s.focused_ms, 3000);
         // Present but quiet for less than five minutes: still counted.
         signal.idle_ms = ACTIVITY_LIMIT_MS - 1;
         let before = s.focused_ms;
@@ -468,14 +478,14 @@ mod tests {
         observe(&mut s, &signal, 1000, 1000);
         observe(&mut s, &signal, 1000, 2000);
         assert_eq!(s.attention.state, State::Focused);
-        assert_eq!(s.focused_ms, 1000);
+        assert_eq!(s.focused_ms, 2000);
         // A keypress at four minutes restarts the five-minute window.
         signal.idle_ms = 0;
         observe(&mut s, &signal, 1000, 3000);
-        assert_eq!(s.focused_ms, 2000);
+        assert_eq!(s.focused_ms, 3000);
         signal.idle_ms = ACTIVITY_LIMIT_MS - 1000;
         observe(&mut s, &signal, 1000, 4000);
-        assert_eq!(s.focused_ms, 3000);
+        assert_eq!(s.focused_ms, 4000);
         assert_eq!(s.attention.state, State::Focused);
     }
     #[test]
@@ -494,7 +504,7 @@ mod tests {
             observe(&mut s, &signal, 1000, tick * 1000);
         }
         assert_eq!(s.attention.state, State::Focused);
-        assert_eq!(s.focused_ms, 2000);
+        assert_eq!(s.focused_ms, 3000);
         // Without verified playback the same silence stops credit.
         let paused = Signals {
             lecture_playing: false,
@@ -503,7 +513,7 @@ mod tests {
         for tick in 4..12 {
             observe(&mut s, &paused, 1000, tick * 1000);
         }
-        assert_eq!(s.focused_ms, 2000);
+        assert_eq!(s.focused_ms, 3000);
         assert_eq!(s.attention.state, State::Absent);
     }
     #[test]
@@ -558,8 +568,8 @@ mod tests {
         for tick in 1..=10 {
             observe(&mut s, &signal, 1000, tick * 1000);
         }
-        // Ten ticks of 1 s with one settle tick: exactly 9 s credited.
-        assert_eq!(s.focused_ms, 9000);
+        // The focused state settles on the first 1-second sample.
+        assert_eq!(s.focused_ms, 10000);
         assert_eq!(s.attention.elapsed_ms, 10_000);
         let intervals: u64 = s.attention.intervals.iter().map(|i| i.duration_ms).sum();
         assert_eq!(intervals, s.attention.elapsed_ms);
@@ -645,7 +655,9 @@ mod tests {
             1000,
             1000,
         );
+        // Credit is capped by the productive target and consumes it.
         assert_eq!(s.focused_ms, 500);
+        assert_eq!(s.remaining_ms, 0);
         assert_eq!(s.status, Status::Completed);
     }
 }

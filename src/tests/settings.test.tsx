@@ -22,6 +22,15 @@ vi.mock('../services/api', () => ({
     focusSetup: vi.fn(),
     requestCamera: vi.fn(),
     openSetup: vi.fn(),
+    isPrivilegedHelperInstalled: vi.fn().mockResolvedValue(true),
+    getSystemBlockingStatus: vi.fn().mockResolvedValue({
+      hosts_entries: 0,
+      pf_rules: 0,
+      helper_installed: true,
+      helper_domains: [],
+      strict_until: null,
+      clean: true,
+    }),
   },
 }));
 vi.mock('../services/settings', async (importOriginal) => ({

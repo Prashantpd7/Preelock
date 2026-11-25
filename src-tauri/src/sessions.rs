@@ -1181,7 +1181,11 @@ pub fn apply(data: &mut Snapshot, action: Action, now: i64) -> Result<(), String
             match s.status {
                 Status::Running => {
                     s.started_at.get_or_insert(now);
-                    s.deadline_ms = Some(now + s.remaining_ms as i64);
+                    s.deadline_ms = if s.focus.attention.enabled {
+                        None
+                    } else {
+                        Some(now + s.remaining_ms as i64)
+                    };
                 }
                 Status::Ended => {
                     s.ended_at = Some(now);
@@ -1615,14 +1619,14 @@ mod tests {
         assert_eq!(s.pomodoro.completed_focus_cycles, 0);
     }
     #[test]
-    fn restores_and_completes_overdue_sessions() {
+    fn restores_without_crediting_offline_attention_time() {
         let mut d = data(true);
+        d.sessions[0].focus.attention.enabled = true;
         restore(&mut d, 31_000);
-        assert_eq!(d.sessions[0].remaining_ms, 30_000);
+        assert_eq!(d.sessions[0].remaining_ms, 60_000);
         restore(&mut d, 100_000);
-        assert_eq!(d.sessions[0].status, Status::Completed);
-        assert_eq!(d.sessions[0].focused_ms, 60_000);
-        assert_eq!(d.sessions[0].ended_at, Some(61_000));
+        assert_eq!(d.sessions[0].status, Status::Running);
+        assert_eq!(d.sessions[0].focused_ms, 0);
     }
     #[test]
     fn prevents_concurrent_sessions_and_invalid_input() {

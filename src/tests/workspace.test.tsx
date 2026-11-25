@@ -355,7 +355,7 @@ it('reports persistence errors without inventing success', async () => {
   expect(useAppStore.getState().data.tasks).toHaveLength(0);
 });
 
-it('shows Comet and stops unpaired website setup before session creation', async () => {
+it('allows website blocking without extension and requires connection on YouTube blocking', async () => {
   const setup = await api.focusSetup();
   vi.mocked(api.focusSetup).mockResolvedValue({
     ...setup,
@@ -375,16 +375,31 @@ it('shows Comet and stops unpaired website setup before session creation', async
     screen.getByRole('checkbox', { name: 'Block all websites except these' }),
   );
   await user.type(screen.getByLabelText('Websites to keep open'), 'docs.rs');
-  await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+  // Website blocking alone works without browser extension row
+  expect(screen.queryByText('Browser extension')).not.toBeInTheDocument();
+
+  // Clicking YouTube blocking opens connection modal for the selected browser (Comet)
+  const ytCheckbox = screen.getByRole('checkbox', { name: 'YouTube blocking' });
+  await user.click(ytCheckbox);
   expect(
-    await screen.findByText(
-      'Connect the browser extension below, then check again.',
-    ),
-  ).toHaveAttribute('role', 'alert');
+    await screen.findByRole('heading', {
+      name: 'Connect Comet to use YouTube blocking',
+    }),
+  ).toBeInTheDocument();
   expect(
     screen.getByRole('button', { name: 'Add to Comet' }),
   ).toBeInTheDocument();
-  expect(api.execute).not.toHaveBeenCalled();
+
+  // If user cancels/crosses the modal, YouTube blocking is unchecked
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(ytCheckbox).not.toBeChecked();
+
+  // User can continue with normal website blocking
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Ready to focus?' }),
+  ).toBeInTheDocument();
 });
 it('keeps the removed sidebar section empty', async () => {
   render(<App />);

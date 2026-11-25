@@ -72,6 +72,28 @@ pub struct Attribution<'a> {
 /// (Finder, System Preferences, Preelock itself) is real foreground
 /// usage and keeps its credit; hiding protection is a separate
 /// concern (`focus::protected`) and is untouched.
+/// A website second is credited only while the person is actually
+/// looking at the page: mouse/keyboard input within the last 60 s.
+/// Application time keeps its own, more generous threshold below —
+/// reading a document without moving the mouse is still desktop work —
+/// but a site that has had no input for a minute is not being watched.
+/// A long video is the exception (see `media_playing`), because watching
+/// needs no input; that exemption only exists when the extension has
+/// verified real playback in the focused tab.
+pub const SITE_IDLE_LIMIT_MS: u64 = 60_000;
+
+/// The one Screen Time key for a website. Both sources — the extension's
+/// focused tab and the native Accessibility reader — pass through here,
+/// so `www.youtube.com` and `youtube.com` are one entry with one total,
+/// whichever reader recorded the seconds.
+pub fn site_target(domain: &str) -> &str {
+    match domain.strip_prefix("www.") {
+        // Never reduce a host to a bare label: `www.com` stays `www.com`.
+        Some(rest) if rest.contains('.') => rest,
+        _ => domain,
+    }
+}
+
 fn is_lock_screen_app(app_id: &str) -> bool {
     if app_id.eq_ignore_ascii_case("com.apple.loginwindow") {
         return true;
@@ -118,21 +140,36 @@ pub fn attribute_interval(input: &Attribution<'_>) -> Option<ScreenTimeBucket> {
         app: input.native_app,
         domain: input.native_domain,
     });
+    let app_bucket = || ScreenTimeBucket {
+        day_ms: input.day_ms,
+        kind: "app".into(),
+        target: input.app_id.into(),
+        name: input.app_name.into(),
+        ms: input.delta,
+    };
     match crate::websites::credited(input.app_id, extension, native) {
-        Some((domain, _source)) => Some(ScreenTimeBucket {
-            day_ms: input.day_ms,
-            kind: "site".into(),
-            target: domain.into(),
-            name: domain.into(),
-            ms: input.delta,
-        }),
-        None => Some(ScreenTimeBucket {
-            day_ms: input.day_ms,
-            kind: "app".into(),
-            target: input.app_id.into(),
-            name: input.app_name.into(),
-            ms: input.delta,
-        }),
+        Some((domain, _source)) => {
+            // No input for a minute: the website stopped being watched, so
+            // it gets no second. The interval is never lost — it falls back
+            // to the browser application exactly like unidentified time.
+            let site_idle_limit = if input.media_playing {
+                1_800_000
+            } else {
+                SITE_IDLE_LIMIT_MS
+            };
+            if input.idle_ms >= site_idle_limit {
+                return Some(app_bucket());
+            }
+            let target = site_target(domain);
+            Some(ScreenTimeBucket {
+                day_ms: input.day_ms,
+                kind: "site".into(),
+                target: target.into(),
+                name: target.into(),
+                ms: input.delta,
+            })
+        }
+        None => Some(app_bucket()),
     }
 }
 
@@ -781,12 +818,14 @@ mod tests {
         // Exceeded stepped-away threshold (600s / 10m) -> dropped
         let idle = sample("com.google.Chrome", "Google Chrome", 600_000);
         assert!(sample_buckets(1, 1000, &idle, &b).is_empty());
-        // Normal active reading/working (5m idle) -> credited
+        // Website time stops after a minute without input: the browser
+        // application keeps the interval (desktop work is unchanged), the
+        // website gets nothing.
         let reading = sample("com.google.Chrome", "Google Chrome", 300_000);
         assert_one(
             &sample_buckets(1, 1000, &reading, &b),
-            "site",
-            "instagram.com",
+            "app",
+            "com.google.Chrome",
             1000,
         );
         // Media playing (video/audio) allows watching up to 30m without mouse movements
@@ -820,6 +859,67 @@ mod tests {
             "instagram.com",
             4500,
         );
+    }
+
+    #[test]
+    fn website_seconds_stop_after_one_minute_without_input() {
+        let b = status("com.google.chrome", "youtube.com", true, true);
+        // 59 s since the last input: still watching, the second counts.
+        let last_second = sample("com.google.Chrome", "Google Chrome", 59_999);
+        assert_one(
+            &sample_buckets(1, 1000, &last_second, &b),
+            "site",
+            "youtube.com",
+            1000,
+        );
+        // Exactly 60 s with no input: the website gets no further seconds.
+        let idle = sample("com.google.Chrome", "Google Chrome", 60_000);
+        assert_one(
+            &sample_buckets(1, 1000, &idle, &b),
+            "app",
+            "com.google.Chrome",
+            1000,
+        );
+        // The native reader follows the same rule (no extension).
+        let disconnected = status("", "", false, false);
+        let observation = native("com.apple.Safari", "youtube.com");
+        let safari_idle = sample("com.apple.Safari", "Safari", 90_000);
+        assert_one(
+            &sample_buckets_with_native(1, 1000, &safari_idle, &disconnected, Some(&observation)),
+            "app",
+            "com.apple.Safari",
+            1000,
+        );
+    }
+
+    #[test]
+    fn www_and_bare_host_are_one_website_for_both_readers() {
+        // The extension reports the tab host as the browser gives it; the
+        // native reader reports the page URL's host. Both must land on the
+        // same bucket, so the same site never appears twice.
+        let mut totals = Vec::new();
+        let chrome = sample("com.google.Chrome", "Google Chrome", 0);
+        let extension = status("com.google.chrome", "www.youtube.com", true, true);
+        credit(&mut totals, sample_buckets(1, 1000, &chrome, &extension));
+        let disconnected = status("", "", false, false);
+        let observation = native("com.google.Chrome", "youtube.com");
+        credit(
+            &mut totals,
+            sample_buckets_with_native(1, 1000, &chrome, &disconnected, Some(&observation)),
+        );
+        assert_eq!(totals.len(), 1, "one row for one website");
+        assert_eq!(totals[0].target, "youtube.com");
+        assert_eq!(totals[0].ms, 2000);
+    }
+
+    #[test]
+    fn site_target_keeps_real_hosts_and_only_strips_www() {
+        assert_eq!(site_target("www.youtube.com"), "youtube.com");
+        assert_eq!(site_target("www.bbc.co.uk"), "bbc.co.uk");
+        assert_eq!(site_target("m.youtube.com"), "m.youtube.com");
+        assert_eq!(site_target("youtube.com"), "youtube.com");
+        assert_eq!(site_target("www.com"), "www.com");
+        assert_eq!(site_target("notwww.example.com"), "notwww.example.com");
     }
 
     #[test]

@@ -25,6 +25,24 @@ static ADULT_DOMAINS_SET: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         .collect()
 });
 
+static ADULT_DOMAINS_VEC: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let raw = include_str!("../resources/adult-domains.txt");
+    let mut list: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    list.sort();
+    list.dedup();
+    list
+});
+
+/// Returns all 47,664 adult domains maintained in Preelock's blocklist.
+pub fn all_adult_domains() -> &'static [String] {
+    &ADULT_DOMAINS_VEC
+}
+
 /// Fast check whether a given hostname or any of its parent domain suffixes
 /// matches a known adult domain in the maintained blocklist (47,664 domains).
 pub fn is_adult_domain(host: &str) -> bool {
@@ -223,6 +241,14 @@ mod tests {
         assert!(!is_adult_domain("apple.com"));
         assert!(!is_adult_domain("preelock.com"));
         assert!(!is_adult_domain(""));
+    }
+
+    #[test]
+    fn all_adult_domains_is_non_empty_and_contains_major_sites() {
+        let domains = all_adult_domains();
+        assert!(domains.len() > 40_000);
+        assert!(domains.contains(&"xhamster.com".to_string()));
+        assert!(domains.contains(&"pornhub.com".to_string()));
     }
 
     #[test]

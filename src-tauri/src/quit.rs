@@ -84,19 +84,6 @@ pub fn decide(has_active: bool, owns_engine_lock: bool) -> QuitDecision {
     }
 }
 
-/// Authoritative GUI quit rule when `--background` is the sole session engine
-/// owner: Cmd+Q / Quit exits ONLY the desktop UI process (`ExitUiOnly`),
-/// leaving `--background` running. Wait before exiting only if background
-/// is unreachable while a session is active (refuse fail-open exit).
-/// The background supervisor relaunches the UI while any session is active.
-pub fn gui_quit_action(background_reachable: bool, has_active: bool) -> QuitDecision {
-    if !background_reachable && has_active {
-        QuitDecision::CloseUiOnly
-    } else {
-        QuitDecision::ExitUiOnly
-    }
-}
-
 /// M6: whether the main window is shown at GUI startup after an OS
 /// shutdown / logout / restart.
 ///
@@ -146,6 +133,41 @@ pub fn login_window_action(
         LoginWindowAction::ShowWindow
     } else {
         LoginWindowAction::StartHidden
+    }
+}
+
+/// What a GUI quit request (Cmd+Q, Alt+F4, Dock Quit, tray Quit, the
+/// macOS `applicationShouldTerminate:` guard) should do. This is the
+/// anti-bypass rule: quitting the window is not ending the session.
+///
+/// A live session blocks the quit outright: the process stays up, the
+/// window is shown again with the "Session in progress" notice, the
+/// engine keeps owning the session and its blocks stay applied. Refusing
+/// is deliberately stronger than exiting and relaunching — a cold Tauri
+/// boot measured on this Mac is ~1.3-1.8 s, so an exit-and-relaunch could
+/// never reopen within the required second, while refusing is immediate
+/// and can never produce a duplicate Dock icon or a relaunch storm.
+/// Force Quit / Task Manager termination still kill the process without
+/// any IPC; `UiRelaunchSupervisor` handles those from `--background`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitAction {
+    /// A session is live: refuse the quit. Do NOT exit, do NOT stop the
+    /// engine, do NOT mark sessions completed, do NOT clear blocks.
+    RefuseAndShowWindow,
+    /// No live session: stop the engine, mark leftovers completed, clear
+    /// blocks, then exit.
+    TearDownAndExit,
+}
+
+/// The quit table. `has_active` comes from the authoritative engine
+/// (`Engine::has_active`: Running, Preparing or Paused, and the global
+/// power toggle is on), falling back to the durable store/checkpoint
+/// when the engine cannot be reached.
+pub fn quit_action(has_active: bool) -> QuitAction {
+    if has_active {
+        QuitAction::RefuseAndShowWindow
+    } else {
+        QuitAction::TearDownAndExit
     }
 }
 
@@ -202,6 +224,15 @@ mod tests {
     }
 
     #[test]
+    fn quit_action_never_ends_a_live_session() {
+        // Any live session (instant, scheduled, Standard, Strict, Pomodoro;
+        // Running, Preparing or Paused) refuses Cmd+Q / Alt+F4 outright.
+        assert_eq!(quit_action(true), QuitAction::RefuseAndShowWindow);
+        // Idle quits still tear everything down and release restrictions.
+        assert_eq!(quit_action(false), QuitAction::TearDownAndExit);
+    }
+
+    #[test]
     fn quit_decision_matrix() {
         // Live session: UI only, whoever owns the engine.
         assert_eq!(decide(true, true), QuitDecision::CloseUiOnly);
@@ -211,14 +242,6 @@ mod tests {
         // Idle observer (the M1 transient): exit the UI only — no
         // shutdown, no "finish your session" notice.
         assert_eq!(decide(false, false), QuitDecision::ExitUiOnly);
-    }
-
-    #[test]
-    fn gui_quit_exits_ui_when_background_owns_session() {
-        assert_eq!(gui_quit_action(true, true), QuitDecision::ExitUiOnly);
-        assert_eq!(gui_quit_action(true, false), QuitDecision::ExitUiOnly);
-        assert_eq!(gui_quit_action(false, false), QuitDecision::ExitUiOnly);
-        assert_eq!(gui_quit_action(false, true), QuitDecision::CloseUiOnly);
     }
 
     #[test]

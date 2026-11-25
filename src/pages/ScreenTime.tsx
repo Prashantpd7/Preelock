@@ -1,8 +1,9 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { PageHeading } from '../components/ui';
 import { AppLockPanel } from '../components/AppLockPanel';
 import { useAppStore } from '../state/store';
-import { desktop } from '../services/api';
+import { api, desktop } from '../services/api';
+import { settingsAction } from '../services/settings';
 import {
   appCategory,
   categoryKey,
@@ -31,6 +32,9 @@ const EMPTY_BUCKETS: ScreenTimeBucket[] = [];
 const CATEGORIES: AppCategory[] = ['Distracting', 'Productive', 'Others'];
 
 function duration(ms: number) {
+  // Live tracking is per second: under a minute the number has to move,
+  // otherwise a site visibly accruing time still reads "0m".
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
@@ -59,11 +63,40 @@ export function ScreenTime() {
   // highlighted option with aria-activedescendant.
   const [menuKey, setMenuKey] = useState<string | null>(null);
   const [menuActive, setMenuActive] = useState<number | null>(null);
+  // Extension-free website tracking reads the frontmost browser's page
+  // through macOS Accessibility. Without that grant nothing can be
+  // recorded, so say so instead of showing a silent zero.
+  const [setupPlatform, setSetupPlatform] = useState('');
+  const [accessibilityMissing, setAccessibilityMissing] = useState(false);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const rawId = useId().replace(/:/g, '');
   const menuListboxId = `screen-time-category-${rawId}-listbox`;
   const menuOptionId = (index: number) =>
     `screen-time-category-${rawId}-option-${index}`;
+
+  useEffect(() => {
+    if (!desktop) return;
+    let active = true;
+    const check = async () => {
+      try {
+        const info = await settingsAction({ type: 'info' });
+        if (!active) return;
+        setSetupPlatform(info.platform ?? '');
+        setAccessibilityMissing(
+          info.accessibility_permission !== 'granted' &&
+            info.accessibility !== 1,
+        );
+      } catch {
+        // Engine unreachable: keep the last known permission state.
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const today = localDayStart(new Date());
   const weekStart = weekStartMs(shiftDays(today, weekOffset * 7));
@@ -196,6 +229,22 @@ export function ScreenTime() {
         <div className="notice">
           Screen Time collection and enforcement are available in the desktop
           app.
+        </div>
+      )}
+      {desktop && setupPlatform === 'macos' && accessibilityMissing && (
+        <div className="notice" role="status">
+          <span>
+            Preelock needs Accessibility permission to see which website is open
+            — grant it in System Settings → Privacy &amp; Security →
+            Accessibility. Nothing is being recorded while it is off.
+          </span>{' '}
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void api.openSetup('accessibility_settings')}
+          >
+            Open System Settings
+          </button>
         </div>
       )}
       <div

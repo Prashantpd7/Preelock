@@ -4,16 +4,10 @@ import { settingsAction, type SettingsInfo } from '../services/settings';
 import { useFocusSetup } from '../hooks/useFocusSetup';
 import { useAppStore } from '../state/store';
 import { Modal, SettingRow, Toggle } from './SettingsControls';
-import {
-  BrowserSetup,
-  areAllInstalledBrowsersConnected,
-  getInstalledSupportedBrowsers,
-  getUnconnectedInstalledBrowsers,
-} from './BrowserSetup';
+import { BrowserSetup, areAllInstalledBrowsersConnected } from './BrowserSetup';
 
 export function PermissionsGuide({
   onClose,
-  isFirstRun = false,
 }: {
   onClose: () => void;
   isFirstRun?: boolean;
@@ -24,22 +18,30 @@ export function PermissionsGuide({
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [browserGuide, setBrowserGuide] = useState(false);
+  const [helperInstalled, setHelperInstalled] = useState(false);
   const mac = setup?.platform === 'macos';
-  const installedBrowsers = getInstalledSupportedBrowsers(setup);
-  const unconnectedBrowsers = getUnconnectedInstalledBrowsers(setup);
   const allBrowsersConnected = areAllInstalledBrowsersConnected(setup);
-  const browserConnected = allBrowsersConnected;
+  const anyBrowserConnected = Boolean(
+    setup?.browser?.connected ||
+    (setup?.connected_browsers && setup.connected_browsers.length > 0),
+  );
   const accessibilityGranted =
     setup?.accessibility_permission === 'granted' ||
     info.accessibility === 1 ||
     info.accessibility_permission === 'granted';
 
   // While the guide is open, keep checking so it detects changes
-  // (browser connection, accessibility, notifications, camera)
+  // (helper, browser connection, accessibility, notifications, camera)
   // on its own once the user toggles them in System Settings.
   useEffect(() => {
     const timer = setInterval(() => {
       void refresh();
+      if (typeof api.isPrivilegedHelperInstalled === 'function') {
+        void api
+          .isPrivilegedHelperInstalled()
+          .then((v) => setHelperInstalled(v))
+          .catch(() => {});
+      }
       void settingsAction({ type: 'recheck_permissions' })
         .then((v) => setInfo(v))
         .catch(() => {
@@ -52,6 +54,13 @@ export function PermissionsGuide({
   }, [refresh]);
   async function check() {
     await refresh();
+    if (typeof api.isPrivilegedHelperInstalled === 'function') {
+      try {
+        setHelperInstalled(await api.isPrivilegedHelperInstalled());
+      } catch {
+        // ignore
+      }
+    }
     try {
       setInfo(await settingsAction({ type: 'recheck_permissions' }));
     } catch {
@@ -66,6 +75,14 @@ export function PermissionsGuide({
     let active = true;
     const read = () => {
       void refresh();
+      if (typeof api.isPrivilegedHelperInstalled === 'function') {
+        void api
+          .isPrivilegedHelperInstalled()
+          .then((v) => {
+            if (active) setHelperInstalled(v);
+          })
+          .catch(() => {});
+      }
       void settingsAction({ type: 'recheck_permissions' })
         .then((v) => {
           if (active) setInfo(v);
@@ -87,6 +104,20 @@ export function PermissionsGuide({
       window.removeEventListener('focus', read);
     };
   }, [refresh]);
+  async function handleInstallHelper() {
+    return act(async () => {
+      if (mac && typeof api.installPrivilegedHelper === 'function') {
+        await api.installPrivilegedHelper();
+      } else if (typeof api.setupNativeBlocking === 'function') {
+        await api.setupNativeBlocking();
+      }
+      if (typeof api.isPrivilegedHelperInstalled === 'function') {
+        const installed = await api.isPrivilegedHelperInstalled();
+        setHelperInstalled(installed);
+      }
+    });
+  }
+
   async function act(action: () => Promise<unknown>) {
     setBusy(true);
     setError('');
@@ -107,11 +138,7 @@ export function PermissionsGuide({
   );
   return (
     <>
-      <Modal
-        title="Permissions & setup"
-        onClose={onClose}
-        hideClose={isFirstRun && !browserConnected}
-      >
+      <Modal title="Permissions & setup" onClose={onClose}>
         {!setup ? (
           <p>Checking your system…</p>
         ) : (
@@ -179,6 +206,22 @@ export function PermissionsGuide({
               />
             </SettingRow>
             <SettingRow
+              title="Privileged Blocking Helper"
+              hint={
+                helperInstalled
+                  ? 'Helper is installed and enforcing website blocking across all apps.'
+                  : 'Required to block websites and apps across your system without browser extensions.'
+              }
+            >
+              <button
+                className={helperInstalled ? 'secondary' : undefined}
+                disabled={busy || helperInstalled}
+                onClick={() => void handleInstallHelper()}
+              >
+                {helperInstalled ? 'Installed' : 'Install Helper'}
+              </button>
+            </SettingRow>
+            <SettingRow
               title="Notifications"
               hint={
                 info.notifications === 1
@@ -233,19 +276,19 @@ export function PermissionsGuide({
             <SettingRow
               title="Browser extension"
               hint={
-                browserConnected
+                allBrowsersConnected
                   ? 'All installed browsers are connected to Preelock.'
-                  : installedBrowsers.length > 0
-                    ? `Connect all installed browsers: ${unconnectedBrowsers.map((b) => b.name).join(', ')} (${installedBrowsers.length - unconnectedBrowsers.length}/${installedBrowsers.length} connected). Required to continue.`
+                  : anyBrowserConnected
+                    ? `Connected: ${setup?.connected_browsers?.length ?? 1} browser(s). You can connect additional browsers anytime.`
                     : 'Connect your browser so Preelock can block distracting sites during sessions.'
               }
             >
               <button
                 className="secondary"
-                disabled={browserConnected}
+                disabled={allBrowsersConnected}
                 onClick={() => setBrowserGuide(true)}
               >
-                {browserConnected ? 'Connected' : 'Connect browser'}
+                {allBrowsersConnected ? 'Connected' : 'Connect browser'}
               </button>
             </SettingRow>
           </div>
@@ -261,7 +304,10 @@ export function PermissionsGuide({
           </p>
         )}
         <div className="dialog-footer">
-          <button disabled={!browserConnected} onClick={onClose}>
+          <button
+            onClick={onClose}
+            disabled={busy || (!helperInstalled && desktop)}
+          >
             Done
           </button>
         </div>
@@ -283,6 +329,7 @@ export function PermissionsGuide({
 export function FirstRunPermissions() {
   const data = useAppStore((s) => s.data);
   const { setup } = useFocusSetup();
+  const [helperInstalled, setHelperInstalled] = useState(false);
   const [open, setOpen] = useState(() => {
     try {
       return (
@@ -296,6 +343,22 @@ export function FirstRunPermissions() {
     }
   });
 
+  useEffect(() => {
+    if (!desktop) return;
+    let active = true;
+    if (typeof api.isPrivilegedHelperInstalled === 'function') {
+      api
+        .isPrivilegedHelperInstalled()
+        .then((v) => {
+          if (active) setHelperInstalled(v);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Never show onboarding if backend database confirms it is already completed
   const onboardingDone = Boolean(data?.preferences?.onboarding_completed);
 
@@ -307,12 +370,12 @@ export function FirstRunPermissions() {
       s.status === 'paused',
   );
 
-  // Requirement 5.3: On fresh installation, if capabilities are already granted, continue without displaying prompt
+  // Mandatory: On fresh installation, helper must be installed. Browser connection is optional.
   const mac = setup?.platform === 'macos';
   const accessibilityOk = !mac || setup?.accessibility_permission === 'granted';
-  const allBrowsersOk = areAllInstalledBrowsersConnected(setup);
+  const helperOk = !desktop || helperInstalled;
   const alreadyGrantedOnFirstRun = Boolean(
-    open && setup && accessibilityOk && allBrowsersOk,
+    open && setup && accessibilityOk && helperOk,
   );
 
   useEffect(() => {

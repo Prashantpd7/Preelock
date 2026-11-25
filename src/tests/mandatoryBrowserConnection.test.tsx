@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PermissionsGuide } from '../components/PermissionsGuide';
 import {
@@ -7,6 +7,7 @@ import {
   areAllInstalledBrowsersConnected,
   getInstalledSupportedBrowsers,
   getUnconnectedInstalledBrowsers,
+  isBrowserConnected,
 } from '../components/BrowserSetup';
 import { MandatoryBrowserDisconnectModal } from '../components/MandatoryBrowserDisconnectModal';
 import { api } from '../services/api';
@@ -22,6 +23,7 @@ vi.mock('../services/api', async (importOriginal) => {
       focusSetup: vi.fn(),
       openSetup: vi.fn().mockResolvedValue(undefined),
       requestCamera: vi.fn().mockResolvedValue(undefined),
+      isPrivilegedHelperInstalled: vi.fn().mockResolvedValue(true),
       execute: vi.fn().mockResolvedValue(true),
     },
   };
@@ -98,40 +100,17 @@ describe('Mandatory Browser Connection Requirements', () => {
     expect(getUnconnectedInstalledBrowsers(allConnectedSetup)).toEqual([]);
   });
 
-  it('disables the Done button in PermissionsGuide until all installed browsers are connected', async () => {
+  it('allows the Done button in PermissionsGuide without requiring all installed browsers to be connected', async () => {
     vi.mocked(api.focusSetup).mockResolvedValue(multiBrowserSetup);
     const onClose = vi.fn();
 
-    const { unmount } = render(
-      <PermissionsGuide onClose={onClose} isFirstRun={true} />,
-    );
-
-    // Done button is disabled
-    const doneBtn = await screen.findByRole('button', { name: 'Done' });
-    expect(doneBtn).toBeDisabled();
-
-    // Browser extension row explains which browsers are still needed
-    expect(screen.getByText(/Google Chrome, Comet/i)).toBeInTheDocument();
-    unmount();
-
-    // Now simulate user having connected all browsers
-    const allConnectedSetup: FocusSetup = {
-      ...multiBrowserSetup,
-      connected_browsers: [
-        'com.google.chrome',
-        'com.brave.Browser',
-        'ai.perplexity.comet',
-      ],
-    };
-    vi.mocked(api.focusSetup).mockResolvedValue(allConnectedSetup);
-
     render(<PermissionsGuide onClose={onClose} isFirstRun={true} />);
 
-    // Once all browsers connect, Done button is enabled
-    const enabledDone = await screen.findByRole('button', { name: 'Done' });
-    expect(enabledDone).not.toBeDisabled();
+    // Done button is enabled because connecting all browsers is not compulsory
+    const doneBtn = await screen.findByRole('button', { name: 'Done' });
+    expect(doneBtn).not.toBeDisabled();
     const user = userEvent.setup();
-    await user.click(enabledDone);
+    await user.click(doneBtn);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -148,12 +127,13 @@ describe('Mandatory Browser Connection Requirements', () => {
     await user.click(connectBtn);
 
     // Browser connection modal is opened
-    expect(
-      screen.getByRole('dialog', { name: 'Browser connection' }),
-    ).toBeInTheDocument();
+    const browserDialog = screen.getByRole('dialog', {
+      name: 'Browser connection',
+    });
+    expect(browserDialog).toBeInTheDocument();
 
     // User can cross the browser connection popup
-    const closeDialogBtn = screen.getByRole('button', {
+    const closeDialogBtn = within(browserDialog).getByRole('button', {
       name: 'Close dialog',
     });
     await user.click(closeDialogBtn);
@@ -187,7 +167,7 @@ describe('Mandatory Browser Connection Requirements', () => {
     expect(installButtons).toHaveLength(2);
   });
 
-  it('shows persistent mandatory modal without close button when an open browser disconnects in the future', async () => {
+  it('does NOT show mandatory modal when browsers are unconnected', async () => {
     const openDisconnectedSetup: FocusSetup = {
       ...multiBrowserSetup,
       applications: [
@@ -199,53 +179,103 @@ describe('Mandatory Browser Connection Requirements', () => {
     localStorage.setItem('preelock-permissions-v10', 'seen');
     localStorage.setItem('preelock-all-browsers-connected', 'true');
 
-    // openDisconnectedSetup has open disconnected browsers (Chrome and Comet)
-    const { unmount } = render(<MandatoryBrowserDisconnectModal />);
+    render(<MandatoryBrowserDisconnectModal />);
 
-    // The modal appears
+    // Mandatory modal must not show
     expect(
-      await screen.findByRole('dialog', {
+      screen.queryByRole('dialog', {
         name: 'Browser connection required',
       }),
-    ).toBeInTheDocument();
-
-    // It has NO close button
-    expect(screen.queryByLabelText('Close dialog')).not.toBeInTheDocument();
-
-    // It warns about disconnected running browsers
-    expect(screen.getByText(/Google Chrome, Comet/i)).toBeInTheDocument();
-    unmount();
-
-    // Once reconnected, the modal automatically closes
-    const allConnectedSetup: FocusSetup = {
-      ...openDisconnectedSetup,
-      connected_browsers: [
-        'com.google.chrome',
-        'com.brave.Browser',
-        'ai.perplexity.comet',
-      ],
-    };
-    vi.mocked(api.focusSetup).mockResolvedValue(allConnectedSetup);
-
-    render(<MandatoryBrowserDisconnectModal />);
-    expect(
-      screen.queryByRole('dialog', { name: 'Browser connection required' }),
     ).not.toBeInTheDocument();
   });
 
-  it('does NOT show mandatory modal when unconnected browsers are closed/not open', async () => {
-    // Chrome and Comet are disconnected, BUT closed (not in applications)
-    const closedDisconnectedSetup: FocusSetup = {
+  it('accurately detects disconnected browsers whether open or closed, without falsely marking closed browsers as connected', () => {
+    // All browsers disconnected, some open, some closed
+    const allDisconnectedSetup: FocusSetup = {
       ...multiBrowserSetup,
+      connected_browsers: [],
+      browser: {
+        ...multiBrowserSetup.browser,
+        connected: false,
+        client_browser: '',
+      },
+      applications: [{ id: 'com.brave.Browser', name: 'Brave' }],
+    };
+
+    // Brave is open and disconnected -> false
+    expect(isBrowserConnected('com.brave.Browser', allDisconnectedSetup)).toBe(
+      false,
+    );
+    // Chrome is closed and disconnected -> false (never falsely marked connected)
+    expect(isBrowserConnected('com.google.chrome', allDisconnectedSetup)).toBe(
+      false,
+    );
+    // Comet is closed and disconnected -> false
+    expect(
+      isBrowserConnected('ai.perplexity.comet', allDisconnectedSetup),
+    ).toBe(false);
+
+    // Now close Brave as well
+    const allClosedSetup: FocusSetup = {
+      ...allDisconnectedSetup,
       applications: [],
     };
-    vi.mocked(api.focusSetup).mockResolvedValue(closedDisconnectedSetup);
-    localStorage.setItem('preelock-permissions-v10', 'seen');
-    localStorage.setItem('preelock-all-browsers-connected', 'true');
+    expect(isBrowserConnected('com.brave.Browser', allClosedSetup)).toBe(false);
+    expect(isBrowserConnected('com.google.chrome', allClosedSetup)).toBe(false);
+    expect(isBrowserConnected('ai.perplexity.comet', allClosedSetup)).toBe(
+      false,
+    );
 
-    render(<MandatoryBrowserDisconnectModal />);
+    // BrowserSetup renders all as disconnected with Install buttons
+    render(
+      <BrowserSetup
+        setup={allClosedSetup}
+        refresh={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.queryByText('✓ Connected')).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('dialog', { name: 'Browser connection required' }),
-    ).not.toBeInTheDocument();
+      screen.getByText('Installed browsers (0/3 connected):'),
+    ).toBeInTheDocument();
+    const installButtons = screen.getAllByText('Install');
+    expect(installButtons).toHaveLength(3);
+  });
+
+  it('accurately detects connected browsers whether open or closed, consistently showing them as connected', () => {
+    // Brave is paired/connected, but Brave is closed (applications is empty)
+    const pairedClosedSetup: FocusSetup = {
+      ...multiBrowserSetup,
+      connected_browsers: ['com.brave.Browser'],
+      browser: {
+        ...multiBrowserSetup.browser,
+        connected: false,
+        client_browser: '',
+      },
+      applications: [],
+    };
+
+    // Paired browser must be detected as connected even when closed
+    expect(isBrowserConnected('com.brave.Browser', pairedClosedSetup)).toBe(
+      true,
+    );
+    // Unpaired browsers remain disconnected when closed
+    expect(isBrowserConnected('com.google.chrome', pairedClosedSetup)).toBe(
+      false,
+    );
+    expect(isBrowserConnected('ai.perplexity.comet', pairedClosedSetup)).toBe(
+      false,
+    );
+
+    // BrowserSetup renders Brave as Connected (1/3 connected) even when closed
+    render(
+      <BrowserSetup
+        setup={pairedClosedSetup}
+        refresh={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(
+      screen.getByText('Installed browsers (1/3 connected):'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('✓ Connected')).toBeInTheDocument();
   });
 });

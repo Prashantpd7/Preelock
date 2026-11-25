@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
-import { desktop } from '../services/api';
+import { api, desktop } from '../services/api';
 import { settingsAction, type SettingsInfo } from '../services/settings';
 import { countdown } from '../services/analytics';
 import { useAppStore } from '../state/store';
+import { InstallHelperModal } from './InstallHelperModal';
 export function BreakBar() {
   const [info, setInfo] = useState<SettingsInfo>({});
   const [error, setError] = useState('');
   const sessions = useAppStore((s) => s.data.sessions);
   const execute = useAppStore((s) => s.execute);
   const busy = useAppStore((s) => s.busy);
+  const isEngineDown = useAppStore((s) => s.isEngineDown);
   const lastFinished =
     sessions.find((s) => s.id === info.break_offer) ??
     sessions
       .filter((s) => ['completed', 'ended', 'interrupted'].includes(s.status))
       .sort((a, b) => (b.ended_at ?? 0) - (a.ended_at ?? 0))[0];
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || isEngineDown) return;
     let active = true;
     const poll = () =>
       void settingsAction({ type: 'status' })
@@ -29,7 +31,7 @@ export function BreakBar() {
       active = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [isEngineDown]);
   async function act(type: 'end_break' | 'dismiss_break') {
     try {
       await settingsAction({ type });
@@ -39,7 +41,9 @@ export function BreakBar() {
       setError(String(e));
     }
   }
-  async function startAgain() {
+  const [installHelperModalOpen, setInstallHelperModalOpen] = useState(false);
+
+  async function performStartAgain() {
     if (!lastFinished) return;
     try {
       await settingsAction({ type: 'dismiss_break' });
@@ -51,6 +55,22 @@ export function BreakBar() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function startAgain() {
+    if (!lastFinished) return;
+    if (desktop && typeof api.isPrivilegedHelperInstalled === 'function') {
+      try {
+        const helperInstalled = await api.isPrivilegedHelperInstalled();
+        if (!helperInstalled) {
+          setInstallHelperModalOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Helper check failed:', e);
+      }
+    }
+    await performStartAgain();
   }
   if (!info.break_remaining && !info.break_offer) return null;
   return (
@@ -89,6 +109,15 @@ export function BreakBar() {
           </>
         )}
       </div>
+      <InstallHelperModal
+        isOpen={installHelperModalOpen}
+        onClose={() => setInstallHelperModalOpen(false)}
+        onCancel={() => setInstallHelperModalOpen(false)}
+        onInstalled={() => {
+          setInstallHelperModalOpen(false);
+          void performStartAgain();
+        }}
+      />
     </aside>
   );
 }

@@ -17,6 +17,22 @@ export function liveSession(sessions: Session[]): Session | undefined {
   return sessions.find((s) => isLiveSessionStatus(s.status));
 }
 
+/** Remaining time for the banner and menu-bar countdown. Attention-gated
+ *  sessions only keep a projected local deadline while currently focused.
+ *  Paused/distracted/absent states keep the persisted focused-time remaining
+ *  value and the countdown does not move. */
+export function liveRemainingMs(session: Session, nowMs: number): number {
+  if (session.status !== 'running') return session.remaining_ms;
+  // Grace has not started enforcement yet and does not move the deadline.
+  if (session.grace_until_ms && session.grace_until_ms > nowMs) {
+    return session.remaining_ms;
+  }
+  if (session.deadline_ms !== null) {
+    return Math.max(0, session.deadline_ms - nowMs);
+  }
+  return session.remaining_ms;
+}
+
 /** Human label for a session's origin, from the kind the backend
  *  records at creation and persists on the session. Sessions
  *  saved before the backend recorded it have no `kind`, so the
@@ -84,7 +100,23 @@ export function sessionNeedsBrowser(focus: FocusConfig | undefined): boolean {
     (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
     (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
     !!focus.youtube_study_mode ||
+    !!focus.youtube_block_entertainment ||
+    !!focus.youtube_allow_watch_later ||
     (!!focus.frozen?.enabled && !!focus.browser_app)
+  );
+}
+
+/** Returns true if the session focus configuration contains any YouTube
+ *  filtering rules (blocked channels, study mode, entertainment blocking,
+ *  or watch-later playlist only). */
+export function hasYouTubeRules(focus: FocusConfig | undefined): boolean {
+  if (!focus) return false;
+  return (
+    (focus.youtube_blocked_channels?.length ?? 0) > 0 ||
+    (focus.youtube_allowed_channels?.length ?? 0) > 0 ||
+    !!focus.youtube_study_mode ||
+    !!focus.youtube_block_entertainment ||
+    !!focus.youtube_allow_watch_later
   );
 }
 

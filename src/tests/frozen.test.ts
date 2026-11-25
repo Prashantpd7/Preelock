@@ -61,12 +61,12 @@ describe('setupProblem with frozen sessions', () => {
     const problem = setupProblem(focus, setup);
     expect(problem).not.toContain('browser');
   });
-  it('requires the picked browser to be connected for a frozen session', () => {
+  it('does not require the picked browser to be connected for a frozen session', () => {
     const focus: FocusConfig = {
       ...defaultFocus,
       browser_app: 'com.google.Chrome',
       frozen: { enabled: true, allowed_apps: [], allowed_websites: [] },
     };
-    expect(setupProblem(focus, setup)).toContain('Connect the browser');
+    expect(setupProblem(focus, setup)).not.toContain('Connect the browser');
   });
 });

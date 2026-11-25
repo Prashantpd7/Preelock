@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { hasLiveStrictSession } from '../services/activitySection';
 import { useAppStore } from '../state/store';
+import { isSafariId } from '../services/browserSupport';
 import { sameBrowser, type FocusSetup } from '../types';
 import { Modal } from './SettingsControls';
 
 export function isSupportedBrowser(id: string): boolean {
   const lower = id.toLowerCase();
-  if (lower.includes('safari') || lower === 'com.apple.safari') return false;
+  if (lower === 'com.apple.safari' || lower.endsWith('\\safari.exe'))
+    return true;
   const known = [
     'com.google.chrome',
     'com.microsoft.edgemac',
@@ -18,6 +20,7 @@ export function isSupportedBrowser(id: string): boolean {
     'company.thebrowser.browser',
     'com.operasoftware.opera',
     'com.operasoftware.operagx',
+    'com.apple.safari',
   ];
   if (known.includes(lower)) return true;
   return [
@@ -29,11 +32,13 @@ export function isSupportedBrowser(id: string): boolean {
     'comet.exe',
     'arc.exe',
     'opera.exe',
+    'safari.exe',
   ].some((name) => lower.endsWith(`\\${name}`) || lower === name);
 }
 
 export function getCanonicalBrowserKey(id: string): string {
   const lower = id.toLowerCase();
+  if (lower.includes('safari')) return 'safari';
   if (lower.includes('chrome') && !lower.includes('chromium')) return 'chrome';
   if (lower.includes('brave')) return 'brave';
   if (
@@ -65,41 +70,32 @@ export function isBrowserOpen(
   );
 }
 
-export function markBrowserConnected(browserId: string): void {
-  try {
-    const key = getCanonicalBrowserKey(browserId);
-    const raw = localStorage.getItem('preelock-known-connected-browsers');
-    const list: string[] = raw ? JSON.parse(raw) : [];
-    if (!list.includes(key)) {
-      list.push(key);
-      localStorage.setItem(
-        'preelock-known-connected-browsers',
-        JSON.stringify(list),
-      );
-    }
-  } catch {
-    // ignore
-  }
+try {
+  localStorage.removeItem('preelock-known-connected-browsers');
+  localStorage.removeItem('preelock-all-browsers-connected');
+} catch {
+  // ignore
+}
+
+export function markBrowserConnected(_browserId?: string): void {
+  void _browserId;
+  // Connection state is derived directly from live extension status, not cached locally
 }
 
 export function getKnownConnectedBrowsers(): string[] {
-  try {
-    const raw = localStorage.getItem('preelock-known-connected-browsers');
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  return [];
 }
 
-export function isBrowserKnownConnected(browserId: string): boolean {
-  const key = getCanonicalBrowserKey(browserId);
-  return getKnownConnectedBrowsers().includes(key);
+export function isBrowserKnownConnected(_browserId?: string): boolean {
+  void _browserId;
+  return false;
 }
 
 export function isBrowserConnected(
   browserId: string,
   setup: FocusSetup | null,
 ): boolean {
+  if (isSafariId(browserId)) return false;
   if (!setup) return false;
   const key = getCanonicalBrowserKey(browserId);
   const connectedList = setup.connected_browsers ?? [];
@@ -108,7 +104,6 @@ export function isBrowserConnected(
       (c) => sameBrowser(c, browserId) || getCanonicalBrowserKey(c) === key,
     )
   ) {
-    markBrowserConnected(browserId);
     return true;
   }
   if (
@@ -120,14 +115,8 @@ export function isBrowserConnected(
       sameBrowser(setup.browser.client_browser, browserId) ||
       getCanonicalBrowserKey(setup.browser.client_browser) === key
     ) {
-      markBrowserConnected(browserId);
       return true;
     }
-  }
-  // When a browser is closed (not running), if it was previously connected / paired,
-  // it is considered connected because a closed browser cannot ping and is not an active gap.
-  if (!isBrowserOpen(browserId, setup) && isBrowserKnownConnected(browserId)) {
-    return true;
   }
   return false;
 }
@@ -206,6 +195,7 @@ export function getBrowserDisplayName(browser: {
   if (id.includes('arc') || id.includes('thebrowser')) return 'Arc';
   if (id.includes('operagx')) return 'Opera GX';
   if (id.includes('opera')) return 'Opera';
+  if (id.includes('safari')) return 'Safari';
   return browser.id;
 }
 
@@ -229,12 +219,14 @@ export function BrowserSetup({
   browserId = '',
   allowAdd = false,
   onBack,
+  singleBrowserId,
 }: {
   setup: FocusSetup | null;
   refresh: (browserId?: string) => Promise<unknown>;
   browserId?: string;
   allowAdd?: boolean;
   onBack?: () => void;
+  singleBrowserId?: string;
 }) {
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
@@ -245,9 +237,31 @@ export function BrowserSetup({
   );
 
   const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
-  const installedBrowsers = getInstalledSupportedBrowsers(setup);
+  const rawInstalledBrowsers = getInstalledSupportedBrowsers(setup);
+  const installedBrowsers = singleBrowserId
+    ? (() => {
+        const found = rawInstalledBrowsers.filter(
+          (b) =>
+            sameBrowser(b.id, singleBrowserId) ||
+            getCanonicalBrowserKey(b.id) ===
+              getCanonicalBrowserKey(singleBrowserId),
+        );
+        if (found.length > 0) return found;
+        const fallback = (setup?.browsers ?? []).find(
+          (b) =>
+            sameBrowser(b.id, singleBrowserId) ||
+            getCanonicalBrowserKey(b.id) ===
+              getCanonicalBrowserKey(singleBrowserId),
+        );
+        return fallback
+          ? [{ id: fallback.id, name: getBrowserDisplayName(fallback) }]
+          : rawInstalledBrowsers;
+      })()
+    : rawInstalledBrowsers;
   const unconnectedBrowsers = getUnconnectedInstalledBrowsers(setup);
-  const allConnected = areAllInstalledBrowsersConnected(setup);
+  const allConnected = singleBrowserId
+    ? isBrowserConnected(singleBrowserId, setup)
+    : areAllInstalledBrowsersConnected(setup);
   const connected = allConnected;
 
   // Filter only browsers actually installed on the user's computer and supported
@@ -353,7 +367,7 @@ export function BrowserSetup({
     }
   }
 
-  if (connected && !allowAdd) {
+  if (connected && !allowAdd && !singleBrowserId) {
     return (
       <div className="setup-guide">
         <p className="ready-box">All browsers connected</p>
@@ -480,9 +494,9 @@ export function BrowserSetup({
                 }}
               >
                 <span className="small muted" style={{ fontWeight: 600 }}>
-                  Installed browsers (
-                  {installedBrowsers.length - unconnectedBrowsers.length}/
-                  {installedBrowsers.length} connected):
+                  {singleBrowserId
+                    ? `${installedBrowsers[0]?.name ?? 'Browser'} extension:`
+                    : `Installed browsers (${installedBrowsers.length - unconnectedBrowsers.length}/${installedBrowsers.length} connected):`}
                 </span>
                 {installedBrowsers.map((b) => {
                   const isConn = isBrowserConnected(b.id, setup);

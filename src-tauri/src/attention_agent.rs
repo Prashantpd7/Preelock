@@ -196,6 +196,7 @@ fn handle(mut stream: TcpStream, expected: &str, capture: &mut Capture) {
 }
 
 pub fn run() -> i32 {
+    crate::platform::init_background_daemon();
     crate::lifecycle_log::init();
     crate::lifecycle_log::log_process_start("attention");
     // No AppKit/NSApplication call: a headless mode must not register a second

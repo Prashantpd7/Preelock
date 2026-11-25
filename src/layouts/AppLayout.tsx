@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { FirstRunPermissions } from '../components/PermissionsGuide';
-import { MandatoryBrowserDisconnectModal } from '../components/MandatoryBrowserDisconnectModal';
+import { HelperReminderPrompt } from '../components/HelperReminderPrompt';
 import { ActiveSessionBanner } from '../components/ActiveSessionBanner';
-import { UnconnectedBrowserBanner } from '../components/UnconnectedBrowserBanner';
 import { BreakBar } from '../components/BreakBar';
 import { PreSessionWarning } from '../components/PreSessionWarning';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -47,8 +46,20 @@ export function AppLayout() {
   const { pathname, search, key } = useLocation();
   const activePath = pagePaths.includes(pathname) ? pathname : '/';
   const error = useAppStore((s) => s.error);
+  const isEngineDown = useAppStore((s) => s.isEngineDown);
+  const restartEngine = useAppStore((s) => s.restartEngine);
+  const [restartingEngine, setRestartingEngine] = useState(false);
   const loading = useAppStore((s) => s.loading);
   const isPaused = useAppStore((s) => Boolean(s.data?.preferences?.paused));
+
+  const handleRestartEngine = async () => {
+    setRestartingEngine(true);
+    try {
+      await restartEngine();
+    } finally {
+      setRestartingEngine(false);
+    }
+  };
 
   const handleTogglePower = () => {
     void useAppStore.getState().execute({ type: 'toggle_power' });
@@ -92,7 +103,6 @@ export function AppLayout() {
       </aside>
       <div className="main-shell" inert={isPaused ? true : undefined}>
         <main>
-          <UnconnectedBrowserBanner />
           <ActiveSessionBanner />
           <BreakBar />
           <PreSessionWarning />
@@ -102,7 +112,30 @@ export function AppLayout() {
               SQLite-backed sessions and tasks.
             </div>
           )}
-          {error && (
+          {isEngineDown && (
+            <div
+              className="error background-engine-banner"
+              role="alert"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                marginBottom: '16px',
+              }}
+            >
+              <span>Background engine unavailable — restart the app</span>
+              <button
+                type="button"
+                className="secondary"
+                disabled={restartingEngine}
+                onClick={handleRestartEngine}
+              >
+                {restartingEngine ? 'Restarting…' : 'Restart background engine'}
+              </button>
+            </div>
+          )}
+          {error && !isEngineDown && (
             <div className="error" role="alert">
               <span>{error}</span>
               <button
@@ -119,7 +152,7 @@ export function AppLayout() {
           ) : (
             <>
               <FirstRunPermissions />
-              <MandatoryBrowserDisconnectModal />
+              <HelperReminderPrompt />
               <div hidden={activePath !== '/'}>
                 <Dashboard />
               </div>

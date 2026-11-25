@@ -895,6 +895,19 @@ td:first-child {
 .active-session-controls {
   flex-shrink: 0;
 }
+.active-session-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.active-session-yt-connect-btn {
+  font-size: 0.8rem;
+  padding: 5px 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 /* Pomodoro break timer on the right of the active-session card:
  * a small label over a live MM:SS countdown with a clock face
  * whose long hand turns once a minute. margin-left auto pushes

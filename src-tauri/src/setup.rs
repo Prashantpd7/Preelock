@@ -358,12 +358,12 @@ mod download_links {
     }
     #[test]
     fn launch_refuses_anything_but_a_supported_browser_id() {
-        // Empty, Safari, arbitrary URLs and shell strings never reach
+        // Empty, arbitrary URLs and shell strings never reach
         // the launcher, whatever the frontend sends.
         for bad in [
             "",
             "   ",
-            "com.apple.Safari",
+            "org.mozilla.firefox",
             "https://example.com/",
             "open -a Calculator",
             "/tmp/evil.sh",

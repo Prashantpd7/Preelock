@@ -8,6 +8,7 @@ import { useAppStore } from '../state/store';
 import { PermissionsGuide } from './PermissionsGuide';
 import { BrowserSetup } from './BrowserSetup';
 import { Modal, SettingRow } from './SettingsControls';
+import { DnsConsentDialog } from './DnsConsentDialog';
 export function PermissionsPanel() {
   const { setup, error, refresh } = useFocusSetup();
   const [panel, setPanel] = useState<
@@ -22,7 +23,83 @@ export function PermissionsPanel() {
   // only the visible half (see `reset_pairing` and the bridge
   // connection lock in the Rust backend).
   const strictLive = hasLiveStrictSession(useAppStore((s) => s.data));
+  const isEngineDown = useAppStore((s) => s.isEngineDown);
   const [permissions, setPermissions] = useState(false);
+  const [dnsConsent, setDnsConsent] = useState<boolean | null>(null);
+  const [dnsDialogOpen, setDnsDialogOpen] = useState(false);
+  const [helperInstalled, setHelperInstalled] = useState(false);
+  const [helperError, setHelperError] = useState('');
+  const [systemBlockingStatus, setSystemBlockingStatus] = useState<{
+    hosts_entries: number;
+    pf_rules: number;
+    helper_installed: boolean;
+    helper_domains: string[];
+    strict_until: number | null;
+    clean: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (desktop && !isEngineDown) {
+      if (typeof api.getDnsConsent === 'function') {
+        void api
+          .getDnsConsent()
+          .then((val) => setDnsConsent(val))
+          .catch(() => {});
+      }
+      if (typeof api.isPrivilegedHelperInstalled === 'function') {
+        void api
+          .isPrivilegedHelperInstalled()
+          .then((val) => setHelperInstalled(val))
+          .catch(() => {});
+        void api
+          .getSystemBlockingStatus()
+          .then((s) => setSystemBlockingStatus(s))
+          .catch(() => {});
+      }
+    }
+  }, [isEngineDown]);
+
+  async function toggleDnsConsent() {
+    if (!dnsConsent) {
+      const needsSetup = await api.isNativeBlockingSetupRequired();
+      if (needsSetup) {
+        setDnsDialogOpen(true);
+        return;
+      }
+    }
+    const next = !dnsConsent;
+    if (typeof api.setDnsConsent === 'function') {
+      await api.setDnsConsent(next);
+    }
+    setDnsConsent(next);
+  }
+
+  // The "Install Helper" button must install the privileged helper
+  // (which asks for the admin password once). It used to call
+  // toggleDnsConsent() instead, so clicking it never installed
+  // anything — no password popup, no status change.
+  async function handleInstallHelper() {
+    setBusy(true);
+    setHelperError('');
+    try {
+      console.log(
+        '[PERMISSIONS] handleInstallHelper: installing privileged helper...',
+      );
+      await api.installPrivilegedHelper();
+      console.log('[PERMISSIONS] handleInstallHelper: installation succeeded');
+      setHelperInstalled(true);
+      setNotice('');
+    } catch (e) {
+      console.error('[PERMISSIONS] handleInstallHelper error:', e);
+      const msg = String(e);
+      setHelperError(msg);
+      setNotice(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isMac = setup?.platform === 'macos' || setup?.platform === 'darwin';
   const camera = setup?.camera_permission;
   // Several browsers can stay paired at once; the row reflects all of them.
   const connectedIds = setup?.connected_browsers ?? [];
@@ -44,15 +121,21 @@ export function PermissionsPanel() {
   const connectedNames = connectedIds.map(getBrowserName);
   const anyBrowserConnected = connectedNames.length > 0;
   useEffect(() => {
-    if (!desktop || !panel) return;
+    if (!desktop || !panel || isEngineDown) return;
     const timer = window.setInterval(() => {
       void refresh();
       void settingsAction({ type: 'status' })
         .then(setStatus)
         .catch((e) => setNotice(String(e)));
+      if (typeof api.getSystemBlockingStatus === 'function') {
+        void api
+          .getSystemBlockingStatus()
+          .then((s) => setSystemBlockingStatus(s))
+          .catch(() => {});
+      }
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [panel, refresh]);
+  }, [panel, refresh, isEngineDown]);
   const [refreshing, setRefreshing] = useState(false);
   async function handleReconnectBrowser() {
     setRefreshing(true);
@@ -179,6 +262,127 @@ export function PermissionsPanel() {
               : 'Allow camera'}
         </button>
       </SettingRow>
+      <SettingRow
+        title={
+          setup?.platform === 'windows'
+            ? 'System Website Blocking'
+            : 'Privileged Blocking Helper'
+        }
+        hint={
+          setup?.platform === 'windows'
+            ? dnsConsent
+              ? 'Blocks websites system-wide across all browsers via Windows hosts and firewall.'
+              : 'Disabled: website blocking is enforced only in browsers with the extension.'
+            : helperInstalled
+              ? `SelfControl-grade blocking active (hosts + PF firewall). Blocks across all browsers and VPNs.${
+                  systemBlockingStatus
+                    ? ` • Live system: ${
+                        systemBlockingStatus.clean
+                          ? 'Clean (0 blocks)'
+                          : `${systemBlockingStatus.hosts_entries} hosts, ${systemBlockingStatus.pf_rules} PF rules`
+                      }`
+                    : ''
+                }`
+              : dnsConsent
+                ? 'Helper not installed. Falling back to local DNS proxy and user hosts.'
+                : 'Disabled: website blocking is enforced only in browsers with the extension.'
+        }
+      >
+        {isMac && helperInstalled ? (
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <span className="status-pill ok">Installed</span>
+            {systemBlockingStatus && !systemBlockingStatus.clean && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={!desktop || busy || strictLive}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await api.flushSystemBlocks();
+                    const s = await api.getSystemBlockingStatus();
+                    setSystemBlockingStatus(s);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Flush
+              </button>
+            )}
+            <button
+              className="secondary"
+              disabled={!desktop || busy || strictLive}
+              onClick={async () => {
+                if (strictLive) {
+                  setLockedDialog(true);
+                  return;
+                }
+                setBusy(true);
+                setHelperError('');
+                try {
+                  console.log(
+                    '[PERMISSIONS] handleUninstallHelper: starting removal...',
+                  );
+                  await api.uninstallPrivilegedHelper();
+                  console.log(
+                    '[PERMISSIONS] handleUninstallHelper: removal succeeded',
+                  );
+                  setHelperInstalled(false);
+                  setNotice('');
+                } catch (e) {
+                  console.error(
+                    '[PERMISSIONS] handleUninstallHelper error:',
+                    e,
+                  );
+                  const msg = String(e);
+                  setHelperError(msg);
+                  setNotice(msg);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ) : (
+          <button
+            className={dnsConsent ? 'connected-button' : 'secondary'}
+            disabled={!desktop || busy}
+            onClick={() => {
+              if (isMac && !helperInstalled) {
+                void handleInstallHelper();
+              } else {
+                void toggleDnsConsent();
+              }
+            }}
+          >
+            {isMac && !helperInstalled
+              ? 'Install Helper'
+              : dnsConsent
+                ? 'Enabled'
+                : 'Disabled'}
+          </button>
+        )}
+      </SettingRow>
+      {helperError && (
+        <p
+          role="alert"
+          className="error"
+          style={{
+            margin: '-0.25rem 0 0.75rem 0',
+            padding: '0.5rem 0.75rem',
+            borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            color: '#f87171',
+            fontSize: '0.8125rem',
+          }}
+        >
+          {helperError}
+        </p>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}
@@ -388,6 +592,29 @@ export function PermissionsPanel() {
             </button>
           </div>
         </Modal>
+      )}
+      {dnsDialogOpen && (
+        <DnsConsentDialog
+          platform={setup?.platform}
+          onAllow={async () => {
+            setDnsDialogOpen(false);
+            setBusy(true);
+            try {
+              await api.setupNativeBlocking();
+              await api.setDnsConsent(true);
+              setDnsConsent(true);
+              const installed = await api.isPrivilegedHelperInstalled();
+              setHelperInstalled(installed);
+            } catch (e) {
+              setNotice(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onDecline={() => {
+            setDnsDialogOpen(false);
+          }}
+        />
       )}
     </section>
   );

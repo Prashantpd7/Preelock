@@ -330,19 +330,22 @@ impl IpcClient {
     }
 
     pub fn call_raw(&self, req: &IpcRequest) -> Result<IpcResponse, String> {
-        let mut attempts = 0;
+        let mut self_healed = false;
         loop {
-            attempts += 1;
             let ep = read_endpoint(&self.data_dir.join(ENDPOINT_FILE))
                 .ok_or_else(|| "Background engine IPC endpoint is not available.".to_string());
             match ep.and_then(|endpoint| send_http_rpc(&endpoint, req)) {
                 Ok(resp) => return Ok(resp),
-                Err(_err) if attempts < 12 => {
-                    // Self-heal if background died unexpectedly between calls.
-                    let _ = crate::background::ensure_running_headless(&self.data_dir);
-                    std::thread::sleep(Duration::from_millis(150));
+                Err(err) => {
+                    if !self_healed {
+                        self_healed = true;
+                        // Attempt self-heal at most ONCE per call, subject to cooldown and circuit breaker.
+                        crate::background::ensure_running_headless(&self.data_dir)?;
+                        std::thread::sleep(Duration::from_millis(150));
+                    } else {
+                        return Err(err);
+                    }
                 }
-                Err(err) => return Err(err),
             }
         }
     }

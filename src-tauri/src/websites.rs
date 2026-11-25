@@ -108,8 +108,13 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "com.vivaldi.vivaldi",
     "org.chromium.chromium",
     "ai.perplexity.comet",
+    "company.thebrowser.browser",
     "com.operasoftware.opera",
+    "com.operasoftware.operagx",
     "com.apple.safari",
+    // Firefox exposes its page URL as AXWebArea's AXURL like the
+    // Chromium family, so it needs no separate reader.
+    "org.mozilla.firefox",
 ];
 #[cfg(target_os = "windows")]
 const NATIVE_ADAPTERS: &[&str] = &[
@@ -119,7 +124,9 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "vivaldi.exe",
     "chromium.exe",
     "comet.exe",
+    "arc.exe",
     "opera.exe",
+    "firefox.exe",
 ];
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const NATIVE_ADAPTERS: &[&str] = &[];
@@ -265,6 +272,18 @@ fn report(app_id: &str, capability: Capability) {
     }
 }
 
+/// Asset/CDN hosts that never identify the page a person is looking at:
+/// the same list the timer has always used. They serve many sites
+/// (fbcdn.net serves Facebook, Instagram and WhatsApp; licdn.com is
+/// LinkedIn's CDN; googlevideo/ytimg/ggpht are YouTube's media hosts), so
+/// refusing them here means neither the timer nor Screen Time can invent
+/// a CDN "website" or let one replace the real domain.
+pub fn is_asset_only_domain(host: &str) -> bool {
+    crate::dns_proxy::ASSET_ONLY_DOMAINS
+        .iter()
+        .any(|base| host == *base || host.ends_with(&format!(".{base}")))
+}
+
 /// Sample the foreground app's active browser page through the platform
 /// adapter. Returns a validated hostname only — never a URL, path, title
 /// or page content. Cheap for non-browsers: no OS query is made unless a
@@ -278,7 +297,9 @@ pub fn native_site(app_id: &str) -> Option<NativeSite> {
         return None;
     }
     let sample = platform::web_sample();
-    let domain = domain_from_url(&sample.url);
+    // An asset/CDN URL is not a website: return nothing so the caller
+    // keeps the last real domain (sticky) instead of recording the CDN.
+    let domain = domain_from_url(&sample.url).filter(|d| !is_asset_only_domain(d));
     let capability = capability_for(app_id, &sample.status, domain.is_some());
     report(app_id, capability);
     domain.map(|domain| NativeSite {
@@ -517,6 +538,10 @@ mod tests {
         // A browser with no adapter is tracked at application level only.
         assert_eq!(
             capability_for("org.mozilla.firefox", "ok", false),
+            Capability::TemporarilyUnavailable
+        );
+        assert_eq!(
+            capability_for("com.example.mailclient", "ok", false),
             Capability::BrowserUsageOnly
         );
         assert_eq!(
@@ -556,8 +581,24 @@ mod tests {
             assert!(has_native_adapter("com.google.Chrome"));
             assert!(has_native_adapter("com.apple.Safari"));
             assert!(has_native_adapter("ai.perplexity.comet"));
+            assert!(has_native_adapter("company.thebrowser.Browser"));
+            assert!(has_native_adapter("org.mozilla.firefox"));
+            assert!(has_native_adapter("com.operasoftware.OperaGX"));
             assert!(!has_native_adapter("chrome.exe"));
-            assert!(!has_native_adapter("org.mozilla.firefox"));
+            assert!(!has_native_adapter("com.example.mailclient"));
         }
+    }
+
+    #[test]
+    fn asset_hosts_never_identify_a_website() {
+        assert!(is_asset_only_domain("fbcdn.net"));
+        assert!(is_asset_only_domain("scontent.xx.fbcdn.net"));
+        assert!(is_asset_only_domain("cdninstagram.com"));
+        assert!(is_asset_only_domain("rr1---sn-abc.googlevideo.com"));
+        assert!(is_asset_only_domain("i.ytimg.com"));
+        assert!(is_asset_only_domain("media.licdn.com"));
+        assert!(!is_asset_only_domain("instagram.com"));
+        assert!(!is_asset_only_domain("youtube.com"));
+        assert!(!is_asset_only_domain("notfbcdn.net"));
     }
 }

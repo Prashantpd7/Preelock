@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { Sessions } from '../pages/Sessions';
 import { useAppStore } from '../state/store';
 import { api, emptySnapshot } from '../services/api';
@@ -104,116 +104,53 @@ const enableWebsiteBlocking = () => {
 };
 const selectSafari = () => fireEvent.click(screen.getByLabelText('Safari'));
 
-describe('Safari is refused for session website blocking', () => {
-  it('shows the compatibility notice with real browser connection status', async () => {
+describe('Safari is supported for session website blocking', () => {
+  it('does not show any restriction notice and keeps Safari selected when website blocking is enabled', async () => {
     await openAppsStep();
     enableWebsiteBlocking();
     selectSafari();
     expect(
-      await screen.findByText("Safari isn't supported yet"),
-    ).toBeInTheDocument();
+      screen.queryByText("Safari isn't supported yet"),
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByText(
+      screen.queryByText(
         'Preelock needs a supported browser to block websites during your session.',
       ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Google Chrome · Connected' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Brave · Not connected' }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Safari')).toBeChecked();
   });
 
-  it('applies to scheduled and one-shot sessions too', async () => {
+  it('applies to scheduled and one-shot sessions too without restriction notice', async () => {
     await openAppsStep(/New schedule/);
     enableWebsiteBlocking();
     selectSafari();
     expect(
-      await screen.findByText("Safari isn't supported yet"),
+      screen.queryByText("Safari isn't supported yet"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Safari')).toBeChecked();
+  });
+
+  it('disables YouTube blocking and shows warning when Safari is selected', async () => {
+    await openAppsStep();
+    selectSafari();
+    const ytCheckbox = screen.getByLabelText('YouTube blocking');
+    expect(ytCheckbox).toBeDisabled();
+    fireEvent.click(ytCheckbox);
+    expect(
+      screen.getByText('YouTube blocking is not available on Safari yet.'),
     ).toBeInTheDocument();
   });
 
-  it('swaps Safari for a connected browser and keeps other selections', async () => {
+  it('keeps other application selections when Safari is selected', async () => {
     await openAppsStep();
     fireEvent.click(screen.getByLabelText('Visual Studio Code'));
     enableWebsiteBlocking();
     selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Google Chrome · Connected' }),
-    );
     expect(
       screen.queryByText("Safari isn't supported yet"),
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Safari')).not.toBeChecked();
-    expect(screen.getByLabelText('Google Chrome')).toBeChecked();
-    // Every other selected application survives the swap.
-    expect(screen.getByLabelText('Visual Studio Code')).toBeChecked();
-  });
-
-  it('opens the existing Connect browser guide for an unconnected browser', async () => {
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Brave · Not connected' }),
-    );
-    expect(
-      screen.queryByText("Safari isn't supported yet"),
-    ).not.toBeInTheDocument();
-    // The unchanged connection flow: same guide, same pairing code.
-    expect(
-      await screen.findByText(/Step 1: Select and install a browser extension/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /Add to Brave/ }),
-    ).toBeInTheDocument();
-    expect(mocked.focusSetup).toHaveBeenCalledWith('com.brave.Browser');
-  });
-
-  it('offers official download links when no supported browser is installed', async () => {
-    mocked.focusSetup.mockImplementation(async () =>
-      setupFixture({ browsers: [], connected_browsers: [] }),
-    );
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    expect(
-      await screen.findByText('No supported browser found'),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Brave' }));
-    expect(mocked.openSetup).toHaveBeenCalledWith(
-      'browser_download',
-      'com.brave.Browser',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Get a browser' }));
-    expect(mocked.openSetup).toHaveBeenCalledWith(
-      'browser_download',
-      'com.google.Chrome',
-    );
-  });
-
-  it('deselects Safari when the notice is cancelled', async () => {
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    await screen.findByText("Safari isn't supported yet");
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(
-      screen.queryByText("Safari isn't supported yet"),
-    ).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Safari')).not.toBeChecked();
-  });
-
-  it('never appears for a session that blocks no websites', async () => {
-    await openAppsStep();
-    selectSafari();
-    await Promise.resolve();
-    expect(
-      screen.queryByText("Safari isn't supported yet"),
-    ).not.toBeInTheDocument();
-    // Safari stays a normal selectable app for such a session.
     expect(screen.getByLabelText('Safari')).toBeChecked();
+    expect(screen.getByLabelText('Visual Studio Code')).toBeChecked();
   });
 
   it('never appears outside session configuration', () => {
@@ -291,108 +228,7 @@ describe('sessionNeedsExtension', () => {
   });
 });
 
-describe('choosing a browser opens it and keeps it manageable', () => {
-  // Brave installed but not running: it is in the browser list (with its
-  // connection status) but not yet in the application list the picker
-  // renders. This is the reported stuck state.
-  const installedOnly = (over: Partial<FocusSetup> = {}) =>
-    setupFixture({
-      applications: [
-        { id: 'com.apple.Safari', name: 'Safari' },
-        { id: 'com.google.Chrome', name: 'Google Chrome' },
-        { id: 'com.microsoft.VSCode', name: 'Visual Studio Code' },
-      ],
-      ...over,
-    });
-
-  it('launches the chosen browser and reveals it in Apps & websites', async () => {
-    let launched = false;
-    mocked.openSetup.mockImplementation(async () => {
-      launched = true;
-    });
-    mocked.focusSetup.mockImplementation(async () =>
-      launched
-        ? setupFixture({ browser: notConnected, connected_browsers: [] })
-        : installedOnly({ browser: notConnected, connected_browsers: [] }),
-    );
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Brave · Not connected' }),
-    );
-    // The installed browser is opened through the desktop app.
-    expect(mocked.openSetup).toHaveBeenCalledWith(
-      'browser',
-      'com.brave.Browser',
-    );
-    // It appears in the picker without pressing "Refresh apps"…
-    expect(await screen.findByLabelText('Brave')).toBeChecked();
-    // …and its extension connection is still what decides the guide.
-    expect(
-      await screen.findByText(/Step 1: Select and install a browser extension/),
-    ).toBeInTheDocument();
-  });
-
-  it('checks the extension connection independently of the launch', async () => {
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Google Chrome · Connected' }),
-    );
-    expect(mocked.openSetup).toHaveBeenCalledWith(
-      'browser',
-      'com.google.Chrome',
-    );
-    expect(screen.getByLabelText('Google Chrome')).toBeChecked();
-    // A connected browser needs no setup guide even though it was opened.
-    expect(
-      screen.queryByText(/Step 1: Select and install a browser extension/),
-    ).not.toBeInTheDocument();
-  });
-
-  it('keeps the selection usable when the browser cannot be launched', async () => {
-    mocked.openSetup.mockRejectedValue(new Error('launch failed'));
-    mocked.focusSetup.mockImplementation(async () =>
-      installedOnly({ connected_browsers: [] }),
-    );
-    await openAppsStep();
-    enableWebsiteBlocking();
-    selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Brave · Not connected' }),
-    );
-    expect(
-      await screen.findByText(
-        "Couldn't open browser. Open the browser manually and refresh the app list.",
-      ),
-    ).toBeInTheDocument();
-    // It is still listed and checked, so the user can uncheck it again
-    // instead of being stuck with a browser the list never shows.
-    const box = await screen.findByLabelText('Brave');
-    expect(box).toBeChecked();
-    fireEvent.click(box);
-    expect(screen.queryByLabelText('Brave')).not.toBeInTheDocument();
-  });
-
-  it('switches browsers without keeping the previous one selected', async () => {
-    await openAppsStep();
-    fireEvent.click(screen.getByLabelText('Visual Studio Code'));
-    fireEvent.click(screen.getByLabelText('Google Chrome'));
-    enableWebsiteBlocking();
-    selectSafari();
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Brave · Not connected' }),
-    );
-    await waitFor(() =>
-      expect(screen.getByLabelText('Google Chrome')).not.toBeChecked(),
-    );
-    expect(screen.getByLabelText('Brave')).toBeChecked();
-    // Non-browser selections survive the switch untouched.
-    expect(screen.getByLabelText('Visual Studio Code')).toBeChecked();
-  });
-
+describe('one browser per session enforcement', () => {
   it('still allows only one browser per session, naming the one to uncheck', async () => {
     await openAppsStep();
     fireEvent.click(screen.getByLabelText('Google Chrome'));
