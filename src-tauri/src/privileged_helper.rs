@@ -1451,6 +1451,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_unowned_clear_does_not_arm_reload() {
         reset_reloaded_domains();

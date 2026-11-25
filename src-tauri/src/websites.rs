@@ -522,6 +522,11 @@ mod tests {
         } else {
             "com.google.Chrome"
         };
+        let firefox = if cfg!(target_os = "windows") {
+            "firefox.exe"
+        } else {
+            "org.mozilla.firefox"
+        };
         assert_eq!(capability_for(browser, "ok", true), Capability::Supported);
         assert_eq!(
             capability_for(browser, "ok", false),
@@ -537,7 +542,7 @@ mod tests {
         );
         // A browser with no adapter is tracked at application level only.
         assert_eq!(
-            capability_for("org.mozilla.firefox", "ok", false),
+            capability_for(firefox, "ok", false),
             Capability::TemporarilyUnavailable
         );
         assert_eq!(

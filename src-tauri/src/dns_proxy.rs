@@ -1254,6 +1254,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_binary_or_fallback() {
         let binary = find_binary();
@@ -1306,6 +1307,7 @@ mod tests {
         assert!(!entry.contains("NOPASSWD: ALL"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_write_policy_file_injects_canary_domains() {
         let domains = vec!["instagram.com".to_string()];
