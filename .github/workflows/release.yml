@@ -65,13 +65,13 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
-      - run: npm run rust:check
-      - run: npm run rust:test
-      - run: npm run native:probe
       - name: Build privileged helper and DNS proxy sidecar
         run: |
           bash src-tauri/helper/build.sh
           bash src-tauri/dns-proxy/build.sh
+      - run: npm run rust:check
+      - run: npm run rust:test
+      - run: npm run native:probe
       - name: Build ad-hoc signed app and DMG (not notarized)
         run: npm run desktop:build -- --target ${{ matrix.target }} --bundles app,dmg
       - name: Validate final DMG and install/start outside checkout
