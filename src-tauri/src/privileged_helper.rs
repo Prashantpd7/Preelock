@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -1187,6 +1188,7 @@ pub fn flush_all_blocks() -> Result<(), String> {
 /// user can never stay blocked by a dead engine. The result is verified by
 /// reading `/etc/hosts` and the anchor back, never by trusting a return code.
 pub fn unblock_everything(reason: &str) -> Result<(), String> {
+    let _ = reason;
     #[cfg(target_os = "macos")]
     {
         reset_owners();
