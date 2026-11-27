@@ -704,6 +704,11 @@ pub fn deactivate_and_exit() -> ! {
     std::process::exit(0);
 }
 pub fn redirect_safari_blocked() {}
+/// Windows redirects blocked tabs itself (see `redirect_browser_blocked`),
+/// so there is no per-application consent gate to report: always allowed.
+pub fn browser_automation_status(_: &str, _: bool) -> i32 {
+    0
+}
 pub fn redirect_browser_blocked(_: &str, _: u32) {
     unsafe {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{

@@ -47,17 +47,18 @@ pub struct WebSample {
 #[cfg(target_os = "macos")]
 pub use macos::{
     activate_app, activate_existing_instance, app_icon, applications, approve_quit,
-    camera_permission, camera_start, camera_status, camera_stop, deactivate_and_exit, hide,
-    hide_from_dock, init_background_daemon, install_notification_delegate, installed_browsers,
-    pump_runloop, redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
-    request_camera, request_gui_activation, sample, web_sample,
+    browser_automation_status, camera_permission, camera_start, camera_status, camera_stop,
+    close_blocked_tab, deactivate_and_exit, hide, hide_from_dock, init_background_daemon,
+    install_notification_delegate, installed_browsers, pump_runloop, redirect_browser_blocked,
+    redirect_safari_blocked, register_application_restart, request_camera, request_gui_activation,
+    sample, web_sample,
 };
 #[cfg(target_os = "windows")]
 pub use windows::{
-    activate_app, activate_existing_instance, app_icon, applications, camera_permission,
-    camera_start, camera_status, camera_stop, deactivate_and_exit, hide, installed_browsers,
-    redirect_browser_blocked, redirect_safari_blocked, register_application_restart,
-    request_camera, request_gui_activation, sample, web_sample,
+    activate_app, activate_existing_instance, app_icon, applications, browser_automation_status,
+    camera_permission, camera_start, camera_status, camera_stop, deactivate_and_exit, hide,
+    installed_browsers, redirect_browser_blocked, redirect_safari_blocked,
+    register_application_restart, request_camera, request_gui_activation, sample, web_sample,
 };
 
 /// Outcome of one GUI activation request, from any process mode.
@@ -178,6 +179,12 @@ mod unsupported {
     }
     pub fn request_web_permission() {}
     pub fn redirect_safari_blocked() {}
+    pub fn browser_automation_status(_: &str, _: bool) -> i32 {
+        0
+    }
+    pub fn close_blocked_tab(_: &str, _: &str) -> bool {
+        false
+    }
     pub fn redirect_browser_blocked(_: &str, _: u32) {}
     pub fn register_application_restart(_args: &str) {}
 }

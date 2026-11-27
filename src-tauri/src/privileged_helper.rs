@@ -686,6 +686,30 @@ const MACOS_BROWSER_APPS: &[(&str, &str)] = &[
 static REDIRECT_DEBOUNCE: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
     std::sync::Mutex::new(None);
 
+/// Last logged outcome of the native tab takeover per `(app, domain)`, so a
+/// failure that repeats every 1-second tick is reported once a minute instead
+/// of flooding the lifecycle log.
+#[cfg(target_os = "macos")]
+static TAKEOVER_LOG: std::sync::Mutex<Option<std::collections::HashMap<String, (i32, u64)>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn takeover_outcome_is_new(key: &str, reason: i32) -> bool {
+    let now = crate::clock::continuous_ms();
+    let mut guard = TAKEOVER_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(Default::default);
+    if let Some(&(last_reason, at)) = map.get(key) {
+        if last_reason == reason && now.saturating_sub(at) < 60_000 {
+            return false;
+        }
+    }
+    map.insert(key.to_string(), (reason, now));
+    if map.len() > 64 {
+        map.retain(|_, (_, at)| now.saturating_sub(*at) < 120_000);
+    }
+    true
+}
+
 #[cfg(target_os = "macos")]
 fn blocked_redirect_url(host: &str) -> String {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], crate::browser::PORT));
@@ -777,6 +801,12 @@ where
         return;
     };
     if !out.status.success() {
+        // Silence here used to hide a missing macOS Automation grant: the
+        // blocked page kept running with only notifications arriving.
+        log::warn!(
+            "[PRIVILEGED_HELPER] Could not read {app_name} tabs to replace a blocked page: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         return;
     }
 
@@ -814,11 +844,92 @@ where
     }
     set_script.push_str("end tell");
 
-    let _ = std::process::Command::new("/usr/bin/osascript")
+    match std::process::Command::new("/usr/bin/osascript")
         .args(["-e", &set_script])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .output()
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => log::warn!(
+            "[PRIVILEGED_HELPER] {app_name} refused the blocked-tab redirect: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => log::warn!("[PRIVILEGED_HELPER] Could not run osascript: {e}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct AutomationState {
+    /// macOS explicitly refused the Apple Events (see `browser_automation_available`).
+    denied: bool,
+    checked_at: u64,
+    notified: bool,
+}
+
+/// macOS Automation (Apple Events) state per browser bundle id.
+///
+/// Replacing an already-open blocked tab is the only thing that stops a
+/// page which already rendered — a service-worker shell such as YouTube's
+/// keeps running after /etc/hosts and the packet filter cut its network, so
+/// the user sees the same page with a stream of "blocked" notifications.
+/// That replacement goes through the browser's AppleScript interface, which
+/// macOS allows only after the Automation privacy decision. Ask for it once
+/// per browser (the standard system prompt), remember the answer, and
+/// re-read a denial every 30 s so enabling System Settings → Privacy &
+/// Security → Automation starts working without restarting Preelock.
+#[cfg(target_os = "macos")]
+static AUTOMATION_STATE: std::sync::Mutex<
+    Option<std::collections::HashMap<String, AutomationState>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn browser_automation_available(app_id: &str, app_name: &str) -> bool {
+    let now = crate::clock::continuous_ms();
+    let ask = {
+        let mut guard = AUTOMATION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let map = guard.get_or_insert_with(Default::default);
+        match map.get(app_id).copied() {
+            None => true,
+            Some(state) if !state.denied => return true,
+            Some(state) if now.saturating_sub(state.checked_at) < 30_000 => return false,
+            Some(_) => false,
+        }
+    };
+    let status = crate::platform::browser_automation_status(app_id, ask);
+    // errAEEventNotPermitted = the user said no; errAEEventWouldRequireUserConsent
+    // = the decision is still missing. Only those stop the sweep: every other
+    // status (allowed, browser not running, an unexpected code) keeps the old
+    // behaviour, so this can never disable a path that works today.
+    let denied = status == -1743 || status == -1744;
+    let notify = {
+        let mut guard = AUTOMATION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let map = guard.get_or_insert_with(Default::default);
+        let already_notified = map.get(app_id).is_some_and(|s| s.notified);
+        let notify = denied && !already_notified;
+        map.insert(
+            app_id.to_string(),
+            AutomationState {
+                denied,
+                checked_at: now,
+                notified: already_notified || notify,
+            },
+        );
+        notify
+    };
+    if notify {
+        log::warn!(
+            "[PRIVILEGED_HELPER] macOS has not allowed Preelock to control {app_name} \
+             (status {status}); blocked tabs cannot be replaced until Automation is enabled"
+        );
+        crate::desktop_settings::notify(
+            "Allow Preelock to block tabs",
+            &format!(
+                "Turn on Preelock for {app_name} in System Settings → Privacy & Security → \
+                 Automation so an open blocked page can be replaced."
+            ),
+        );
+    }
+    !denied
 }
 
 #[cfg(target_os = "macos")]
@@ -833,14 +944,18 @@ pub fn reload_blocked_browser_tabs(domains: &[String]) {
                 .iter()
                 .any(|rule| crate::focus::rule_matches(rule, host, path))
         };
-        for &(_, app_name) in MACOS_BROWSER_APPS {
-            enforce_tabs_in_browser(app_name, &matcher);
+        for &(id, app_name) in MACOS_BROWSER_APPS {
+            if browser_automation_available(id, app_name) {
+                enforce_tabs_in_browser(app_name, &matcher);
+            }
         }
         // Second sweep after 450ms catches tabs that were still loading
         // or had PF state kills completing right after apply returned.
         std::thread::sleep(Duration::from_millis(450));
-        for &(_, app_name) in MACOS_BROWSER_APPS {
-            enforce_tabs_in_browser(app_name, &matcher);
+        for &(id, app_name) in MACOS_BROWSER_APPS {
+            if browser_automation_available(id, app_name) {
+                enforce_tabs_in_browser(app_name, &matcher);
+            }
         }
     });
 }
@@ -849,8 +964,10 @@ pub fn reload_blocked_browser_tabs(domains: &[String]) {
 pub fn reload_adult_browser_tabs() {
     std::thread::spawn(|| {
         let matcher = |host: &str, _path: &str| crate::adult_block::is_adult_domain(host);
-        for &(_, app_name) in MACOS_BROWSER_APPS {
-            enforce_tabs_in_browser(app_name, &matcher);
+        for &(id, app_name) in MACOS_BROWSER_APPS {
+            if browser_automation_available(id, app_name) {
+                enforce_tabs_in_browser(app_name, &matcher);
+            }
         }
     });
 }
@@ -889,7 +1006,10 @@ pub fn enforce_allowlist_browser_tabs(allowed_domains: &[String], skip_youtube: 
                 .iter()
                 .any(|rule| crate::focus::rule_matches(rule, host, path))
         };
-        for &(_, app_name) in MACOS_BROWSER_APPS {
+        for &(id, app_name) in MACOS_BROWSER_APPS {
+            if !browser_automation_available(id, app_name) {
+                continue;
+            }
             enforce_tabs_in_browser(app_name, &matcher);
         }
     });
@@ -899,6 +1019,14 @@ pub fn enforce_allowlist_browser_tabs(allowed_domains: &[String], skip_youtube: 
 /// browser (`app_id`), debounced per `(app_id, blocked_domain)` so repeated
 /// 1-second ticks cannot spam AppleEvents while still immediately stopping
 /// Service-Worker-cached, DoH, or browser-VPN-proxied visits.
+///
+/// Two layers run in order, so a block holds with or without the extension:
+/// the AppleScript sweep (blocked page in every matching tab, needs macOS
+/// Automation), then closing the one frontmost tab that still shows the
+/// blocked host — the only way to stop a service-worker page whose network
+/// Preelock already cut. A tab the extension (or the sweep) has already
+/// replaced is showing the blocked page, not the blocked host, so this never
+/// competes with either of them.
 #[cfg(target_os = "macos")]
 pub fn redirect_blocked_tab_for_browser(app_id: &str, blocked_domain: &str) {
     let Some(&(_, app_name)) = MACOS_BROWSER_APPS
@@ -931,12 +1059,56 @@ pub fn redirect_blocked_tab_for_browser(app_id: &str, blocked_domain: &str) {
         }
     }
 
+    let app_id = app_id.to_string();
     std::thread::spawn(move || {
-        enforce_tabs_in_browser(app_name, &|host: &str, path: &str| {
-            crate::focus::rule_matches(&domain_norm, host, path)
-                || host == domain_norm
-                || host.ends_with(&format!(".{domain_norm}"))
-        });
+        // 1. With macOS Automation granted, the AppleScript sweep replaces
+        //    every matching tab with Preelock's blocked page — the nicest
+        //    result, and the only one that works for background tabs too.
+        if browser_automation_available(&app_id, app_name) {
+            enforce_tabs_in_browser(app_name, &|host: &str, path: &str| {
+                crate::focus::rule_matches(&domain_norm, host, path)
+                    || host == domain_norm
+                    || host.ends_with(&format!(".{domain_norm}"))
+            });
+            // Let the browser commit that navigation before step 2 re-reads
+            // the same tab; otherwise a tab that was just replaced could be
+            // closed in the instant before its URL updates.
+            std::thread::sleep(Duration::from_millis(450));
+        }
+        // 2. Without the extension and without Automation this is the last
+        //    layer: close the frontmost tab if it still shows the blocked
+        //    host. A service-worker page (YouTube) keeps running from cache
+        //    no matter what the network blocks, so leaving it open means the
+        //    user only ever sees notifications.
+        let reason = crate::platform::close_blocked_tab(&domain_norm, &app_id);
+        let outcome = match reason {
+            1 => format!(
+                "Closed the open {domain_norm} tab in {app_name}: it was still \
+                 serving the blocked page from the browser cache"
+            ),
+            2 => format!(
+                "Could not close the open {domain_norm} tab in {app_name}: \
+                 Accessibility permission is missing"
+            ),
+            3 => format!(
+                "Could not close the open {domain_norm} tab in {app_name}: \
+                 it is no longer the frontmost browser"
+            ),
+            4 => format!(
+                "Left the open {domain_norm} tab in {app_name} alone: \
+                 the user is typing in it"
+            ),
+            5 => format!(
+                "Could not close the open {domain_norm} tab in {app_name}: \
+                 its address could not be confirmed as {domain_norm}"
+            ),
+            _ => String::new(),
+        };
+        if !outcome.is_empty()
+            && takeover_outcome_is_new(&format!("{app_name}:{domain_norm}"), reason)
+        {
+            log::info!("[PRIVILEGED_HELPER] {outcome}");
+        }
     });
 }
 

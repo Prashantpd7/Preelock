@@ -327,6 +327,90 @@ char *preelock_web_sample(void) {
         return json(@{@"url": url ?: @"", @"status": @"ok"});
     }
 }
+// MARK: - Native blocked-tab takeover (no browser extension required)
+//
+// The extension is the normal in-tab enforcement, but a block must also hold
+// with no extension installed. If the Apple Events sweep could not replace
+// the tab (no Automation consent, or a browser that refuses scripting) the
+// page is left running — a YouTube tab keeps playing from its service-worker
+// shell while /etc/hosts and the packet filter cut its network, so the user
+// only sees notifications. This closes exactly that tab, and only when all of
+// the following hold: Preelock has Accessibility trust (already required for
+// website identification), the browser is the frontmost app, the focused page
+// really is the blocked host, and the keyboard focus is not in a text field.
+// One Cmd+W is posted to the browser, the same action the Windows build
+// takes for a blocked tab; nothing is read, typed, or copied.
+static BOOL hostMatchesBlocked(NSString *url, NSString *blocked) {
+    if (url.length == 0 || blocked.length == 0) return NO;
+    NSString *host = [NSURL URLWithString:url].host.lowercaseString;
+    NSString *bare = blocked.lowercaseString;
+    if (host.length == 0 || bare.length == 0) return NO;
+    return [host isEqualToString:bare] || [host hasSuffix:[@"." stringByAppendingString:bare]];
+}
+static void postCommandW(void) {
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)13, true);
+    CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)13, false);
+    if (down != NULL) {
+        CGEventSetFlags(down, kCGEventFlagMaskCommand);
+        CGEventPost(kCGHIDEventTap, down);
+        CFRelease(down);
+    }
+    if (up != NULL) {
+        CGEventSetFlags(up, kCGEventFlagMaskCommand);
+        CGEventPost(kCGHIDEventTap, up);
+        CFRelease(up);
+    }
+}
+// Returns 1 when a tab was closed, else why not: 2 no Accessibility trust,
+// 3 the browser is not frontmost, 4 the user is typing, 5 the focused page is
+// not the blocked host. The caller logs the reason so a block that only
+// notifies can be diagnosed from the lifecycle log instead of by guesswork.
+int preelock_close_blocked_tab(const char *blockedHost, const char *bundleId) {
+    if (blockedHost == NULL || bundleId == NULL) return 0;
+    if (!AXIsProcessTrusted()) return 2;
+    NSString *blocked = [NSString stringWithUTF8String:blockedHost];
+    NSString *wanted = [NSString stringWithUTF8String:bundleId].lowercaseString;
+    __block pid_t pid = 0;
+    __block NSString *frontId = @"";
+    onMain(^{
+        NSRunningApplication *app = NSWorkspace.sharedWorkspace.frontmostApplication;
+        if (app != nil) {
+            pid = app.processIdentifier;
+            frontId = app.bundleIdentifier ?: @"";
+        }
+    });
+    if (pid <= 0) return 3;
+    // Never act on a browser that is not the one in front: the sampler that
+    // asked for this redirect may be a tick behind.
+    if (wanted.length > 0 && ![frontId.lowercaseString isEqualToString:wanted]) return 3;
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if (application == NULL) return 3;
+    CFTypeRef focusedElement = NULL;
+    if (AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute, &focusedElement) == kAXErrorSuccess && focusedElement) {
+        NSString *role = axStringAttr((AXUIElementRef)focusedElement, kAXRoleAttribute);
+        BOOL editing = [role isEqualToString:@"AXTextField"] || [role isEqualToString:@"AXComboBox"] ||
+            [role isEqualToString:@"AXTextArea"];
+        CFRelease(focusedElement);
+        if (editing) {
+            CFRelease(application);
+            return 4;
+        }
+    }
+    int reason = 5;
+    CFTypeRef window = NULL;
+    if (AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute, &window) == kAXErrorSuccess && window) {
+        int budget = 600;
+        NSString *current = axURLFromWebArea((AXUIElementRef)window, 0, &budget);
+        if (hostMatchesBlocked(current, blocked)) {
+            postCommandW();
+            reason = 1;
+        }
+        CFRelease(window);
+    }
+    CFRelease(application);
+    return reason;
+}
+
 // Authoritative, un-cached query of macOS Accessibility trust state from WindowServer / TCC daemon.
 // Passing kAXTrustedCheckOptionPrompt: @NO bypasses HIServices stale process-local caching without showing any prompt.
 int preelock_accessibility_status(void) {
@@ -335,6 +419,26 @@ int preelock_accessibility_status(void) {
     return trusted ? 1 : 0;
 }
 int preelock_web_permission(void) { return preelock_accessibility_status(); }
+// macOS gates Apple Events (the only way Preelock can replace an
+// already-open blocked tab) behind the Automation privacy setting. The
+// status is per (Preelock, target browser) pair: noErr when allowed,
+// errAEEventNotPermitted (-1743) when the user said no, procNotFound
+// (-600) when the browser is not running (not a denial). With
+// askUserIfNeeded macOS shows the standard consent dialog once, which is
+// the prompt Preelock never used to raise — the sweep then failed every
+// second and a service-worker-cached page kept running.
+int preelock_browser_automation(const char *bundleId, int askUserIfNeeded) {
+    if (bundleId == NULL || bundleId[0] == '\0') return -50;
+    AEAddressDesc target;
+    memset(&target, 0, sizeof(target));
+    if (AECreateDesc(typeApplicationBundleID, bundleId, (Size)strlen(bundleId), &target) != noErr) {
+        return -50;
+    }
+    OSStatus status = AEDeterminePermissionToAutomateTarget(
+        &target, typeWildCard, typeWildCard, askUserIfNeeded ? true : false);
+    AEDisposeDesc(&target);
+    return (int)status;
+}
 void preelock_web_request_permission(void) {
     onMain(^{
         if (preelock_accessibility_status() == 1) return;

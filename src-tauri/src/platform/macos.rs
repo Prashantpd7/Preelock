@@ -1,5 +1,5 @@
 use super::{Application, Sample};
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, CStr, CString};
 unsafe extern "C" {
     fn preelock_apps() -> *mut c_char;
     fn preelock_sample() -> *mut c_char;
@@ -21,6 +21,8 @@ unsafe extern "C" {
     fn preelock_web_sample() -> *mut c_char;
     fn preelock_web_permission() -> i32;
     fn preelock_web_request_permission();
+    fn preelock_browser_automation(bundle_id: *const c_char, ask_user: i32) -> i32;
+    fn preelock_close_blocked_tab(blocked_host: *const c_char, bundle_id: *const c_char) -> i32;
     fn preelock_redirect_safari_blocked();
     fn preelock_redirect_browser_blocked(app_name: *const c_char, pid: i32);
 }
@@ -156,8 +158,30 @@ pub fn query_os_accessibility() -> Result<bool, String> {
 pub fn request_web_permission() {
     unsafe { preelock_web_request_permission() };
 }
+/// macOS Automation (Apple Events) state for one browser: `0` allowed,
+/// `-1743` denied by the user, `-1744` consent would be needed, `-600`
+/// the browser is not running, `-50` a bad bundle id. `ask` shows the
+/// system consent dialog when the decision has not been made yet; pass
+/// `false` to only read the current state.
+pub fn browser_automation_status(bundle_id: &str, ask: bool) -> i32 {
+    let Ok(id) = CString::new(bundle_id) else {
+        return -50;
+    };
+    unsafe { preelock_browser_automation(id.as_ptr(), i32::from(ask)) }
+}
 pub fn redirect_safari_blocked() {
     unsafe { preelock_redirect_safari_blocked() };
+}
+/// Closes the frontmost tab when it is showing `blocked_host` in the
+/// frontmost instance of `app_id`, using Accessibility only (no Apple Events,
+/// no clipboard, no typing). Returns whether a tab was closed. The native side
+/// re-checks the frontmost app, the focused page and the keyboard focus, so a
+/// stale caller can never close a tab the user is reading or typing in.
+pub fn close_blocked_tab(blocked_host: &str, app_id: &str) -> i32 {
+    let (Ok(host), Ok(app)) = (CString::new(blocked_host), CString::new(app_id)) else {
+        return 0;
+    };
+    unsafe { preelock_close_blocked_tab(host.as_ptr(), app.as_ptr()) }
 }
 pub fn redirect_browser_blocked(app_name: &str, pid: u32) {
     if let Ok(c_str) = std::ffi::CString::new(app_name) {
