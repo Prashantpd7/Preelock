@@ -1157,14 +1157,23 @@ pub fn stop_session_blocking() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        crate::windows_hosts::clear_blocks()?;
+        // Ending a session must restore the whole machine, not just the hosts
+        // file. The outbound netsh rules for this session's resolved IPs would
+        // otherwise keep those sites blocked until the next session applies
+        // new rules or the app exits.
+        let hosts_result = crate::windows_hosts::clear_blocks();
+        let firewall_result = crate::windows_firewall::clear_firewall_rules();
         with_state(|s| {
             s.is_active = false;
             s.last_policy_domains.clear();
             s.last_is_allowlist = false;
             s.last_block_adult = false;
         });
-        log::info!("[WINDOWS_HOSTS] Native hosts-file blocking stopped; normal hosts restored");
+        hosts_result?;
+        firewall_result?;
+        log::info!(
+            "[WINDOWS_HOSTS] Native hosts-file blocking stopped; normal hosts and firewall restored"
+        );
         Ok(())
     }
 

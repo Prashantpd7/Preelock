@@ -1264,8 +1264,22 @@ pub fn unblock_everything(reason: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         reset_owners();
-        crate::windows_hosts::clear_blocks()?;
-        crate::windows_firewall::clear_firewall_rules()
+        let hosts_result = crate::windows_hosts::clear_blocks();
+        let firewall_result = crate::windows_firewall::clear_firewall_rules();
+
+        // Verify by reading the hosts file back — a cleanup that does not
+        // verify is not a cleanup. Both markers must be gone.
+        let hosts_clean = std::fs::read_to_string(crate::windows_hosts::DEFAULT_HOSTS_PATH)
+            .map(|c| !c.contains(HOSTS_START_MARKER) && !c.contains(HOSTS_END_MARKER))
+            .unwrap_or(true);
+        log::info!(
+            "[UNBLOCK] {reason}: hosts_clean={hosts_clean} hosts_clear={hosts_result:?} firewall_clear={firewall_result:?}"
+        );
+        if !hosts_clean {
+            return Err(format!("Blocks remain after {reason}: hosts_clean=false"));
+        }
+        hosts_result?;
+        firewall_result
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
