@@ -72,11 +72,11 @@ const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
 
 /// Bounded retry budget for transient hosts-file locks (~1.1s in total).
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const HOSTS_OPEN_ATTEMPTS: u32 = 8;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const HOSTS_RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const HOSTS_RETRY_MAX_DELAY: Duration = Duration::from_millis(250);
 
 /// Result of probing whether this process can write the Windows hosts file.
