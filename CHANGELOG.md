@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.19] - 2026-11-27
+
+### Fixed
+
+- **Windows hosts-file writes sometimes failed with `os error 32` (sharing/lock violation)** even though the Preelock one-time UAC setup had already granted Modify permission. `C:\Windows\System32\drivers\etc\hosts` is a shared system file and the Windows Defender real-time scanner or DNS client can momentarily hold it without sharing write. The hosts file is now opened with `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`, and `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` are retried with bounded backoff (~1.1 s total) before the open is reported failed. Only `ERROR_ACCESS_DENIED` is treated as a real "needs UAC" signal.
+- **Windows hosts-file writes could silently succeed without the block landing.** After every write the Preelock block markers (`# === PREELOCK BLOCKLIST START ===` / `=== END ===`) are now read back from disk and verified; a block that did not make it into the file is reported as failed instead of reported as applied.
+- **Ending or unblocking a Windows session left Preelock firewall rules behind, which could resurface the "Enable System Blocking" UAC loop on the next launch.** Session stop now also clears firewall rules, and unblocking verifies that _both_ the hosts-file markers and the firewall rules are gone before declaring the system unblocked.
+
+### Build / CI
+
+- macOS-only retry constants in the Windows hosts-file helper (`HOSTS_OPEN_ATTEMPTS`, `HOSTS_RETRY_BASE_DELAY`, `HOSTS_RETRY_MAX_DELAY`) are now strictly gated with `cfg(target_os = "windows")` so they no longer appear as dead code during the macOS test compilation. The CI matrix (frontend, macOS Apple Silicon, macOS Intel, Windows MSVC) is now green.
+
+---
+
 ## [Unreleased]
 
 ### Fixed
