@@ -1,16 +1,17 @@
-# Preelock 0.5.19 — Free public beta
+# Preelock 0.5.20 — Free public beta
 
-Preelock 0.5.19 hardens Windows hosts-file blocking and clears the firewall rules on session stop:
+Preelock 0.5.20 makes a blocked page on macOS actually go away, with or without the browser extension:
 
-- Robust Windows hosts-file writes: Open the system hosts file with `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` so the Windows Defender real-time scanner and DNS client can keep their legitimate handles without blocking Preelock. Retries `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION` with a bounded backoff (~1.1 s total) before giving up, so a transient scanner lock no longer surfaces as a permission failure.
-- Verified hosts-file writes: After every hosts-file write the Preelock block markers (`# === PREELOCK BLOCKLIST START ===` / `=== END ===`) are re-read and checked; a block that didn't land is no longer reported as applied.
-- Cleaner Windows session stop: Ending or unblocking a session now also clears the Preelock firewall ruleset, and unblocking verifies that _both_ the hosts-file markers and the firewall rules are gone — preventing the "Enable System Blocking" UAC loop from reappearing on the next launch.
-- Cross-platform parity: The macOS path is unchanged and the three reload-related CI gates stay green on Apple Silicon, Intel, and Windows MSVC.
+- Blocked-tab takeover without the extension: When the Apple Events sweep cannot replace a tab (no Automation consent, or a browser that refuses scripting), Preelock closes the one frontmost tab that is still showing the blocked host. A service-worker-cached page such as YouTube's kept playing from its cached shell after the network was already cut, so the user only ever saw a stream of "blocked" notifications.
+- Guarded by re-verification: The native layer re-checks Accessibility trust, that the browser is frontmost, that the focused page really is the blocked host, and that the keyboard focus is not in a text field, then posts a single Cmd+W — the same action Windows already takes. Nothing is read, typed, or copied.
+- Diagnosable outcomes: Tab-takeover results are logged once a minute per app/domain, and each reason (missing Accessibility, browser no longer frontmost, user typing, unconfirmed address) is named in the lifecycle log at `~/Library/Logs/Preelock/lifecycle.log`.
+- Automation consent is asked for, not silently skipped: A denied macOS Automation grant used to disable blocked-tab replacement without a trace. Preelock now raises the standard per-browser consent prompt once, skips the AppleScript sweep only when macOS explicitly refused it, and re-reads a denial every 30 seconds so enabling System Settings → Privacy & Security → Automation works without relaunching. A one-time notification explains what to enable.
+- Loud `osascript` failures: A browser that refuses the tab redirect, or cannot be scripted at all, is now reported in the lifecycle log instead of failing silently.
 - Retains full support for Focus Sessions, tasks, analytics, screen time, allowances, schedules, and local-first privacy.
 
 Existing database paths, backup format, browser pairing and Microsoft Store
 registration identity are retained. Database migration is additive and backward-compatible.
-The Store package is version 1.5.19.0, with the existing identity and publisher.
+The Store package is version 1.5.20.0, with the existing identity and publisher.
 It is supplied for owner upload and is not claimed to be Store-certified.
 
 Mac builds are ad-hoc signed, not notarized. Windows direct installers are unsigned.

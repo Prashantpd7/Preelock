@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.20] - 2026-11-27
+
+### Added
+
+- **Blocked pages are taken over on macOS even without the browser extension.** When the Apple Events sweep cannot replace a tab — no Automation consent, or a browser that refuses scripting — Preelock now closes the one frontmost tab that is still showing the blocked host. A service-worker-cached page such as YouTube's kept running from its cached shell after `/etc/hosts` and the packet filter had already cut its network, so the user only ever saw a stream of "blocked" notifications. The native layer re-verifies everything before acting (Accessibility trust, the browser is frontmost, the focused page really is the blocked host, and the keyboard focus is not in a text field) and posts a single Cmd+W — the same action Windows already takes. Nothing is read, typed, or copied.
+- Tab-takeover outcomes are written to the lifecycle log once a minute per app/domain instead of on every one-second tick, and each reason (missing Accessibility, browser no longer frontmost, user typing, unconfirmed address) is named so a block that only notifies can be diagnosed.
+
+### Fixed
+
+- **A denied macOS Automation grant silently disabled blocked-tab replacement**, leaving an already-open blocked page running with only notifications arriving. Preelock now asks for Automation per browser once (the standard system consent prompt), skips the AppleScript sweep only when macOS explicitly refused it (`errAEEventNotPermitted` / `errAEEventWouldRequireUserConsent`), and re-reads a denial every 30 seconds so turning the grant on in System Settings → Privacy & Security → Automation takes effect without relaunching the app. A one-time notification says what to enable.
+- Failures from `osascript` are no longer discarded: a browser that refuses the tab redirect, or cannot be scripted at all, is reported in the lifecycle log instead of failing silently.
+
+---
+
 ## [0.5.19] - 2026-11-27
 
 ### Fixed
